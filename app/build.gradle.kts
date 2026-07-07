@@ -47,6 +47,7 @@ dependencies {
 
     implementation(project(":llm-client"))
     implementation(project(":tool-runtime"))
+    implementation(project(":sync"))
 
     debugImplementation(libs.compose.ui.tooling)
 }

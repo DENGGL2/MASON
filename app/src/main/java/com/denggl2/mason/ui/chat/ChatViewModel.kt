@@ -3,6 +3,7 @@ package com.denggl2.mason.ui.chat
 import com.denggl2.mason.llm.ChatClient
 import com.denggl2.mason.llm.ChatResponse
 import com.denggl2.mason.llm.model.ChatMessage
+import com.denggl2.mason.sync.SyncManager
 import com.denggl2.mason.tool.ToolExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -26,10 +27,13 @@ data class ChatUiState(
 class ChatViewModel @Inject constructor(
     private val chatClient: ChatClient,
     private val toolExecutor: ToolExecutor,
+    private val syncManager: SyncManager,
 ) : CoroutineScope by CoroutineScope(Dispatchers.Main) {
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+
+    private var currentConversationId: Long? = null
 
     fun sendMessage(content: String) {
         if (content.isBlank()) return
@@ -42,6 +46,15 @@ class ChatViewModel @Inject constructor(
         )
 
         launch {
+            // Ensure a conversation exists and save user message
+            if (currentConversationId == null) {
+                val title = content.take(50)
+                currentConversationId = syncManager.createOrGetConversation(title)
+            }
+            currentConversationId?.let { convId ->
+                syncManager.saveMessage(convId, role = "user", content = content)
+            }
+
             chatClient.chat(_uiState.value.messages).collect { response ->
                 when (response) {
                     is ChatResponse.ToolCallsRequested -> {
@@ -70,6 +83,18 @@ class ChatViewModel @Inject constructor(
                             messages = _uiState.value.messages + toolMessages,
                         )
 
+                        // Save tool messages
+                        currentConversationId?.let { convId ->
+                            toolMessages.forEach { msg ->
+                                syncManager.saveMessage(
+                                    convId,
+                                    role = msg.role,
+                                    content = msg.content,
+                                    toolCallName = msg.name,
+                                )
+                            }
+                        }
+
                         chatClient.streamChat(_uiState.value.messages).collect { streamResponse ->
                             when (streamResponse) {
                                 is ChatResponse.TextChunk -> {
@@ -92,6 +117,10 @@ class ChatViewModel @Inject constructor(
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + assistantMessage,
                         )
+                        // Save assistant message
+                        currentConversationId?.let { convId ->
+                            syncManager.saveMessage(convId, role = "assistant", content = response.text)
+                        }
                     }
 
                     is ChatResponse.Error -> {
@@ -99,6 +128,10 @@ class ChatViewModel @Inject constructor(
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + errorMessage,
                         )
+                        // Save error message
+                        currentConversationId?.let { convId ->
+                            syncManager.saveMessage(convId, role = "assistant", content = "错误: ${response.message}")
+                        }
                     }
                 }
             }
@@ -110,6 +143,10 @@ class ChatViewModel @Inject constructor(
                     isStreaming = false,
                     streamingContent = "",
                 )
+                // Save streaming assistant message
+                currentConversationId?.let { convId ->
+                    syncManager.saveMessage(convId, role = "assistant", content = _uiState.value.streamingContent)
+                }
             } else {
                 _uiState.value = _uiState.value.copy(isStreaming = false)
             }

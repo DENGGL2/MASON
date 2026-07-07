@@ -14,6 +14,7 @@ kotlinxSerialization = "1.7.1"
 kotlinxCoroutines = "1.9.0"
 hiltExtCompiler = "1.2.0"
 datastorePreferences = "1.1.1"
+room = "2.6.1"
 
 [libraries]
 # AndroidX Core
@@ -46,6 +47,11 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 
 # DataStore
 datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferences" }
+
+# Room
+room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
+room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
+room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
