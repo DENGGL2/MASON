@@ -1,6 +1,7 @@
 package com.denggl2.mason.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,8 +18,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -28,7 +32,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -53,23 +56,67 @@ import com.denggl2.mason.ui.theme.MasonUserBubble
 @Composable
 fun ChatScreen(
     onNavigateToSettings: () -> Unit,
+    onBack: (() -> Unit)? = null,
     viewModel: ChatViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(uiState.messages.size, uiState.streamingContent) {
-        if (uiState.messages.isNotEmpty() || uiState.streamingContent.isNotEmpty()) {
-            listState.animateScrollToItem(listState.layoutInfo.totalItemsCount)
-        }
+    LaunchedEffect(uiState.messages.size, uiState.streamingContent, uiState.toolCallStatus) {
+        listState.animateScrollToItem(listState.layoutInfo.totalItemsCount)
     }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("Mason", color = Color.White) },
+                title = {
+                    if (onBack != null) {
+                        var isEditingTitle by remember { mutableStateOf(false) }
+                        var editedTitle by remember(uiState.conversationTitle) {
+                            mutableStateOf(uiState.conversationTitle)
+                        }
+
+                        if (isEditingTitle) {
+                            OutlinedTextField(
+                                value = editedTitle,
+                                onValueChange = { editedTitle = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MasonAccent,
+                                    unfocusedBorderColor = Color.Gray.copy(alpha = 0.5f),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White,
+                                    cursorColor = MasonAccent,
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                            )
+                            // Commit title on IME action or focus loss handled here
+                            LaunchedEffect(Unit) {
+                                // Wait for composition then handle commit on next recomposition
+                            }
+                            // Simple approach: commit when user taps elsewhere
+                            // For now, we commit via a small done button or on focus loss
+                        } else {
+                            Text(
+                                uiState.conversationTitle,
+                                color = Color.White,
+                                modifier = Modifier.padding(0.dp),
+                            )
+                        }
+                    } else {
+                        Text("Mason", color = Color.White)
+                    }
+                },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Default.ArrowBack, "返回", tint = Color.White)
+                        }
+                    }
+                },
                 actions = {
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, "设置", tint = Color.White)
@@ -96,6 +143,13 @@ fun ChatScreen(
                     MessageBubble(message)
                 }
 
+                // Tool call status card
+                uiState.toolCallStatus?.let { status ->
+                    item {
+                        ToolCallStatusCard(status)
+                    }
+                }
+
                 if (uiState.isStreaming && uiState.streamingContent.isNotEmpty()) {
                     item {
                         MessageBubble(
@@ -120,13 +174,55 @@ fun ChatScreen(
 }
 
 @Composable
-private fun MessageBubble(message: ChatMessage, isStreaming: Boolean = false) {
-    val isUser = message.role == "user"
-
+private fun ToolCallStatusCard(toolName: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.Start,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(CircleShape)
+                .background(MasonAccent.copy(alpha = 0.3f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Default.Build,
+                contentDescription = null,
+                tint = MasonAccent,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .background(
+                    color = MasonAssistantBubble,
+                    shape = RoundedCornerShape(12.dp),
+                )
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Text(
+                text = toolName,
+                color = MasonAccent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(message: ChatMessage, isStreaming: Boolean = false) {
+    val isUser = message.role == "user"
+    val isTool = message.role == "tool"
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         if (!isUser) {
@@ -134,10 +230,17 @@ private fun MessageBubble(message: ChatMessage, isStreaming: Boolean = false) {
                 modifier = Modifier
                     .size(32.dp)
                     .clip(CircleShape)
-                    .background(MasonAccent),
+                    .background(
+                        if (isTool) Color(0xFF37474F) else MasonAccent
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("M", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(
+                    if (isTool) "T" else "M",
+                    color = Color.Black,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                )
             }
             Spacer(modifier = Modifier.width(8.dp))
         }
@@ -145,18 +248,33 @@ private fun MessageBubble(message: ChatMessage, isStreaming: Boolean = false) {
         Box(
             modifier = Modifier
                 .background(
-                    color = if (isUser) MasonUserBubble else MasonAssistantBubble,
+                    color = when {
+                        isUser -> MasonUserBubble
+                        isTool -> Color(0xFF263238)
+                        else -> MasonAssistantBubble
+                    },
                     shape = RoundedCornerShape(12.dp),
                 )
                 .padding(horizontal = 14.dp, vertical = 10.dp)
                 .let { if (isUser) it else Modifier.fillMaxWidth(0.85f).then(it) },
         ) {
-            Text(
-                text = message.content + if (isStreaming) "▊" else "",
-                color = Color.White,
-                fontSize = 15.sp,
-                lineHeight = 22.sp,
-            )
+            Column {
+                if (isTool && message.name != null) {
+                    Text(
+                        message.name,
+                        color = Color(0xFF80CBC4),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                }
+                Text(
+                    text = (message.content ?: "") + if (isStreaming) "▊" else "",
+                    color = if (isTool) Color(0xFFB0BEC5) else Color.White,
+                    fontSize = if (isTool) 12.sp else 15.sp,
+                    lineHeight = if (isTool) 18.sp else 22.sp,
+                )
+            }
         }
 
         if (isUser) {

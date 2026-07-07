@@ -1,9 +1,11 @@
 package com.denggl2.mason.ui.chat
 
+import androidx.lifecycle.SavedStateHandle
 import com.denggl2.mason.llm.ChatClient
 import com.denggl2.mason.llm.ChatResponse
 import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.sync.SyncManager
+import com.denggl2.mason.sync.data.entity.Message
 import com.denggl2.mason.tool.ToolExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -21,10 +23,13 @@ data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val isStreaming: Boolean = false,
     val streamingContent: String = "",
+    val toolCallStatus: String? = null,
+    val conversationTitle: String = "Mason",
 )
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
+    savedStateHandle: SavedStateHandle,
     private val chatClient: ChatClient,
     private val toolExecutor: ToolExecutor,
     private val syncManager: SyncManager,
@@ -33,7 +38,44 @@ class ChatViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
-    private var currentConversationId: Long? = null
+    private var currentConversationId: Long? = savedStateHandle.get<Long>("conversationId")
+    private var isFirstMessage = true
+
+    init {
+        currentConversationId?.let { convId ->
+            loadHistory(convId)
+        }
+    }
+
+    private fun loadHistory(convId: Long) {
+        launch {
+            // Load title
+            syncManager.getConversationTitle(convId)?.let { title ->
+                _uiState.value = _uiState.value.copy(conversationTitle = title)
+            }
+
+            // Load messages
+            syncManager.getMessagesFlow(convId).collect { messages ->
+                val chatMessages = messages.map { msg ->
+                    ChatMessage(
+                        role = msg.role,
+                        content = msg.content,
+                        name = msg.toolCallName,
+                    )
+                }
+                _uiState.value = _uiState.value.copy(messages = chatMessages)
+            }
+        }
+    }
+
+    fun updateConversationTitle(newTitle: String) {
+        _uiState.value = _uiState.value.copy(conversationTitle = newTitle)
+        currentConversationId?.let { convId ->
+            launch {
+                syncManager.updateConversationTitle(convId, newTitle)
+            }
+        }
+    }
 
     fun sendMessage(content: String) {
         if (content.isBlank()) return
@@ -48,11 +90,20 @@ class ChatViewModel @Inject constructor(
         launch {
             // Ensure a conversation exists and save user message
             if (currentConversationId == null) {
-                val title = content.take(50)
+                val title = content.take(20)
                 currentConversationId = syncManager.createOrGetConversation(title)
+                _uiState.value = _uiState.value.copy(conversationTitle = title)
             }
             currentConversationId?.let { convId ->
                 syncManager.saveMessage(convId, role = "user", content = content)
+
+                // Auto-title on first user message
+                if (isFirstMessage) {
+                    val autoTitle = content.take(20)
+                    syncManager.updateConversationTitle(convId, autoTitle)
+                    _uiState.value = _uiState.value.copy(conversationTitle = autoTitle)
+                    isFirstMessage = false
+                }
             }
 
             chatClient.chat(_uiState.value.messages).collect { response ->
@@ -60,6 +111,10 @@ class ChatViewModel @Inject constructor(
                     is ChatResponse.ToolCallsRequested -> {
                         val toolMessages = mutableListOf<ChatMessage>()
                         for (call in response.calls) {
+                            _uiState.value = _uiState.value.copy(
+                                toolCallStatus = "正在执行 ${call.name} 工具..."
+                            )
+
                             val args = try {
                                 Json.parseToJsonElement(call.arguments)
                                     .jsonObject
@@ -81,6 +136,7 @@ class ChatViewModel @Inject constructor(
                         }
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + toolMessages,
+                            toolCallStatus = null,
                         )
 
                         // Save tool messages
@@ -117,7 +173,6 @@ class ChatViewModel @Inject constructor(
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + assistantMessage,
                         )
-                        // Save assistant message
                         currentConversationId?.let { convId ->
                             syncManager.saveMessage(convId, role = "assistant", content = response.text)
                         }
@@ -128,7 +183,6 @@ class ChatViewModel @Inject constructor(
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + errorMessage,
                         )
-                        // Save error message
                         currentConversationId?.let { convId ->
                             syncManager.saveMessage(convId, role = "assistant", content = "错误: ${response.message}")
                         }
@@ -143,12 +197,11 @@ class ChatViewModel @Inject constructor(
                     isStreaming = false,
                     streamingContent = "",
                 )
-                // Save streaming assistant message
                 currentConversationId?.let { convId ->
                     syncManager.saveMessage(convId, role = "assistant", content = _uiState.value.streamingContent)
                 }
             } else {
-                _uiState.value = _uiState.value.copy(isStreaming = false)
+                _uiState.value = _uiState.value.copy(isStreaming = false, toolCallStatus = null)
             }
         }
     }

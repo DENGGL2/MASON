@@ -94,6 +94,24 @@ class SyncManager @Inject constructor(
     fun getMessagesFlow(conversationId: Long): Flow<List<Message>> =
         messageDao.getByConversation(conversationId)
 
+    suspend fun deleteConversation(id: Long) {
+        conversationDao.deleteById(id)
+    }
+
+    suspend fun updateConversationTitle(id: Long, title: String) {
+        conversationDao.getById(id)?.let { conv ->
+            conversationDao.update(conv.copy(title = title, updatedAt = System.currentTimeMillis()))
+        }
+    }
+
+    suspend fun getConversationTitle(id: Long): String? {
+        return conversationDao.getById(id)?.title
+    }
+
+    suspend fun getLastMessage(conversationId: Long): Message? {
+        return messageDao.getLastMessage(conversationId)
+    }
+
     /**
      * Export all conversations and messages as a JSON string.
      */
