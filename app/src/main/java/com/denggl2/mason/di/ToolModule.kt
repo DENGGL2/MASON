@@ -7,6 +7,10 @@ import com.denggl2.mason.tool.ClipboardTool
 import com.denggl2.mason.tool.CpuTool
 import com.denggl2.mason.tool.DeviceInfoTool
 import com.denggl2.mason.tool.DnsLookupTool
+import com.denggl2.mason.tool.FileDeleteTool
+import com.denggl2.mason.tool.FileListTool
+import com.denggl2.mason.tool.FileReadTool
+import com.denggl2.mason.tool.FileWriteTool
 import com.denggl2.mason.tool.GpuTool
 import com.denggl2.mason.tool.HotspotTool
 import com.denggl2.mason.tool.HttpRequestTool
@@ -48,6 +52,10 @@ object ToolModule {
         networkInfoTool: NetworkInfoTool,
         hotspotTool: HotspotTool,
         dnsLookupTool: DnsLookupTool,
+        fileReadTool: FileReadTool,
+        fileWriteTool: FileWriteTool,
+        fileListTool: FileListTool,
+        fileDeleteTool: FileDeleteTool,
     ): ToolRegistry {
         return ToolRegistry().apply {
             registerAll(setOf(
@@ -68,6 +76,10 @@ object ToolModule {
                 networkInfoTool,
                 hotspotTool,
                 dnsLookupTool,
+                fileReadTool,
+                fileWriteTool,
+                fileListTool,
+                fileDeleteTool,
             ))
         }
     }
