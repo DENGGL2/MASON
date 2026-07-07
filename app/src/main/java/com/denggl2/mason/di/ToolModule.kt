@@ -6,8 +6,10 @@ import com.denggl2.mason.tool.AudioRecordTool
 import com.denggl2.mason.tool.BatteryTool
 import com.denggl2.mason.tool.CalendarTool
 import com.denggl2.mason.tool.BluetoothTool
+import com.denggl2.mason.tool.CallLogTool
 import com.denggl2.mason.tool.CameraTool
 import com.denggl2.mason.tool.ClipboardTool
+import com.denggl2.mason.tool.ContactsTool
 import com.denggl2.mason.tool.CpuTool
 import com.denggl2.mason.tool.DeviceInfoTool
 import com.denggl2.mason.tool.DnsLookupTool
@@ -26,6 +28,7 @@ import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.tool.ScreenshotTool
 import com.denggl2.mason.tool.SensorTool
 import com.denggl2.mason.tool.ShellTool
+import com.denggl2.mason.tool.SmsTool
 import com.denggl2.mason.tool.SystemSettingTool
 import com.denggl2.mason.tool.ToolRegistry
 import com.denggl2.mason.tool.WifiTool
@@ -70,6 +73,9 @@ object ToolModule {
         geocodingTool: GeocodingTool,
         calendarTool: CalendarTool,
         alarmTool: AlarmTool,
+        contactsTool: ContactsTool,
+        smsTool: SmsTool,
+        callLogTool: CallLogTool,
     ): ToolRegistry {
         return ToolRegistry().apply {
             registerAll(setOf(
@@ -101,6 +107,9 @@ object ToolModule {
                 geocodingTool,
                 calendarTool,
                 alarmTool,
+                contactsTool,
+                smsTool,
+                callLogTool,
             ))
         }
     }
