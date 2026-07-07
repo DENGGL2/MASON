@@ -19,3 +19,4 @@ rootProject.name = "Mason"
 
 include(":app")
 include(":llm-client")
+include(":tool-runtime")

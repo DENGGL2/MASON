@@ -46,6 +46,7 @@ dependencies {
     implementation(libs.datastore.preferences)
 
     implementation(project(":llm-client"))
+    implementation(project(":tool-runtime"))
 
     debugImplementation(libs.compose.ui.tooling)
 }
