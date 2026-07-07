@@ -66,7 +66,7 @@ class GeocodingTool @Inject constructor(
                 ?: emptyList()
 
             if (addresses.isEmpty()) {
-                return ToolResult(success = false, error = "未找到匹配"$addressStr" 的坐标")
+                return ToolResult(success = false, error = "未找到匹配 \"$addressStr\" 的坐标")
             }
 
             val results = addresses.mapIndexed { index, addr ->
