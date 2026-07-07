@@ -18,6 +18,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var batteryOptimizationTool: BatteryOptimizationTool
 
+    @Inject
+    lateinit var screenshotTool: ScreenshotTool
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -31,7 +34,10 @@ class MainActivity : ComponentActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        // Handle ScreenshotTool MediaProjection authorization callback
-        ScreenshotTool.onAuthResult(resultCode, data)
+        when (requestCode) {
+            ScreenshotTool.REQUEST_CODE_MEDIA_PROJECTION -> {
+                ScreenshotTool.onAuthResult(resultCode, data)
+            }
+        }
     }
 }

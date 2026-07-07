@@ -165,6 +165,8 @@ class ScreenshotTool @Inject constructor(
     }
 
     companion object {
+        const val REQUEST_CODE_MEDIA_PROJECTION = 1001
+
         @Volatile
         var activeProjection: MediaProjection? = null
             private set

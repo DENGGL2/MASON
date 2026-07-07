@@ -1,5 +1,14 @@
 package com.denggl2.mason.ui.chat
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -146,7 +156,13 @@ fun ChatScreen(
                 // Tool call status card
                 uiState.toolCallStatus?.let { status ->
                     item {
-                        ToolCallStatusCard(status)
+                        AnimatedVisibility(
+                            visible = true,
+                            enter = fadeIn(animationSpec = tween(300)),
+                            exit = fadeOut(animationSpec = tween(300)),
+                        ) {
+                            ToolCallStatusCard(status)
+                        }
                     }
                 }
 
@@ -175,11 +191,23 @@ fun ChatScreen(
 
 @Composable
 private fun ToolCallStatusCard(toolName: String) {
+    val infiniteTransition = rememberInfiniteTransition(label = "tool_rotation")
+    val rotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "rotation_angle",
+    )
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
@@ -192,7 +220,9 @@ private fun ToolCallStatusCard(toolName: String) {
                 Icons.Default.Build,
                 contentDescription = null,
                 tint = MasonAccent,
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier
+                    .size(18.dp)
+                    .rotate(rotation),
             )
         }
         Spacer(Modifier.width(8.dp))
