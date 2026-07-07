@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -66,6 +67,7 @@ import com.denggl2.mason.ui.theme.MasonAccent
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onNavigateToPermission: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val config by viewModel.config.collectAsState()
@@ -182,6 +184,18 @@ fun SettingsScreen(
                 description = "删除所有已记录的崩溃日志",
                 destructive = true,
                 onClick = { showClearCrashDialog = true },
+            )
+
+            Spacer(Modifier.height(32.dp))
+
+            // ── Section: 权限 ──
+            SectionHeader("权限")
+
+            DataActionButton(
+                icon = Icons.Default.Security,
+                label = "权限管理",
+                description = "查看和管理已授予的权限（相机、存储、通讯录等）",
+                onClick = onNavigateToPermission,
             )
 
             Spacer(Modifier.height(32.dp))

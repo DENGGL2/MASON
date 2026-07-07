@@ -30,4 +30,7 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages ORDER BY timestamp ASC")
     suspend fun getAll(): List<Message>
+
+    @Query("DELETE FROM messages")
+    suspend fun deleteAll()
 }

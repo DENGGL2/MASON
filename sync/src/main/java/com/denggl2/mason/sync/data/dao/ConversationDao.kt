@@ -28,4 +28,7 @@ interface ConversationDao {
 
     @Query("SELECT * FROM conversations ORDER BY updated_at DESC")
     suspend fun getAllList(): List<Conversation>
+
+    @Query("DELETE FROM conversations")
+    suspend fun deleteAll()
 }

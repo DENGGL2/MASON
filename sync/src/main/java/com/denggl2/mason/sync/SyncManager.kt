@@ -155,6 +155,14 @@ class SyncManager @Inject constructor(
     }
 
     /**
+     * Clear all conversations and messages.
+     */
+    suspend fun clearAll() {
+        messageDao.deleteAll()
+        conversationDao.deleteAll()
+    }
+
+    /**
      * Import conversations from a JSON string.
      */
     suspend fun importFromJson(jsonStr: String): Int {

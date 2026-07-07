@@ -11,12 +11,14 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.denggl2.mason.ui.chat.ChatScreen
 import com.denggl2.mason.ui.conversation.ConversationListScreen
+import com.denggl2.mason.ui.settings.PermissionScreen
 import com.denggl2.mason.ui.settings.SettingsScreen
 
 object Routes {
     const val CONVERSATION_LIST = "conversation_list"
     const val CHAT = "chat/{conversationId}"
     const val SETTINGS = "settings"
+    const val PERMISSION = "permission"
 
     fun chat(conversationId: Long) = "chat/$conversationId"
 }
@@ -59,6 +61,15 @@ fun MasonNavGraph() {
 
         composable(Routes.SETTINGS) {
             SettingsScreen(
+                onBack = { navController.popBackStack() },
+                onNavigateToPermission = {
+                    navController.navigate(Routes.PERMISSION)
+                },
+            )
+        }
+
+        composable(Routes.PERMISSION) {
+            PermissionScreen(
                 onBack = { navController.popBackStack() },
             )
         }
