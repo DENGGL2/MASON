@@ -6,8 +6,12 @@ import com.denggl2.mason.tool.BluetoothTool
 import com.denggl2.mason.tool.ClipboardTool
 import com.denggl2.mason.tool.CpuTool
 import com.denggl2.mason.tool.DeviceInfoTool
+import com.denggl2.mason.tool.DnsLookupTool
 import com.denggl2.mason.tool.GpuTool
+import com.denggl2.mason.tool.HotspotTool
+import com.denggl2.mason.tool.HttpRequestTool
 import com.denggl2.mason.tool.MemoryTool
+import com.denggl2.mason.tool.NetworkInfoTool
 import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.tool.SensorTool
 import com.denggl2.mason.tool.ShellTool
@@ -40,6 +44,10 @@ object ToolModule {
         notificationTool: NotificationTool,
         systemSettingTool: SystemSettingTool,
         shellTool: ShellTool,
+        httpRequestTool: HttpRequestTool,
+        networkInfoTool: NetworkInfoTool,
+        hotspotTool: HotspotTool,
+        dnsLookupTool: DnsLookupTool,
     ): ToolRegistry {
         return ToolRegistry().apply {
             registerAll(setOf(
@@ -56,6 +64,10 @@ object ToolModule {
                 notificationTool,
                 systemSettingTool,
                 shellTool,
+                httpRequestTool,
+                networkInfoTool,
+                hotspotTool,
+                dnsLookupTool,
             ))
         }
     }

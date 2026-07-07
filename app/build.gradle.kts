@@ -44,6 +44,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.datastore.preferences)
+    implementation(libs.okhttp)
 
     implementation(project(":llm-client"))
     implementation(project(":tool-runtime"))
