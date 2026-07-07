@@ -2,7 +2,9 @@ package com.denggl2.mason.di
 
 import com.denggl2.mason.tool.AlarmTool
 import com.denggl2.mason.tool.AppLauncherTool
+import com.denggl2.mason.tool.AppManagerTool
 import com.denggl2.mason.tool.AudioRecordTool
+import com.denggl2.mason.tool.BatteryOptimizationTool
 import com.denggl2.mason.tool.BatteryTool
 import com.denggl2.mason.tool.CalendarTool
 import com.denggl2.mason.tool.BluetoothTool
@@ -25,10 +27,12 @@ import com.denggl2.mason.tool.LocationTool
 import com.denggl2.mason.tool.MemoryTool
 import com.denggl2.mason.tool.NetworkInfoTool
 import com.denggl2.mason.tool.NotificationTool
+import com.denggl2.mason.tool.ProcessTool
 import com.denggl2.mason.tool.ScreenshotTool
 import com.denggl2.mason.tool.SensorTool
 import com.denggl2.mason.tool.ShellTool
 import com.denggl2.mason.tool.SmsTool
+import com.denggl2.mason.tool.StorageTool
 import com.denggl2.mason.tool.SystemSettingTool
 import com.denggl2.mason.tool.ToolRegistry
 import com.denggl2.mason.tool.WifiTool
@@ -76,6 +80,10 @@ object ToolModule {
         contactsTool: ContactsTool,
         smsTool: SmsTool,
         callLogTool: CallLogTool,
+        appManagerTool: AppManagerTool,
+        storageTool: StorageTool,
+        processTool: ProcessTool,
+        batteryOptimizationTool: BatteryOptimizationTool,
     ): ToolRegistry {
         return ToolRegistry().apply {
             registerAll(setOf(
@@ -110,6 +118,10 @@ object ToolModule {
                 contactsTool,
                 smsTool,
                 callLogTool,
+                appManagerTool,
+                storageTool,
+                processTool,
+                batteryOptimizationTool,
             ))
         }
     }
