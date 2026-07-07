@@ -61,6 +61,7 @@ class ChatViewModel @Inject constructor(
                         role = msg.role,
                         content = msg.content,
                         name = msg.toolCallName,
+                        timestamp = msg.timestamp,
                     )
                 }
                 _uiState.value = _uiState.value.copy(messages = chatMessages)
@@ -80,7 +81,7 @@ class ChatViewModel @Inject constructor(
     fun sendMessage(content: String) {
         if (content.isBlank()) return
 
-        val userMessage = ChatMessage(role = "user", content = content)
+        val userMessage = ChatMessage(role = "user", content = content, timestamp = System.currentTimeMillis())
         _uiState.value = _uiState.value.copy(
             messages = _uiState.value.messages + userMessage,
             isStreaming = true,
@@ -132,6 +133,7 @@ class ChatViewModel @Inject constructor(
                                 role = "tool",
                                 content = resultStr,
                                 name = call.name,
+                                timestamp = System.currentTimeMillis(),
                             ))
                         }
                         _uiState.value = _uiState.value.copy(
@@ -169,7 +171,7 @@ class ChatViewModel @Inject constructor(
                     }
 
                     is ChatResponse.TextChunk -> {
-                        val assistantMessage = ChatMessage(role = "assistant", content = response.text)
+                        val assistantMessage = ChatMessage(role = "assistant", content = response.text, timestamp = System.currentTimeMillis())
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + assistantMessage,
                         )
@@ -179,7 +181,7 @@ class ChatViewModel @Inject constructor(
                     }
 
                     is ChatResponse.Error -> {
-                        val errorMessage = ChatMessage(role = "assistant", content = "错误: ${response.message}")
+                        val errorMessage = ChatMessage(role = "assistant", content = "错误: ${response.message}", timestamp = System.currentTimeMillis())
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + errorMessage,
                         )
@@ -191,7 +193,7 @@ class ChatViewModel @Inject constructor(
             }
 
             if (_uiState.value.streamingContent.isNotEmpty()) {
-                val assistantMessage = ChatMessage(role = "assistant", content = _uiState.value.streamingContent)
+                val assistantMessage = ChatMessage(role = "assistant", content = _uiState.value.streamingContent, timestamp = System.currentTimeMillis())
                 _uiState.value = _uiState.value.copy(
                     messages = _uiState.value.messages + assistantMessage,
                     isStreaming = false,

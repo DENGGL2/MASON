@@ -10,6 +10,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,7 +54,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -61,6 +64,12 @@ import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.ui.theme.MasonAccent
 import com.denggl2.mason.ui.theme.MasonAssistantBubble
 import com.denggl2.mason.ui.theme.MasonUserBubble
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+private val TIME_FORMAT = SimpleDateFormat("HH:mm", Locale.getDefault())
+private const val MAX_COLLAPSED_LENGTH = 500
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,6 +81,11 @@ fun ChatScreen(
     val uiState by viewModel.uiState.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
+
+    val hasMessages = uiState.messages.isNotEmpty() ||
+            uiState.streamingContent.isNotEmpty() ||
+            uiState.toolCallStatus != null
 
     LaunchedEffect(uiState.messages.size, uiState.streamingContent, uiState.toolCallStatus) {
         listState.animateScrollToItem(listState.layoutInfo.totalItemsCount)
@@ -103,12 +117,9 @@ fun ChatScreen(
                                 ),
                                 shape = RoundedCornerShape(8.dp),
                             )
-                            // Commit title on IME action or focus loss handled here
                             LaunchedEffect(Unit) {
                                 // Wait for composition then handle commit on next recomposition
                             }
-                            // Simple approach: commit when user taps elsewhere
-                            // For now, we commit via a small done button or on focus loss
                         } else {
                             Text(
                                 uiState.conversationTitle,
@@ -143,35 +154,54 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-            ) {
-                items(uiState.messages) { message ->
-                    MessageBubble(message)
+            if (!hasMessages) {
+                // Empty state guidance
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "Mason 可以帮你查询设备信息、管理系统设置、发送消息等。\n试试说「我的手机配置怎么样？」",
+                        color = Color.Gray,
+                        fontSize = 15.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 40.dp),
+                        lineHeight = 22.sp,
+                    )
                 }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                ) {
+                    items(uiState.messages) { message ->
+                        MessageBubble(message)
+                    }
 
-                // Tool call status card
-                uiState.toolCallStatus?.let { status ->
-                    item {
-                        AnimatedVisibility(
-                            visible = true,
-                            enter = fadeIn(animationSpec = tween(300)),
-                            exit = fadeOut(animationSpec = tween(300)),
-                        ) {
-                            ToolCallStatusCard(status)
+                    // Tool call status card
+                    uiState.toolCallStatus?.let { status ->
+                        item {
+                            AnimatedVisibility(
+                                visible = true,
+                                enter = fadeIn(animationSpec = tween(300)),
+                                exit = fadeOut(animationSpec = tween(300)),
+                            ) {
+                                ToolCallStatusCard(status)
+                            }
                         }
                     }
-                }
 
-                if (uiState.isStreaming && uiState.streamingContent.isNotEmpty()) {
-                    item {
-                        MessageBubble(
-                            ChatMessage(role = "assistant", content = uiState.streamingContent),
-                            isStreaming = true,
-                        )
+                    if (uiState.isStreaming && uiState.streamingContent.isNotEmpty()) {
+                        item {
+                            MessageBubble(
+                                ChatMessage(role = "assistant", content = uiState.streamingContent),
+                                isStreaming = true,
+                            )
+                        }
                     }
                 }
             }
@@ -182,11 +212,26 @@ fun ChatScreen(
                 onSend = {
                     viewModel.sendMessage(inputText)
                     inputText = ""
+                    focusManager.clearFocus()
                 },
                 enabled = !uiState.isStreaming,
             )
         }
     }
+}
+
+@Composable
+private fun TimestampLabel(timestamp: Long?) {
+    if (timestamp == null) return
+    val timeText = remember(timestamp) {
+        TIME_FORMAT.format(Date(timestamp))
+    }
+    Text(
+        text = timeText,
+        color = Color.Gray.copy(alpha = 0.6f),
+        fontSize = 10.sp,
+        modifier = Modifier.padding(top = 2.dp),
+    )
 }
 
 @Composable
@@ -245,79 +290,145 @@ private fun ToolCallStatusCard(toolName: String) {
 }
 
 @Composable
+private fun ExpandableMessageContent(
+    content: String,
+    isTool: Boolean,
+    isStreaming: Boolean,
+) {
+    val isLong = content.length > MAX_COLLAPSED_LENGTH
+    var expanded by remember(content) { mutableStateOf(false) }
+    val displayText = if (isLong && !expanded) content.take(MAX_COLLAPSED_LENGTH) + "…" else content
+
+    Column {
+        Text(
+            text = displayText + if (isStreaming) "▊" else "",
+            color = if (isTool) Color(0xFFB0BEC5) else Color.White,
+            fontSize = if (isTool) 12.sp else 15.sp,
+            lineHeight = if (isTool) 18.sp else 22.sp,
+        )
+
+        if (isLong) {
+            Text(
+                text = if (expanded) "收起" else "展开全文",
+                color = MasonAccent,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .clickable { expanded = !expanded }
+                    .padding(top = 4.dp),
+            )
+        }
+    }
+}
+
+@Composable
 private fun MessageBubble(message: ChatMessage, isStreaming: Boolean = false) {
     val isUser = message.role == "user"
     val isTool = message.role == "tool"
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
-        if (!isUser) {
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (isTool) Color(0xFF37474F) else MasonAccent
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    if (isTool) "T" else "M",
-                    color = Color.Black,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                )
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-        }
-
-        Box(
+        Row(
             modifier = Modifier
-                .background(
-                    color = when {
-                        isUser -> MasonUserBubble
-                        isTool -> Color(0xFF263238)
-                        else -> MasonAssistantBubble
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                )
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-                .let { if (isUser) it else Modifier.fillMaxWidth(0.85f).then(it) },
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
         ) {
-            Column {
-                if (isTool && message.name != null) {
+            if (!isUser) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isTool) Color(0xFF37474F) else MasonAccent
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Text(
-                        message.name,
-                        color = Color(0xFF80CBC4),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
+                        if (isTool) "T" else "M",
+                        color = Color.Black,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
                     )
-                    Spacer(Modifier.height(2.dp))
                 }
-                Text(
-                    text = (message.content ?: "") + if (isStreaming) "▊" else "",
-                    color = if (isTool) Color(0xFFB0BEC5) else Color.White,
-                    fontSize = if (isTool) 12.sp else 15.sp,
-                    lineHeight = if (isTool) 18.sp else 22.sp,
-                )
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+
+            Box(
+                modifier = Modifier
+                    .background(
+                        color = when {
+                            isUser -> MasonUserBubble
+                            isTool -> Color(0xFF263238)
+                            else -> MasonAssistantBubble
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                    )
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                    .let { if (isUser) it else Modifier.fillMaxWidth(0.85f).then(it) },
+            ) {
+                Column {
+                    if (isTool && message.name != null) {
+                        Text(
+                            "工具结果: ${message.name}",
+                            color = Color(0xFF80CBC4),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                    } else if (isTool) {
+                        Text(
+                            "工具结果:",
+                            color = Color(0xFF80CBC4),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                    }
+                    val content = message.content ?: ""
+                    if (isTool) {
+                        Text(
+                            text = content,
+                            color = Color(0xFF9E9E9E),
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                        )
+                    } else {
+                        ExpandableMessageContent(
+                            content = content,
+                            isTool = false,
+                            isStreaming = isStreaming,
+                        )
+                    }
+                }
+            }
+
+            if (isUser) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(Color.Gray),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("U", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
             }
         }
 
-        if (isUser) {
-            Spacer(modifier = Modifier.width(8.dp))
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-                    .background(Color.Gray),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("U", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            }
+        // Timestamp below bubble, aligned with the bubble
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 12.dp)
+                .then(
+                    if (isUser) Modifier.padding(end = 40.dp)
+                    else Modifier.padding(start = 40.dp)
+                ),
+            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        ) {
+            TimestampLabel(message.timestamp)
         }
     }
 }

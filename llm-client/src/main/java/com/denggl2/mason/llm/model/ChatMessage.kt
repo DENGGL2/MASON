@@ -10,6 +10,7 @@ data class ChatMessage(
     val tool_calls: List<ToolCall>? = null,
     val tool_call_id: String? = null,
     val name: String? = null,
+    val timestamp: Long? = null,
 )
 
 @Serializable
