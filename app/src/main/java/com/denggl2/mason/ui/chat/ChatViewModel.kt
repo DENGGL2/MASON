@@ -1,6 +1,8 @@
 package com.denggl2.mason.ui.chat
 
 import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.denggl2.mason.llm.ChatClient
 import com.denggl2.mason.llm.ChatResponse
 import com.denggl2.mason.llm.model.ChatMessage
@@ -8,8 +10,6 @@ import com.denggl2.mason.sync.SyncManager
 import com.denggl2.mason.sync.data.entity.Message
 import com.denggl2.mason.tool.ToolExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,7 +33,7 @@ class ChatViewModel @Inject constructor(
     private val chatClient: ChatClient,
     private val toolExecutor: ToolExecutor,
     private val syncManager: SyncManager,
-) : CoroutineScope by CoroutineScope(Dispatchers.Main) {
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -48,7 +48,7 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun loadHistory(convId: Long) {
-        launch {
+        viewModelScope.launch {
             // Load title
             syncManager.getConversationTitle(convId)?.let { title ->
                 _uiState.value = _uiState.value.copy(conversationTitle = title)
@@ -72,7 +72,7 @@ class ChatViewModel @Inject constructor(
     fun updateConversationTitle(newTitle: String) {
         _uiState.value = _uiState.value.copy(conversationTitle = newTitle)
         currentConversationId?.let { convId ->
-            launch {
+            viewModelScope.launch {
                 syncManager.updateConversationTitle(convId, newTitle)
             }
         }
@@ -88,7 +88,7 @@ class ChatViewModel @Inject constructor(
             streamingContent = "",
         )
 
-        launch {
+        viewModelScope.launch {
             // Ensure a conversation exists and save user message
             if (currentConversationId == null) {
                 val title = content.take(20)

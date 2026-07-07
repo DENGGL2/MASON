@@ -8,6 +8,7 @@ composeBom = "2024.09.00"
 activityCompose = "1.9.2"
 navigationCompose = "2.8.0"
 lifecycleRuntime = "2.8.5"
+lifecycleViewmodel = "2.8.5"
 coreKtx = "1.13.1"
 okhttp = "4.12.0"
 kotlinxSerialization = "1.7.1"
@@ -20,6 +21,8 @@ room = "2.6.1"
 # AndroidX Core
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycleRuntime" }
+androidx-lifecycle-viewmodel-ktx = { module = "androidx.lifecycle:lifecycle-viewmodel-ktx", version.ref = "lifecycleViewmodel" }
+androidx-lifecycle-viewmodel-savedstate = { module = "androidx.lifecycle:lifecycle-viewmodel-savedstate", version.ref = "lifecycleViewmodel" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
 androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
 
