@@ -13,6 +13,7 @@ okhttp = "4.12.0"
 kotlinxSerialization = "1.7.1"
 kotlinxCoroutines = "1.9.0"
 hiltExtCompiler = "1.2.0"
+datastorePreferences = "1.1.1"
 
 [libraries]
 # AndroidX Core
@@ -42,6 +43,9 @@ okhttp-logging = { module = "com.squareup.okhttp3:logging-interceptor", version.
 # Serialization
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
+
+# DataStore
+datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferences" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

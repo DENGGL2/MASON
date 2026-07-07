@@ -4,6 +4,7 @@ import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.llm.model.ChatRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -14,9 +15,16 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
+interface ApiConfigProvider {
+    suspend fun getApiUrl(): String
+    suspend fun getApiKey(): String
+    suspend fun getModel(): String
+}
+
 @Singleton
 class ChatClient @Inject constructor(
     private val streamProcessor: StreamProcessor,
+    private val configProvider: ApiConfigProvider,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -25,12 +33,15 @@ class ChatClient @Inject constructor(
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
-    // Change this to your LLM API endpoint
-    private val apiUrl = "https://api.deepseek.com/v1/chat/completions"
-    private val apiKey = "sk-your-api-key"
-    private val model = "deepseek-chat"
-
     fun chat(messages: List<ChatMessage>): Flow<String> = kotlinx.coroutines.flow.flow {
+        val apiUrl = configProvider.getApiUrl()
+        val apiKey = configProvider.getApiKey()
+        val model = configProvider.getModel()
+
+        if (apiKey.isBlank()) {
+            throw IllegalStateException("请先在设置中配置 API Key")
+        }
+
         val systemPrompt = ChatMessage(
             role = "system",
             content = "你是 Mason，一个智能 Android 系统助手。"
