@@ -1,8 +1,10 @@
 package com.denggl2.mason.di
 
 import com.denggl2.mason.tool.AppLauncherTool
+import com.denggl2.mason.tool.AudioRecordTool
 import com.denggl2.mason.tool.BatteryTool
 import com.denggl2.mason.tool.BluetoothTool
+import com.denggl2.mason.tool.CameraTool
 import com.denggl2.mason.tool.ClipboardTool
 import com.denggl2.mason.tool.CpuTool
 import com.denggl2.mason.tool.DeviceInfoTool
@@ -17,6 +19,7 @@ import com.denggl2.mason.tool.HttpRequestTool
 import com.denggl2.mason.tool.MemoryTool
 import com.denggl2.mason.tool.NetworkInfoTool
 import com.denggl2.mason.tool.NotificationTool
+import com.denggl2.mason.tool.ScreenshotTool
 import com.denggl2.mason.tool.SensorTool
 import com.denggl2.mason.tool.ShellTool
 import com.denggl2.mason.tool.SystemSettingTool
@@ -56,6 +59,9 @@ object ToolModule {
         fileWriteTool: FileWriteTool,
         fileListTool: FileListTool,
         fileDeleteTool: FileDeleteTool,
+        screenshotTool: ScreenshotTool,
+        audioRecordTool: AudioRecordTool,
+        cameraTool: CameraTool,
     ): ToolRegistry {
         return ToolRegistry().apply {
             registerAll(setOf(
@@ -80,6 +86,9 @@ object ToolModule {
                 fileWriteTool,
                 fileListTool,
                 fileDeleteTool,
+                screenshotTool,
+                audioRecordTool,
+                cameraTool,
             ))
         }
     }
