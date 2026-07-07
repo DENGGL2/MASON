@@ -1,12 +1,17 @@
 package com.denggl2.mason.di
 
+import com.denggl2.mason.tool.AppLauncherTool
 import com.denggl2.mason.tool.BatteryTool
 import com.denggl2.mason.tool.BluetoothTool
+import com.denggl2.mason.tool.ClipboardTool
 import com.denggl2.mason.tool.CpuTool
 import com.denggl2.mason.tool.DeviceInfoTool
 import com.denggl2.mason.tool.GpuTool
 import com.denggl2.mason.tool.MemoryTool
+import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.tool.SensorTool
+import com.denggl2.mason.tool.ShellTool
+import com.denggl2.mason.tool.SystemSettingTool
 import com.denggl2.mason.tool.ToolRegistry
 import com.denggl2.mason.tool.WifiTool
 import dagger.Module
@@ -30,6 +35,11 @@ object ToolModule {
         bluetoothTool: BluetoothTool,
         wifiTool: WifiTool,
         deviceInfoTool: DeviceInfoTool,
+        appLauncherTool: AppLauncherTool,
+        clipboardTool: ClipboardTool,
+        notificationTool: NotificationTool,
+        systemSettingTool: SystemSettingTool,
+        shellTool: ShellTool,
     ): ToolRegistry {
         return ToolRegistry().apply {
             registerAll(setOf(
@@ -41,6 +51,11 @@ object ToolModule {
                 sensorTool,
                 bluetoothTool,
                 wifiTool,
+                appLauncherTool,
+                clipboardTool,
+                notificationTool,
+                systemSettingTool,
+                shellTool,
             ))
         }
     }
