@@ -7,6 +7,7 @@ plugins {
 
 android {
     namespace = "com.denggl2.mason.llm"
+    compileSdk = 35
 }
 
 dependencies {

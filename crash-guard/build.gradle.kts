@@ -6,6 +6,7 @@ plugins {
 
 android {
     namespace = "com.denggl2.mason.crashguard"
+    compileSdk = 35
 }
 
 dependencies {
