@@ -82,7 +82,7 @@ class BatteryOptimizationTool @Inject constructor(
             return ToolResult(
                 success = true,
                 data = mapOf(
-                    "status" to "当前 Android 版本 ($Build.VERSION.SDK_INT) 不支持电池优化白名单功能 (需 API 23+)",
+                    "status" to "当前 Android 版本 (${Build.VERSION.SDK_INT}) 不支持电池优化白名单功能 (需 API 23+)",
                 ),
             )
         }

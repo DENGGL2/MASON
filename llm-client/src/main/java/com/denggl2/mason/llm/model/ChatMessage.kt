@@ -14,6 +14,21 @@ data class ChatMessage(
 )
 
 @Serializable
+data class ApiChatMessage(
+    val role: String,
+    val content: String? = null,
+    val tool_calls: List<ToolCall>? = null,
+    val tool_call_id: String? = null,
+)
+
+fun ChatMessage.toApiChatMessage(): ApiChatMessage = ApiChatMessage(
+    role = role,
+    content = content,
+    tool_calls = tool_calls,
+    tool_call_id = tool_call_id,
+)
+
+@Serializable
 data class ToolCall(
     val id: String,
     val type: String = "function",

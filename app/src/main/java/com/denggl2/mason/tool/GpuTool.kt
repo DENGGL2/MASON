@@ -2,6 +2,7 @@ package com.denggl2.mason.tool
 
 import android.app.ActivityManager
 import android.content.Context
+import android.os.Build
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -38,10 +39,17 @@ class GpuTool @Inject constructor(
 
         // 通过 HardwarePropertiesManager (API 24+)
         try {
-            val hpm = context.getSystemService(Context.HARDWARE_PROPERTIES_SERVICE) as? android.os.HardwarePropertiesManager
-            if (hpm != null) {
-                val devices = hpm.deviceTemperatures
-                info["thermal_sensors_count"] = devices.size.toString()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                val hpm = context.getSystemService(Context.HARDWARE_PROPERTIES_SERVICE) as? android.os.HardwarePropertiesManager
+                val temperatures = hpm?.getDeviceTemperatures(
+                    android.os.HardwarePropertiesManager.DEVICE_TEMPERATURE_GPU,
+                    android.os.HardwarePropertiesManager.TEMPERATURE_CURRENT,
+                ) ?: FloatArray(0)
+                info["thermal_sensors_count"] = temperatures.size.toString()
+                val validTemperatures = temperatures.filter { !it.isNaN() }
+                if (validTemperatures.isNotEmpty()) {
+                    info["gpu_temperature_c"] = validTemperatures.joinToString(", ") { "%.1f".format(it) }
+                }
             }
         } catch (_: Exception) {}
 

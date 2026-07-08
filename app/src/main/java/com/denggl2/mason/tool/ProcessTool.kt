@@ -239,7 +239,7 @@ class ProcessTool @Inject constructor(
         return try {
             val pm = context.packageManager
             val pi = pm.getPackageInfo(packageName, 0)
-            val appInfo = pi.applicationInfo
+            val appInfo = pi.applicationInfo ?: return false
             val isSystemFlag = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
             val isUpdatedSystem = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
             val isLowUid = appInfo.uid < 10000

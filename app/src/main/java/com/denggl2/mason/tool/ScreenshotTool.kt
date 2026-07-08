@@ -53,12 +53,12 @@ class ScreenshotTool @Inject constructor(
         val authIntent = mpManager.createScreenCaptureIntent()
 
         // 保存回调，等待 Activity 调用 onAuthResult
-        pendingAuthCallback = AuthCallback { resultCode, data ->
+        pendingAuthCallback = callback@{ resultCode: Int, data: Intent? ->
             pendingAuthCallback = null
             try {
                 if (resultCode != android.app.Activity.RESULT_OK || data == null) {
                     lastError = "用户拒绝了截图授权"
-                    return@AuthCallback
+                    return@callback
                 }
                 val mp = mpManager.getMediaProjection(resultCode, data)
                 activeProjection = mp

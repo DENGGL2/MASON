@@ -164,7 +164,10 @@ class AppManagerTool @Inject constructor(
         try {
             val pm = context.packageManager
             val pi = pm.getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
-            val appInfo = pi.applicationInfo
+            val appInfo = pi.applicationInfo ?: return ToolResult(
+                success = false,
+                error = "Application info is unavailable for $packageName",
+            )
 
             val appName = pm.getApplicationLabel(appInfo).toString()
             val versionName = pi.versionName ?: "未知"
@@ -240,7 +243,7 @@ class AppManagerTool @Inject constructor(
         return try {
             val pm = context.packageManager
             val pi = pm.getPackageInfo(packageName, 0)
-            val appInfo = pi.applicationInfo
+            val appInfo = pi.applicationInfo ?: return false
             val isSystemFlag = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
             val isUpdatedSystem = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
             val isLowUid = appInfo.uid < 10000

@@ -28,6 +28,10 @@ object ApiConfigModule {
             override suspend fun getModel(): String {
                 return store.config.first().model
             }
+
+            override suspend fun getToolsEnabled(): Boolean {
+                return store.config.first().toolsEnabled
+            }
         }
     }
 }

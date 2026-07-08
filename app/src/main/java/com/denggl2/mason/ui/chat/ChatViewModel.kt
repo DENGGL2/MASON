@@ -60,6 +60,7 @@ class ChatViewModel @Inject constructor(
                     ChatMessage(
                         role = msg.role,
                         content = msg.content,
+                        tool_call_id = msg.toolCallId,
                         name = msg.toolCallName,
                         timestamp = msg.timestamp,
                     )
@@ -113,17 +114,17 @@ class ChatViewModel @Inject constructor(
                         val toolMessages = mutableListOf<ChatMessage>()
                         for (call in response.calls) {
                             _uiState.value = _uiState.value.copy(
-                                toolCallStatus = "正在执行 ${call.name} 工具..."
+                                toolCallStatus = "正在执行 ${call.function.name} 工具..."
                             )
 
                             val args = try {
-                                Json.parseToJsonElement(call.arguments)
+                                Json.parseToJsonElement(call.function.arguments)
                                     .jsonObject
                                     .mapValues { it.value.jsonPrimitive.content }
                             } catch (_: Exception) {
                                 emptyMap()
                             }
-                            val result = toolExecutor.execute(call.name, args)
+                            val result = toolExecutor.execute(call.function.name, args)
                             val resultStr = if (result.success) {
                                 result.data.entries.joinToString("\n") { "${it.key}: ${it.value}" }
                             } else {
@@ -132,12 +133,14 @@ class ChatViewModel @Inject constructor(
                             toolMessages.add(ChatMessage(
                                 role = "tool",
                                 content = resultStr,
-                                name = call.name,
+                                tool_call_id = call.id,
+                                name = call.function.name,
                                 timestamp = System.currentTimeMillis(),
                             ))
                         }
+                        val nextMessages = _uiState.value.messages + response.assistantMessage + toolMessages
                         _uiState.value = _uiState.value.copy(
-                            messages = _uiState.value.messages + toolMessages,
+                            messages = nextMessages,
                             toolCallStatus = null,
                         )
 
@@ -148,12 +151,13 @@ class ChatViewModel @Inject constructor(
                                     convId,
                                     role = msg.role,
                                     content = msg.content,
+                                    toolCallId = msg.tool_call_id,
                                     toolCallName = msg.name,
                                 )
                             }
                         }
 
-                        chatClient.streamChat(_uiState.value.messages).collect { streamResponse ->
+                        chatClient.streamChat(nextMessages).collect { streamResponse ->
                             when (streamResponse) {
                                 is ChatResponse.TextChunk -> {
                                     _uiState.value = _uiState.value.copy(
@@ -193,14 +197,15 @@ class ChatViewModel @Inject constructor(
             }
 
             if (_uiState.value.streamingContent.isNotEmpty()) {
-                val assistantMessage = ChatMessage(role = "assistant", content = _uiState.value.streamingContent, timestamp = System.currentTimeMillis())
+                val finalContent = _uiState.value.streamingContent
+                val assistantMessage = ChatMessage(role = "assistant", content = finalContent, timestamp = System.currentTimeMillis())
                 _uiState.value = _uiState.value.copy(
                     messages = _uiState.value.messages + assistantMessage,
                     isStreaming = false,
                     streamingContent = "",
                 )
                 currentConversationId?.let { convId ->
-                    syncManager.saveMessage(convId, role = "assistant", content = _uiState.value.streamingContent)
+                    syncManager.saveMessage(convId, role = "assistant", content = finalContent)
                 }
             } else {
                 _uiState.value = _uiState.value.copy(isStreaming = false, toolCallStatus = null)

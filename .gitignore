@@ -9,5 +9,8 @@
 .cxx
 local.properties
 /app/build
+/crash-guard/build
 /llm-client/build
+/sync/build
+/tool-runtime/build
 /build-logic/build

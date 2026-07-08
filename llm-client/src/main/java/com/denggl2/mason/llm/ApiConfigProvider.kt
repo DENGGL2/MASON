@@ -4,4 +4,5 @@ interface ApiConfigProvider {
     suspend fun getApiUrl(): String
     suspend fun getApiKey(): String
     suspend fun getModel(): String
+    suspend fun getToolsEnabled(): Boolean
 }

@@ -118,7 +118,11 @@ class FileWriteTool @Inject constructor(
                 }
 
                 // 写入文件
-                targetFile.writeText(content, Charsets.UTF_8, append)
+                if (append) {
+                    targetFile.appendText(content, Charsets.UTF_8)
+                } else {
+                    targetFile.writeText(content, Charsets.UTF_8)
+                }
 
                 val bytesWritten = content.toByteArray(Charsets.UTF_8).size
 

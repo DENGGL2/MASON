@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
@@ -33,6 +34,10 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -40,11 +45,13 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,9 +68,11 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.ui.theme.MasonAccent
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
@@ -71,12 +80,40 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val config by viewModel.config.collectAsState()
+    val apiTestState by viewModel.apiTestState.collectAsState()
+    val modelRefreshState by viewModel.modelRefreshState.collectAsState()
     val context = LocalContext.current
 
+    var providerId by remember(config) { mutableStateOf(config.providerId) }
     var url by remember(config) { mutableStateOf(config.apiUrl) }
     var key by remember(config) { mutableStateOf(config.apiKey) }
     var model by remember(config) { mutableStateOf(config.model) }
+    var toolsEnabled by remember(config) { mutableStateOf(config.toolsEnabled) }
     var keyVisible by remember { mutableStateOf(false) }
+    var showProviderMenu by remember { mutableStateOf(false) }
+    var showModelMenu by remember { mutableStateOf(false) }
+
+    val provider = AiProviderCatalog.getProvider(providerId)
+        ?: AiProviderCatalog.defaultProvider
+    val modelOptions = if (provider.id == "openrouter" && modelRefreshState.models.isNotEmpty()) {
+        modelRefreshState.models + provider.modelOptions.filterNot { builtIn ->
+            builtIn.isFree || modelRefreshState.models.any { it.id == builtIn.id }
+        }
+    } else {
+        provider.modelOptions
+    }
+    val selectedModel = modelOptions.firstOrNull { it.id == model }
+        ?: AiProviderCatalog.getModel(provider.id, model)
+
+    LaunchedEffect(providerId, modelRefreshState.models) {
+        if (providerId == "openrouter" && modelRefreshState.models.isNotEmpty()) {
+            val currentStillExists = modelRefreshState.models.any { it.id == model }
+            if (!currentStillExists && selectedModel?.isFree == true) {
+                model = modelRefreshState.models.first().id
+                toolsEnabled = false
+            }
+        }
+    }
 
     var showClearConversationsDialog by remember { mutableStateOf(false) }
     var showClearCrashDialog by remember { mutableStateOf(false) }
@@ -111,9 +148,121 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState()),
         ) {
             // ── Section: API 配置 ──
-            SectionHeader("API 配置")
+            SectionHeader("AI 模型")
 
-            LabeledInput("API 端点 URL", url, "https://api.deepseek.com/v1/chat/completions") {
+            SelectorField(
+                label = "服务商",
+                value = provider.name,
+                description = provider.description,
+                expanded = showProviderMenu,
+                onExpandedChange = { showProviderMenu = it },
+            ) {
+                AiProviderCatalog.providers.forEach { item ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(item.name, color = Color.White)
+                                Text(
+                                    item.description,
+                                    color = Color.Gray,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        },
+                        onClick = {
+                            providerId = item.id
+                            url = item.apiUrl
+                            model = item.defaultModel
+                            toolsEnabled = item.toolsEnabledByDefault
+                            showProviderMenu = false
+                        },
+                    )
+                }
+            }
+
+            if (provider.id == "openrouter") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedButton(
+                        onClick = { viewModel.refreshOpenRouterFreeModels(key) },
+                        enabled = !modelRefreshState.isRefreshing,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        if (modelRefreshState.isRefreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MasonAccent,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = MasonAccent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("刷新免费模型", color = MasonAccent)
+                        }
+                    }
+                }
+
+                modelRefreshState.message?.let { message ->
+                    Text(
+                        text = message,
+                        color = when (modelRefreshState.success) {
+                            true -> MasonAccent
+                            false -> Color(0xFFEF5350)
+                            null -> Color.Gray
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(bottom = 12.dp),
+                    )
+                }
+            }
+
+            if (modelOptions.isNotEmpty()) {
+                SelectorField(
+                    label = "模型预设",
+                    value = selectedModel?.let {
+                        if (it.isFree) "${it.name} · 免费" else it.name
+                    } ?: model.ifBlank { "未选择" },
+                    description = selectedModel?.description ?: "可在下方手动填写模型名",
+                    expanded = showModelMenu,
+                    onExpandedChange = { showModelMenu = it },
+                ) {
+                    modelOptions.forEach { item ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(
+                                        if (item.isFree) "${item.name} · 免费" else item.name,
+                                        color = Color.White,
+                                    )
+                                    Text(
+                                        item.id,
+                                        color = Color.Gray,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            },
+                            onClick = {
+                                model = item.id
+                                toolsEnabled = item.supportsTools
+                                showModelMenu = false
+                            },
+                        )
+                    }
+                }
+            }
+
+            LabeledInput("API Base URL / Endpoint", url, provider.apiUrl) {
                 url = it
             }
 
@@ -133,22 +282,90 @@ fun SettingsScreen(
                 },
             ) { key = it }
 
-            LabeledInput("模型名称", model, "deepseek-chat") { model = it }
+            LabeledInput("模型名称", model, provider.defaultModel.ifBlank { "model-name" }) {
+                model = it
+            }
+
+            SwitchRow(
+                label = "允许调用手机工具",
+                description = "模型支持 function calling 时开启；免费小模型或不兼容中转站可关闭",
+                checked = toolsEnabled,
+                onCheckedChange = { toolsEnabled = it },
+            )
+
+            apiTestState.message?.let { message ->
+                Text(
+                    text = message,
+                    color = when (apiTestState.success) {
+                        true -> MasonAccent
+                        false -> Color(0xFFEF5350)
+                        null -> Color.Gray
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(bottom = 12.dp),
+                )
+            }
 
             Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = {
-                    viewModel.save(ApiConfig(apiUrl = url, apiKey = key, model = model))
-                    Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
-                    onBack()
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MasonAccent),
-                shape = RoundedCornerShape(12.dp),
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("保存", color = Color.Black)
+                OutlinedButton(
+                    onClick = {
+                        viewModel.testApi(
+                            ApiConfig(
+                                providerId = providerId,
+                                apiUrl = url,
+                                apiKey = key,
+                                model = model,
+                                toolsEnabled = toolsEnabled,
+                            )
+                        )
+                    },
+                    enabled = !apiTestState.isTesting,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    if (apiTestState.isTesting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MasonAccent,
+                        )
+                    } else {
+                        Text("测试连接", color = MasonAccent)
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        val pendingConfig = ApiConfig(
+                            providerId = providerId,
+                            apiUrl = url,
+                            apiKey = key,
+                            model = model,
+                            toolsEnabled = toolsEnabled,
+                        )
+                        val validationMessage = viewModel.validateApiConfig(pendingConfig)
+                        if (validationMessage != null) {
+                            Toast.makeText(context, validationMessage, Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        viewModel.save(pendingConfig)
+                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
+                        onBack()
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MasonAccent),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text("保存", color = Color.Black)
+                }
             }
 
             Spacer(Modifier.height(32.dp))
@@ -271,6 +488,77 @@ private fun LabeledInput(
         visualTransformation = visualTransformation,
         trailingIcon = trailingIcon,
     )
+    Spacer(Modifier.height(16.dp))
+}
+
+@Composable
+private fun SelectorField(
+    label: String,
+    value: String,
+    description: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    menuContent: @Composable () -> Unit,
+) {
+    Text(label, color = Color.Gray, style = MaterialTheme.typography.labelMedium)
+    Spacer(Modifier.height(6.dp))
+    Box {
+        OutlinedButton(
+            onClick = { onExpandedChange(true) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.Start,
+            ) {
+                Text(value, color = Color.White)
+                Text(
+                    description,
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+            modifier = Modifier.background(Color(0xFF1E1E1E)),
+        ) {
+            menuContent()
+        }
+    }
+    Spacer(Modifier.height(16.dp))
+}
+
+@Composable
+private fun SwitchRow(
+    label: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF1A1A1A))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, color = Color.White, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                description,
+                color = Color.Gray.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
+    }
     Spacer(Modifier.height(16.dp))
 }
 

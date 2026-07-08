@@ -82,8 +82,13 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
+    val visibleMessages = uiState.messages.filterNot { message ->
+        message.role == "assistant" &&
+            message.content.isNullOrBlank() &&
+            !message.tool_calls.isNullOrEmpty()
+    }
 
-    val hasMessages = uiState.messages.isNotEmpty() ||
+    val hasMessages = visibleMessages.isNotEmpty() ||
             uiState.streamingContent.isNotEmpty() ||
             uiState.toolCallStatus != null
 
@@ -178,7 +183,7 @@ fun ChatScreen(
                         .weight(1f)
                         .fillMaxWidth(),
                 ) {
-                    items(uiState.messages) { message ->
+                    items(visibleMessages) { message ->
                         MessageBubble(message)
                     }
 
