@@ -28,9 +28,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -139,7 +139,7 @@ fun ChatScreen(
                 navigationIcon = {
                     if (onBack != null) {
                         IconButton(onClick = onBack) {
-                            Icon(Icons.Default.ArrowBack, "返回", tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White)
                         }
                     }
                 },
@@ -160,22 +160,12 @@ fun ChatScreen(
                 .padding(padding),
         ) {
             if (!hasMessages) {
-                // Empty state guidance
-                Box(
+                EmptyChatState(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = "Mason 可以帮你查询设备信息、管理系统设置、发送消息等。\n试试说「我的手机配置怎么样？」",
-                        color = Color.Gray,
-                        fontSize = 15.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 40.dp),
-                        lineHeight = 22.sp,
-                    )
-                }
+                    onPromptSelected = { inputText = it },
+                )
             } else {
                 LazyColumn(
                     state = listState,
@@ -222,6 +212,88 @@ fun ChatScreen(
                 enabled = !uiState.isStreaming,
             )
         }
+    }
+}
+
+@Composable
+private fun EmptyChatState(
+    modifier: Modifier = Modifier,
+    onPromptSelected: (String) -> Unit,
+) {
+    val prompts = listOf(
+        "我的手机配置怎么样？",
+        "看看当前电量和网络",
+        "帮我检查存储空间",
+    )
+
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(CircleShape)
+                    .background(MasonAccent.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "M",
+                    color = MasonAccent,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = "Mason",
+                color = Color.White,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "想先问什么？",
+                color = Color.Gray,
+                fontSize = 14.sp,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(22.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                prompts.forEach { prompt ->
+                    PromptChip(
+                        text = prompt,
+                        onClick = { onPromptSelected(prompt) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PromptChip(
+    text: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF1A1A1A))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            color = Color.White.copy(alpha = 0.9f),
+            fontSize = 14.sp,
+        )
     }
 }
 
@@ -448,7 +520,8 @@ private fun InputBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .background(Color(0xFF151515))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.Bottom,
     ) {
         OutlinedTextField(
@@ -467,14 +540,21 @@ private fun InputBar(
             maxLines = 4,
         )
 
+        Spacer(Modifier.width(8.dp))
         IconButton(
             onClick = onSend,
             enabled = enabled && text.isNotBlank(),
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(
+                    if (enabled && text.isNotBlank()) MasonAccent else Color(0xFF252525)
+                ),
         ) {
             Icon(
-                imageVector = Icons.Default.Send,
+                imageVector = Icons.AutoMirrored.Filled.Send,
                 contentDescription = "发送",
-                tint = if (text.isNotBlank() && enabled) MasonAccent else Color.Gray,
+                tint = if (text.isNotBlank() && enabled) Color.Black else Color.Gray,
             )
         }
     }

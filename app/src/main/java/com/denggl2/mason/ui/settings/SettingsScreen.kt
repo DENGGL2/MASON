@@ -24,10 +24,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
@@ -66,6 +64,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.denggl2.mason.data.AiProviderCatalog
@@ -192,7 +191,7 @@ fun SettingsScreen(
                         onClick = { viewModel.refreshOpenRouterFreeModels(key) },
                         enabled = !modelRefreshState.isRefreshing,
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(8.dp),
                     ) {
                         if (modelRefreshState.isRefreshing) {
                             CircularProgressIndicator(
@@ -327,7 +326,7 @@ fun SettingsScreen(
                     modifier = Modifier
                         .weight(1f)
                         .height(48.dp),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(8.dp),
                 ) {
                     if (apiTestState.isTesting) {
                         CircularProgressIndicator(
@@ -362,10 +361,10 @@ fun SettingsScreen(
                         .weight(1f)
                         .height(48.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MasonAccent),
-                    shape = RoundedCornerShape(12.dp),
-                ) {
-                    Text("保存", color = Color.Black)
-                }
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text("保存", color = Color.Black)
+            }
             }
 
             Spacer(Modifier.height(32.dp))
@@ -483,7 +482,7 @@ private fun LabeledInput(
         modifier = Modifier.fillMaxWidth(),
         placeholder = { Text(placeholder) },
         colors = darkFieldColors(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(8.dp),
         singleLine = true,
         visualTransformation = visualTransformation,
         trailingIcon = trailingIcon,
@@ -506,17 +505,24 @@ private fun SelectorField(
         OutlinedButton(
             onClick = { onExpandedChange(true) },
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(8.dp),
         ) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.Start,
             ) {
-                Text(value, color = Color.White)
+                Text(
+                    value,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Text(
                     description,
                     color = Color.Gray,
                     style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -541,7 +547,7 @@ private fun SwitchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF1A1A1A))
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -575,7 +581,7 @@ private fun DataActionButton(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF1A1A1A))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
@@ -605,7 +611,7 @@ private fun AboutRow(label: String, value: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF1A1A1A))
             .padding(horizontal = 16.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
