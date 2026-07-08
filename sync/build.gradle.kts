@@ -9,6 +9,11 @@ plugins {
 android {
     namespace = "com.denggl2.mason.sync"
     compileSdk = 35
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
 }
 
 dependencies {
