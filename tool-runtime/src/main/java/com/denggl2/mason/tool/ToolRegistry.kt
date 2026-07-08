@@ -1,6 +1,7 @@
 package com.denggl2.mason.tool
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -34,8 +35,8 @@ class ToolRegistry @Inject constructor() {
                     putJsonObject("properties") {
                         tool.parameters.forEach { (key, param) ->
                             putJsonObject(key) {
-                                put("type", param.type)
-                                put("description", param.description)
+                                put("type", JsonPrimitive(param.type))
+                                put("description", JsonPrimitive(param.description))
                                 param.enum?.let { values ->
                                     putJsonArray("enum") {
                                         values.forEach { add(it) }
@@ -47,7 +48,7 @@ class ToolRegistry @Inject constructor() {
                     val required = tool.parameters.filter { it.value.required }.keys
                     if (required.isNotEmpty()) {
                         putJsonArray("required") {
-                            required.forEach { add(it) }
+                            required.forEach { add(JsonPrimitive(it)) }
                         }
                     }
                 },
