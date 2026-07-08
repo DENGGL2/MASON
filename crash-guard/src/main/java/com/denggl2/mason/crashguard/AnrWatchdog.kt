@@ -24,13 +24,13 @@ internal class AnrWatchdog(
     private var isRunning = false
     private var lastTickProcessed = 0L
 
-    private val tickRunnable = Runnable {
+    private val tickRunnable: Runnable = Runnable {
         tickCount++
         lastTickProcessed = tickCount
         mainHandler.postDelayed(monitorRunnable, TICK_INTERVAL_MS)
     }
 
-    private val monitorRunnable = Runnable {
+    private val monitorRunnable: Runnable = Runnable {
         val expectedTick = tickCount + 1
         mainHandler.post(tickRunnable)
 
