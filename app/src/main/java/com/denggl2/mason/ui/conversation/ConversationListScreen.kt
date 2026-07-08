@@ -19,14 +19,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -48,6 +52,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.denggl2.mason.data.AiProviderCatalog
+import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.ui.theme.MasonAccent
 import com.denggl2.mason.ui.theme.MasonDarkSurface
 import java.text.SimpleDateFormat
@@ -62,13 +68,34 @@ fun ConversationListScreen(
     viewModel: ConversationListViewModel = hiltViewModel(),
 ) {
     val conversations by viewModel.conversations.collectAsState()
+    val apiConfig by viewModel.apiConfig.collectAsState()
     var showDeleteDialog by remember { mutableStateOf<Long?>(null) }
+
+    fun createConversation() {
+        viewModel.createConversation { id -> onConversationClick(id) }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("Mason", color = Color.White) },
+                title = {
+                    Column {
+                        Text("Mason", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            modelLabel(apiConfig),
+                            color = Color.Gray,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onNavigateToSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "设置", tint = Color.White)
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color(0xFF1A1A1A),
                 ),
@@ -76,7 +103,7 @@ fun ConversationListScreen(
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { viewModel.createConversation { id -> onConversationClick(id) } },
+                onClick = { createConversation() },
                 containerColor = MasonAccent,
             ) {
                 Icon(Icons.Default.Add, contentDescription = "新建对话", tint = Color.Black)
@@ -90,26 +117,7 @@ fun ConversationListScreen(
                     .padding(padding),
                 contentAlignment = Alignment.Center,
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Default.Chat,
-                        contentDescription = null,
-                        tint = Color.Gray.copy(alpha = 0.4f),
-                        modifier = Modifier.size(64.dp),
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        "暂无对话",
-                        color = Color.Gray,
-                        fontSize = 16.sp,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "点击右下角按钮开始新对话",
-                        color = Color.Gray.copy(alpha = 0.6f),
-                        fontSize = 13.sp,
-                    )
-                }
+                EmptyConversationState(onCreate = { createConversation() })
             }
         } else {
             LazyColumn(
@@ -119,6 +127,13 @@ fun ConversationListScreen(
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                item {
+                    ConversationListHeader(
+                        conversationCount = conversations.size,
+                        apiConfig = apiConfig,
+                    )
+                }
+
                 items(conversations, key = { it.conversation.id }) { item ->
                     ConversationItem(
                         item = item,
@@ -153,6 +168,108 @@ fun ConversationListScreen(
     }
 }
 
+@Composable
+private fun EmptyConversationState(onCreate: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.padding(horizontal = 32.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(MasonAccent.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.Chat,
+                contentDescription = null,
+                tint = MasonAccent,
+                modifier = Modifier.size(34.dp),
+            )
+        }
+        Spacer(Modifier.height(18.dp))
+        Text(
+            "准备开始",
+            color = Color.White,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Mason 会把对话、工具结果和模型配置收在一起。",
+            color = Color.Gray,
+            fontSize = 13.sp,
+            lineHeight = 19.sp,
+            modifier = Modifier.fillMaxWidth(),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(20.dp))
+        Button(
+            onClick = onCreate,
+            colors = ButtonDefaults.buttonColors(containerColor = MasonAccent),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
+            Spacer(Modifier.width(8.dp))
+            Text("新建对话", color = Color.Black)
+        }
+    }
+}
+
+@Composable
+private fun ConversationListHeader(
+    conversationCount: Int,
+    apiConfig: ApiConfig,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "$conversationCount 个对话",
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                modelLabel(apiConfig),
+                color = Color.Gray,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (apiConfig.apiKey.isBlank()) Color(0xFF2A2020) else Color(0xFF1D2A24))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+        ) {
+            Text(
+                if (apiConfig.apiKey.isBlank()) "未配置" else "已配置",
+                color = if (apiConfig.apiKey.isBlank()) Color(0xFFFF8A80) else MasonAccent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+}
+
+private fun modelLabel(config: ApiConfig): String {
+    val provider = AiProviderCatalog.getProvider(config.providerId)
+    val providerName = provider?.name ?: "自定义"
+    val modelName = provider?.modelOptions?.firstOrNull { it.id == config.model }?.name
+        ?: config.model.ifBlank { "未选择模型" }
+    return "$providerName · $modelName"
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationItem(
@@ -168,9 +285,9 @@ private fun ConversationItem(
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
-            ),
+        ),
         colors = CardDefaults.cardColors(containerColor = MasonDarkSurface),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(8.dp),
     ) {
         Row(
             modifier = Modifier

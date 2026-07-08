@@ -2,12 +2,16 @@ package com.denggl2.mason.ui.conversation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.denggl2.mason.data.ApiConfig
+import com.denggl2.mason.data.ApiConfigDataStore
 import com.denggl2.mason.sync.SyncManager
 import com.denggl2.mason.sync.data.entity.Conversation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -19,10 +23,13 @@ data class ConversationListItem(
 @HiltViewModel
 class ConversationListViewModel @Inject constructor(
     private val syncManager: SyncManager,
+    configDataStore: ApiConfigDataStore,
 ) : ViewModel() {
 
     private val _conversations = MutableStateFlow<List<ConversationListItem>>(emptyList())
     val conversations: StateFlow<List<ConversationListItem>> = _conversations.asStateFlow()
+    val apiConfig: StateFlow<ApiConfig> = configDataStore.config
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ApiConfig())
 
     init {
         viewModelScope.launch {
