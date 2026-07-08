@@ -31,7 +31,7 @@ class ToolRegistry @Inject constructor() {
                 name = tool.name,
                 description = tool.description,
                 parameters = buildJsonObject {
-                    put("type", "object")
+                    put("type", JsonPrimitive("object"))
                     putJsonObject("properties") {
                         tool.parameters.forEach { (key, param) ->
                             putJsonObject(key) {
@@ -39,7 +39,7 @@ class ToolRegistry @Inject constructor() {
                                 put("description", JsonPrimitive(param.description))
                                 param.enum?.let { values ->
                                     putJsonArray("enum") {
-                                        values.forEach { add(it) }
+                                        values.forEach { add(JsonPrimitive(it)) }
                                     }
                                 }
                             }
