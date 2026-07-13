@@ -47,6 +47,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.datastore.preferences)
     implementation(libs.okhttp)
+    runtimeOnly(libs.litertlm.android)
 
     implementation(project(":llm-client"))
     implementation(project(":tool-runtime"))

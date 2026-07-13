@@ -1,27 +1,37 @@
 package com.denggl2.mason.ui.conversation
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Chat
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -54,211 +64,274 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.ApiConfig
-import com.denggl2.mason.ui.theme.MasonAccent
-import com.denggl2.mason.ui.theme.MasonDarkSurface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ConversationListScreen(
     onConversationClick: (Long) -> Unit,
     onNavigateToSettings: () -> Unit,
+    onBack: (() -> Unit)? = null,
+    onNewChat: () -> Unit = {},
     viewModel: ConversationListViewModel = hiltViewModel(),
 ) {
     val conversations by viewModel.conversations.collectAsState()
     val apiConfig by viewModel.apiConfig.collectAsState()
     var showDeleteDialog by remember { mutableStateOf<Long?>(null) }
 
-    fun createConversation() {
-        viewModel.createConversation { id -> onConversationClick(id) }
-    }
-
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.safeDrawing.only(
+            WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal,
+        ),
         topBar = {
             TopAppBar(
                 title = {
                     Column {
-                        Text("Mason", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "历史记录",
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                         Text(
                             modelLabel(apiConfig),
-                            color = Color.Gray,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 12.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
                 },
-                actions = {
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "设置", tint = Color.White)
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                Icons.AutoMirrored.Outlined.ArrowBack,
+                                contentDescription = "返回",
+                                tint = MaterialTheme.colorScheme.onBackground,
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF1A1A1A),
+                    containerColor = MaterialTheme.colorScheme.background,
+                ),
+                windowInsets = WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
                 ),
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { createConversation() },
-                containerColor = MasonAccent,
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "新建对话", tint = Color.Black)
+            if (conversations.isNotEmpty()) {
+                FloatingActionButton(
+                    onClick = onNewChat,
+                    containerColor = MaterialTheme.colorScheme.primary,
+                ) {
+                    Icon(
+                        Icons.Outlined.Add,
+                        contentDescription = "新建对话",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                    )
+                }
             }
         },
     ) { padding ->
-        if (conversations.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center,
-            ) {
-                EmptyConversationState(onCreate = { createConversation() })
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
+                ApiStatusRow(
+                    apiConfig = apiConfig,
+                    onClick = onNavigateToSettings,
+                )
             }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+
+            if (conversations.isEmpty()) {
                 item {
-                    ConversationListHeader(
-                        conversationCount = conversations.size,
-                        apiConfig = apiConfig,
-                    )
+                    EmptyConversationState(onCreate = onNewChat)
+                }
+            } else {
+                item {
+                    ConversationListHeader(conversationCount = conversations.size)
                 }
 
-                items(conversations, key = { it.conversation.id }) { item ->
-                    ConversationItem(
-                        item = item,
-                        onClick = { onConversationClick(item.conversation.id) },
-                        onLongClick = { showDeleteDialog = item.conversation.id },
-                    )
+                itemsIndexed(conversations, key = { _, item -> item.conversation.id }) { _, item ->
+                    Box(modifier = Modifier.animateItem()) {
+                        ConversationItem(
+                            item = item,
+                            onClick = { onConversationClick(item.conversation.id) },
+                            onLongClick = { showDeleteDialog = item.conversation.id },
+                        )
+                    }
                 }
             }
         }
 
-        if (showDeleteDialog != null) {
+        showDeleteDialog?.let { conversationId ->
             AlertDialog(
                 onDismissRequest = { showDeleteDialog = null },
-                title = { Text("删除对话", color = Color.White) },
-                text = { Text("确定要删除此对话吗？所有消息将被永久删除。", color = Color.Gray) },
-                containerColor = MasonDarkSurface,
+                title = { Text("删除对话") },
+                text = { Text("确定删除这条对话吗？所有消息都会被删除。") },
+                containerColor = MaterialTheme.colorScheme.surface,
                 confirmButton = {
                     TextButton(onClick = {
-                        showDeleteDialog?.let { viewModel.deleteConversation(it) }
+                        viewModel.deleteConversation(conversationId)
                         showDeleteDialog = null
                     }) {
-                        Text("删除", color = Color(0xFFEF5350))
+                        Text("删除", color = MaterialTheme.colorScheme.error)
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showDeleteDialog = null }) {
-                        Text("取消", color = Color.Gray)
+                        Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun ApiStatusRow(
+    apiConfig: ApiConfig,
+    onClick: () -> Unit,
+) {
+    val requiresApiKey = AiProviderCatalog.requiresApiKey(apiConfig)
+    val configured = !requiresApiKey || apiConfig.apiKey.isNotBlank()
+    val statusColor = if (configured) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f))
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
+                RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(statusColor.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = if (configured) Icons.Outlined.CheckCircle else Icons.Outlined.Warning,
+                contentDescription = null,
+                tint = statusColor,
+                modifier = Modifier.size(19.dp),
+            )
+        }
+
+        Spacer(Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = if (configured) "AI 服务可用" else "需要配置 API Key",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = modelLabel(apiConfig),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        Text(
+            text = "设置",
+            color = MaterialTheme.colorScheme.primary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 
 @Composable
 private fun EmptyConversationState(onCreate: () -> Unit) {
     Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 64.dp, start = 20.dp, end = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.padding(horizontal = 32.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(72.dp)
+                .size(52.dp)
                 .clip(CircleShape)
-                .background(MasonAccent.copy(alpha = 0.16f)),
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                Icons.AutoMirrored.Filled.Chat,
+                Icons.AutoMirrored.Outlined.Chat,
                 contentDescription = null,
-                tint = MasonAccent,
-                modifier = Modifier.size(34.dp),
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(26.dp),
             )
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(16.dp))
         Text(
-            "准备开始",
-            color = Color.White,
-            fontSize = 20.sp,
+            "还没有对话",
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = 18.sp,
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Mason 会把对话、工具结果和模型配置收在一起。",
-            color = Color.Gray,
+            "回到 Mason，开始一条新的对话。",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 13.sp,
             lineHeight = 19.sp,
-            modifier = Modifier.fillMaxWidth(),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
         )
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(18.dp))
         Button(
             onClick = onCreate,
-            colors = ButtonDefaults.buttonColors(containerColor = MasonAccent),
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
             shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.fillMaxWidth(),
         ) {
-            Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
+            Icon(Icons.Outlined.Add, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
             Spacer(Modifier.width(8.dp))
-            Text("新建对话", color = Color.Black)
+            Text("新建对话", color = MaterialTheme.colorScheme.onPrimary)
         }
     }
 }
 
 @Composable
-private fun ConversationListHeader(
-    conversationCount: Int,
-    apiConfig: ApiConfig,
-) {
+private fun ConversationListHeader(conversationCount: Int) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 4.dp),
+            .padding(top = 8.dp, bottom = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                "$conversationCount 个对话",
-                color = Color.White,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-            )
-            Text(
-                modelLabel(apiConfig),
-                color = Color.Gray,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(if (apiConfig.apiKey.isBlank()) Color(0xFF2A2020) else Color(0xFF1D2A24))
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-        ) {
-            Text(
-                if (apiConfig.apiKey.isBlank()) "未配置" else "已配置",
-                color = if (apiConfig.apiKey.isBlank()) Color(0xFFFF8A80) else MasonAccent,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-            )
-        }
+        Text(
+            "对话",
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "$conversationCount 条",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+        )
     }
 }
 
@@ -285,28 +358,29 @@ private fun ConversationItem(
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
-        ),
-        colors = CardDefaults.cardColors(containerColor = MasonDarkSurface),
+            ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f)),
         shape = RoundedCornerShape(8.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(38.dp)
                     .clip(CircleShape)
-                    .background(MasonAccent.copy(alpha = 0.15f)),
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     item.conversation.title.take(1).uppercase(),
-                    color = MasonAccent,
+                    color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
+                    fontSize = 16.sp,
                 )
             }
 
@@ -320,7 +394,7 @@ private fun ConversationItem(
                 ) {
                     Text(
                         item.conversation.title,
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Medium,
                         fontSize = 15.sp,
                         maxLines = 1,
@@ -330,27 +404,25 @@ private fun ConversationItem(
                     Spacer(Modifier.width(8.dp))
                     Text(
                         dateFormat.format(Date(item.conversation.updatedAt)),
-                        color = Color.Gray.copy(alpha = 0.6f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                     )
                 }
-                Spacer(Modifier.height(4.dp))
-                if (item.lastMessage != null) {
-                    Text(
-                        item.lastMessage,
-                        color = Color.Gray.copy(alpha = 0.5f),
-                        fontSize = 13.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                } else {
-                    Text(
-                        "新对话",
-                        color = Color.Gray.copy(alpha = 0.35f),
-                        fontSize = 13.sp,
-                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                    )
-                }
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    item.lastMessage ?: "新对话",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = if (item.lastMessage == null) 0.55f else 1f,
+                    ),
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontStyle = if (item.lastMessage == null) {
+                        androidx.compose.ui.text.font.FontStyle.Italic
+                    } else {
+                        androidx.compose.ui.text.font.FontStyle.Normal
+                    },
+                )
             }
         }
     }

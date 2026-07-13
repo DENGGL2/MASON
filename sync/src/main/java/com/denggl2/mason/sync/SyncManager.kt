@@ -12,6 +12,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -112,11 +115,65 @@ class SyncManager @Inject constructor(
         return messageDao.getLastMessage(conversationId)
     }
 
+    suspend fun getConversationsSnapshotCount(): Int =
+        conversationDao.getAllList().size
+
+    suspend fun getMessagesSnapshotCount(): Int =
+        messageDao.getAll().size
+
     /**
      * Export all conversations and messages as a JSON string.
      */
     suspend fun exportAll(): String {
+        return json.encodeToString(exportPayload())
+    }
+
+    suspend fun exportMarkdown(conversationIds: Set<Long>? = null): String {
+        val payload = exportPayload(conversationIds)
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        val jsonBlock = json.encodeToString(payload)
+
+        return buildString {
+            appendLine("# Mason 对话备份")
+            appendLine()
+            appendLine("- 导出时间：${dateFormat.format(Date(payload.exportedAt))}")
+            appendLine("- 对话数量：${payload.conversations.size}")
+            appendLine()
+
+            payload.conversations.forEachIndexed { index, entry ->
+                appendLine("## ${index + 1}. ${entry.conversation.title}")
+                appendLine()
+                appendLine("- 创建：${dateFormat.format(Date(entry.conversation.createdAt))}")
+                appendLine("- 更新：${dateFormat.format(Date(entry.conversation.updatedAt))}")
+                appendLine()
+
+                entry.messages.forEach { message ->
+                    val role = when (message.role) {
+                        "user" -> "用户"
+                        "assistant" -> "Mason"
+                        "tool" -> "工具"
+                        else -> message.role
+                    }
+                    appendLine("### $role · ${dateFormat.format(Date(message.timestamp))}")
+                    appendLine()
+                    appendLine(message.content?.ifBlank { "(空内容)" } ?: "(空内容)")
+                    appendLine()
+                }
+            }
+
+            appendLine("---")
+            appendLine()
+            appendLine("以下备份块用于 Mason 导入，请不要手动修改。")
+            appendLine()
+            appendLine("```mason-backup-json")
+            appendLine(jsonBlock)
+            appendLine("```")
+        }
+    }
+
+    private suspend fun exportPayload(conversationIds: Set<Long>? = null): ExportPayload {
         val conversations = conversationDao.getAllList()
+            .filter { conversationIds == null || it.id in conversationIds }
         val exportList = conversations.map { conv ->
             val messages = messageDao.getByConversationList(conv.id).map { msg ->
                 MessageData(
@@ -138,16 +195,27 @@ class SyncManager @Inject constructor(
                 messages = messages,
             )
         }
-        return json.encodeToString(ExportPayload(conversations = exportList))
+        return ExportPayload(conversations = exportList)
     }
 
     /**
      * Export all conversations and save to a file.
      */
-    suspend fun exportToFile(outputPath: java.io.File): Boolean {
+    suspend fun exportMarkdownToFile(outputPath: java.io.File): Boolean {
         return try {
-            val jsonStr = exportAll()
-            outputPath.writeText(jsonStr)
+            outputPath.writeText(exportMarkdown())
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    suspend fun exportMarkdownToFile(
+        outputPath: java.io.File,
+        conversationIds: Set<Long>,
+    ): Boolean {
+        return try {
+            outputPath.writeText(exportMarkdown(conversationIds))
             true
         } catch (e: Exception) {
             false
@@ -160,6 +228,10 @@ class SyncManager @Inject constructor(
     suspend fun clearAll() {
         messageDao.deleteAll()
         conversationDao.deleteAll()
+    }
+
+    suspend fun deleteConversations(ids: Set<Long>) {
+        ids.forEach { conversationDao.deleteById(it) }
     }
 
     /**
@@ -195,6 +267,15 @@ class SyncManager @Inject constructor(
         }
     }
 
+    suspend fun importFromMarkdown(markdown: String): Int {
+        val blockRegex = Regex(
+            pattern = "```mason-backup-json\\s*([\\s\\S]*?)\\s*```",
+            options = setOf(RegexOption.IGNORE_CASE),
+        )
+        val jsonBlock = blockRegex.find(markdown)?.groupValues?.getOrNull(1)
+        return importFromJson(jsonBlock ?: markdown)
+    }
+
     /**
      * Import conversations from a file URI.
      */
@@ -202,7 +283,7 @@ class SyncManager @Inject constructor(
         val inputStream = context.contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("Cannot open input stream")
         val reader = BufferedReader(InputStreamReader(inputStream))
-        val jsonStr = reader.use { it.readText() }
-        return importFromJson(jsonStr)
+        val content = reader.use { it.readText() }
+        return importFromMarkdown(content)
     }
 }

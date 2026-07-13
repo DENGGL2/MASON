@@ -10,4 +10,10 @@ data class ChatRequest(
     val stream: Boolean = true,
     val tools: List<com.denggl2.mason.tool.ToolDefinition>? = null,
     val tool_choice: String? = null,
+    val stream_options: StreamOptions? = null,
+)
+
+@Serializable
+data class StreamOptions(
+    val include_usage: Boolean = true,
 )

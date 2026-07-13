@@ -1,24 +1,29 @@
 package com.denggl2.mason.ui.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Cancel
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,8 +42,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.denggl2.mason.ui.theme.MasonAccent
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,22 +55,35 @@ fun PermissionScreen(
     val context = LocalContext.current
 
     Scaffold(
-        containerColor = Color(0xFF121212),
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.safeDrawing.only(
+            WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal,
+        ),
         topBar = {
             TopAppBar(
-                title = { Text("权限管理", color = Color.White) },
+                title = {
+                    Text(
+                        "权限管理",
+                        color = MaterialTheme.colorScheme.onBackground,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White)
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回", tint = MaterialTheme.colorScheme.onBackground)
                     }
                 },
                 actions = {
                     IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Default.Refresh, "刷新", tint = Color.White)
+                        Icon(Icons.Outlined.Refresh, "刷新", tint = MaterialTheme.colorScheme.onBackground)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF1A1A1A),
+                    containerColor = MaterialTheme.colorScheme.background,
+                ),
+                windowInsets = WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
                 ),
             )
         },
@@ -74,7 +92,7 @@ fun PermissionScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 12.dp)
                 .verticalScroll(rememberScrollState()),
         ) {
             val grouped = items.groupBy { it.group }
@@ -107,8 +125,9 @@ fun PermissionScreen(
 private fun SectionHeader(title: String) {
     Text(
         text = title,
-        color = MasonAccent,
-        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
         modifier = Modifier.padding(bottom = 12.dp),
     )
 }
@@ -119,7 +138,7 @@ private fun PermissionRow(
     isGranted: Boolean,
     onClick: () -> Unit,
 ) {
-    val icon = if (isGranted) Icons.Default.CheckCircle else Icons.Default.Cancel
+    val icon = if (isGranted) Icons.Outlined.CheckCircle else Icons.Outlined.Cancel
     val tint = if (isGranted) Color(0xFF4CAF50) else Color(0xFFEF5350)
     val statusText = if (isGranted) "已授权" else "未授权"
 
@@ -127,7 +146,12 @@ private fun PermissionRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF1A1A1A))
+            .background(permissionGlassBrush())
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+                RoundedCornerShape(12.dp),
+            )
             .then(
                 if (isGranted) Modifier else Modifier.clickable(onClick = onClick)
             )
@@ -143,7 +167,7 @@ private fun PermissionRow(
         Spacer(Modifier.width(14.dp))
         Text(
             text = label,
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f),
         )
@@ -162,3 +186,6 @@ private fun PermissionRow(
         }
     }
 }
+
+@Composable
+private fun permissionGlassBrush(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)

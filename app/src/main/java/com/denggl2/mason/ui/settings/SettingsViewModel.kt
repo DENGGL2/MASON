@@ -9,12 +9,28 @@ import androidx.lifecycle.viewModelScope
 import com.denggl2.mason.crashguard.data.CrashDao
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
+import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.AiModelRepository
+import com.denggl2.mason.data.LocalModelCatalog
+import com.denggl2.mason.data.LocalModelFileState
+import com.denggl2.mason.data.LocalModelInstallState
+import com.denggl2.mason.data.LocalModelStore
+import com.denggl2.mason.data.OfficialChannelPreferences
+import com.denggl2.mason.data.OfficialChannelPreferencesDataStore
+import com.denggl2.mason.data.UserMemoryItem
+import com.denggl2.mason.data.UserMemoryStore
+import com.denggl2.mason.data.UserMemoryType
 import com.denggl2.mason.llm.ChatClient
+import com.denggl2.mason.llm.ChatResponse
+import com.denggl2.mason.llm.LiteRtModelEngine
+import com.denggl2.mason.llm.ModelInvocation
+import com.denggl2.mason.llm.ModelModality
+import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.sync.SyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -23,7 +39,9 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 
 data class ApiTestUiState(
@@ -39,6 +57,26 @@ data class ModelRefreshUiState(
     val success: Boolean? = null,
 )
 
+data class CacheCategoryUiState(
+    val id: String,
+    val title: String,
+    val description: String,
+    val sizeBytes: Long,
+    val clearable: Boolean,
+)
+
+data class CacheOverviewUiState(
+    val isLoading: Boolean = false,
+    val items: List<CacheCategoryUiState> = emptyList(),
+)
+
+data class LocalModelTestUiState(
+    val modelId: String? = null,
+    val isTesting: Boolean = false,
+    val message: String? = null,
+    val success: Boolean? = null,
+)
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val configDataStore: ApiConfigDataStore,
@@ -46,11 +84,21 @@ class SettingsViewModel @Inject constructor(
     private val modelRepository: AiModelRepository,
     private val syncManager: SyncManager,
     private val crashDao: CrashDao,
+    private val userMemoryStore: UserMemoryStore,
+    private val officialChannelStore: OfficialChannelPreferencesDataStore,
+    private val localModelStore: LocalModelStore,
+    private val liteRtModelEngine: LiteRtModelEngine,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     val config: StateFlow<ApiConfig> = configDataStore.config
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ApiConfig())
+
+    val memoryItems: StateFlow<List<UserMemoryItem>> = userMemoryStore.items
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val officialChannels: StateFlow<OfficialChannelPreferences> = officialChannelStore.preferences
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), OfficialChannelPreferences())
 
     private val _toastEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val toastEvent = _toastEvent.asSharedFlow()
@@ -60,6 +108,15 @@ class SettingsViewModel @Inject constructor(
 
     private val _modelRefreshState = MutableStateFlow(ModelRefreshUiState())
     val modelRefreshState = _modelRefreshState.asStateFlow()
+
+    private val _cacheOverviewState = MutableStateFlow(CacheOverviewUiState())
+    val cacheOverviewState = _cacheOverviewState.asStateFlow()
+
+    private val _localModelStates = MutableStateFlow<List<LocalModelFileState>>(emptyList())
+    val localModelStates = _localModelStates.asStateFlow()
+
+    private val _localModelTestState = MutableStateFlow(LocalModelTestUiState())
+    val localModelTestState = _localModelTestState.asStateFlow()
 
     val appVersion: String by lazy {
         try {
@@ -76,13 +133,168 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    init {
+        refreshLocalModelStates()
+    }
+
+    fun refreshLocalModelStates() {
+        _localModelStates.value = localModelStore.states(LocalModelCatalog.gemmaModels)
+    }
+
+    fun importLocalModel(modelId: String, uri: Uri) {
+        val model = LocalModelCatalog.get(modelId) ?: run {
+            _toastEvent.tryEmit("未找到本地模型配置")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                localModelStore.importModel(model, uri)
+                refreshLocalModelStates()
+                _toastEvent.emit("已导入 ${model.name}")
+            } catch (e: Exception) {
+                _toastEvent.emit("导入失败：${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun testLocalModel(modelId: String) {
+        val model = LocalModelCatalog.get(modelId) ?: run {
+            _localModelTestState.value = LocalModelTestUiState(
+                modelId = modelId,
+                message = "未找到本地模型配置",
+                success = false,
+            )
+            return
+        }
+        val fileState = localModelStore.stateFor(model)
+        val unavailable = when (fileState.state) {
+            LocalModelInstallState.Installed,
+            LocalModelInstallState.DeviceMayBeUnsupported -> null
+            LocalModelInstallState.FileMissing -> "模型文件异常，请重新导入 ${model.name}"
+            LocalModelInstallState.NotInstalled -> "请先导入 ${model.name} 的 LiteRT-LM 模型文件"
+        }
+        if (unavailable != null) {
+            _localModelTestState.value = LocalModelTestUiState(
+                modelId = modelId,
+                message = unavailable,
+                success = false,
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _localModelTestState.value = LocalModelTestUiState(
+                modelId = modelId,
+                isTesting = true,
+                message = "正在测试本地模型...",
+            )
+            val runtimeStatus = liteRtModelEngine.runtimeStatus()
+            if (!runtimeStatus.available) {
+                _localModelTestState.value = LocalModelTestUiState(
+                    modelId = modelId,
+                    message = runtimeStatus.message,
+                    success = false,
+                )
+                return@launch
+            }
+
+            var text = ""
+            var error: String? = null
+            liteRtModelEngine.invoke(
+                ModelInvocation(
+                    modality = ModelModality.Text,
+                    modelId = modelId,
+                    messages = listOf(
+                        ChatMessage(
+                            role = "user",
+                            content = "用一句中文回答：Mason 本地模型测试成功了吗？",
+                        ),
+                    ),
+                ),
+            ).collect { response ->
+                when (response) {
+                    is ChatResponse.TextChunk -> {
+                        text += response.text
+                    }
+                    is ChatResponse.Error -> {
+                        error = response.message
+                    }
+                    else -> Unit
+                }
+            }
+
+            _localModelTestState.value = if (text.isNotBlank()) {
+                LocalModelTestUiState(
+                    modelId = modelId,
+                    message = "测试成功：${text.trim().take(80)}",
+                    success = true,
+                )
+            } else {
+                LocalModelTestUiState(
+                    modelId = modelId,
+                    message = error ?: "本地模型没有返回内容",
+                    success = false,
+                )
+            }
+        }
+    }
+
     fun validateApiConfig(config: ApiConfig): String? {
         if (config.apiUrl.isBlank()) return "请填写 API 地址"
         if (config.model.isBlank()) return "请填写模型名称"
-        if (config.apiKey.isBlank() && !allowsBlankApiKey(config.apiUrl)) {
-            return "请填写 API Key；只有本地地址可以留空"
+        if (config.apiKey.isBlank() && AiProviderCatalog.requiresApiKey(config)) {
+            return "当前模型需要 API Key，请先填写"
         }
         return null
+    }
+
+    fun clearApiTestState() {
+        _apiTestState.value = ApiTestUiState()
+    }
+
+    fun saveMemory(
+        id: String?,
+        label: String,
+        value: String,
+        type: UserMemoryType,
+        sensitive: Boolean,
+    ) {
+        if (label.isBlank() || value.isBlank()) {
+            _toastEvent.tryEmit("请先填写名称和内容")
+            return
+        }
+
+        viewModelScope.launch {
+            userMemoryStore.upsert(
+                UserMemoryItem(
+                    id = id ?: UUID.randomUUID().toString(),
+                    label = label.trim(),
+                    value = value.trim(),
+                    type = type,
+                    sensitive = sensitive,
+                ),
+            )
+            _toastEvent.emit(if (id == null) "已加入记忆" else "已更新记忆")
+        }
+    }
+
+    fun deleteMemory(id: String) {
+        viewModelScope.launch {
+            userMemoryStore.delete(id)
+            _toastEvent.emit("已删除记忆")
+        }
+    }
+
+    fun setWechatOfficialEnabled(enabled: Boolean) {
+        viewModelScope.launch { officialChannelStore.updateWechatOfficialEnabled(enabled) }
+    }
+
+    fun setAlipayMcpEnabled(enabled: Boolean) {
+        viewModelScope.launch { officialChannelStore.updateAlipayMcpEnabled(enabled) }
+    }
+
+    fun setMeituanMcpEnabled(enabled: Boolean) {
+        viewModelScope.launch { officialChannelStore.updateMeituanMcpEnabled(enabled) }
     }
 
     fun testApi(config: ApiConfig) {
@@ -97,7 +309,15 @@ class SettingsViewModel @Inject constructor(
                 apiUrl = config.apiUrl,
                 apiKey = config.apiKey,
                 model = config.model,
+                requiresApiKey = AiProviderCatalog.requiresApiKey(config),
             )
+            if (result.success) {
+                configDataStore.updateConfig(
+                    config.copy(
+                        verifiedSignature = AiProviderCatalog.verificationSignature(config),
+                    ),
+                )
+            }
             _apiTestState.value = ApiTestUiState(
                 isTesting = false,
                 message = result.message,
@@ -138,11 +358,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private fun allowsBlankApiKey(apiUrl: String): Boolean {
-        val normalized = apiUrl.lowercase()
-        return listOf("localhost", "127.0.0.1", "10.0.2.2").any { it in normalized }
-    }
-
     fun exportConversations() {
         viewModelScope.launch {
             try {
@@ -153,8 +368,8 @@ class SettingsViewModel @Inject constructor(
                 if (!downloadDir.exists()) downloadDir.mkdirs()
 
                 val timestamp = System.currentTimeMillis()
-                val file = File(downloadDir, "mason_backup_$timestamp.json")
-                val success = syncManager.exportToFile(file)
+                val file = File(downloadDir, "mason_backup_$timestamp.md")
+                val success = syncManager.exportMarkdownToFile(file)
                 if (success) {
                     _toastEvent.emit("导出成功：${file.absolutePath}")
                 } else {
@@ -162,6 +377,33 @@ class SettingsViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 _toastEvent.emit("导出失败：${e.message}")
+            }
+        }
+    }
+
+    fun refreshCacheOverview() {
+        viewModelScope.launch {
+            _cacheOverviewState.value = CacheOverviewUiState(isLoading = true)
+            _cacheOverviewState.value = CacheOverviewUiState(
+                items = withContext(Dispatchers.IO) {
+                    buildCacheOverview()
+                },
+            )
+        }
+    }
+
+    fun clearCache() {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    clearDirectoryContent(context.cacheDir)
+                    context.codeCacheDir?.let(::clearDirectoryContent)
+                    crashDao.clearAll()
+                }
+                _toastEvent.emit("已清理缓存")
+                refreshCacheOverview()
+            } catch (e: Exception) {
+                _toastEvent.emit("清理失败：${e.message}")
             }
         }
     }
@@ -195,6 +437,79 @@ class SettingsViewModel @Inject constructor(
                 _toastEvent.emit("已清除崩溃日志")
             } catch (e: Exception) {
                 _toastEvent.emit("清除失败：${e.message}")
+            }
+        }
+    }
+
+    private suspend fun buildCacheOverview(): List<CacheCategoryUiState> {
+        val conversations = syncManager.getConversationsSnapshotCount()
+        val messages = syncManager.getMessagesSnapshotCount()
+        val crashCount = crashDao.getCount()
+        val backupDir = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "mason",
+        )
+
+        return listOf(
+            CacheCategoryUiState(
+                id = "temp",
+                title = "临时缓存",
+                description = "图片缩略图、临时文件和系统缓存",
+                sizeBytes = context.cacheDir.safeSize(),
+                clearable = true,
+            ),
+            CacheCategoryUiState(
+                id = "code",
+                title = "运行缓存",
+                description = "Compose、WebView 或运行时生成的缓存",
+                sizeBytes = context.codeCacheDir?.safeSize() ?: 0L,
+                clearable = true,
+            ),
+            CacheCategoryUiState(
+                id = "crash",
+                title = "崩溃记录",
+                description = "$crashCount 条本地崩溃诊断记录",
+                sizeBytes = crashCount * 2048L,
+                clearable = true,
+            ),
+            CacheCategoryUiState(
+                id = "conversation",
+                title = "对话数据",
+                description = "$conversations 个对话，$messages 条消息；不会在缓存清理中删除",
+                sizeBytes = 0L,
+                clearable = false,
+            ),
+            CacheCategoryUiState(
+                id = "backup",
+                title = "导出备份",
+                description = "Downloads/mason 下的 Markdown 备份；由用户自行管理",
+                sizeBytes = backupDir.safeSize(),
+                clearable = false,
+            ),
+        )
+    }
+
+    private fun File.safeSize(): Long {
+        if (!exists()) return 0L
+        return runCatching {
+            if (isFile) {
+                length()
+            } else {
+                walkTopDown()
+                    .filter { it.isFile }
+                    .sumOf { it.length() }
+            }
+        }.getOrDefault(0L)
+    }
+
+    private fun clearDirectoryContent(root: File) {
+        if (!root.exists() || !root.isDirectory) return
+        root.listFiles().orEmpty().forEach { file ->
+            runCatching {
+                if (file.isDirectory) {
+                    clearDirectoryContent(file)
+                }
+                file.delete()
             }
         }
     }

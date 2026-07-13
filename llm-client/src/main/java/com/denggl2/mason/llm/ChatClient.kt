@@ -3,6 +3,7 @@ package com.denggl2.mason.llm
 import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.llm.model.ChatRequest
 import com.denggl2.mason.llm.model.FunctionCall
+import com.denggl2.mason.llm.model.StreamOptions
 import com.denggl2.mason.llm.model.ToolCall
 import com.denggl2.mason.llm.model.ApiChatMessage
 import com.denggl2.mason.llm.model.toApiChatMessage
@@ -16,6 +17,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -29,11 +31,28 @@ import javax.inject.Singleton
 
 sealed class ChatResponse {
     data class TextChunk(val text: String) : ChatResponse()
+    data class UsageReceived(val usage: TokenUsage) : ChatResponse()
     data class ToolCallsRequested(
         val assistantMessage: ChatMessage,
         val calls: List<ToolCall>,
     ) : ChatResponse()
     data class Error(val message: String) : ChatResponse()
+}
+
+data class TokenUsage(
+    val promptTokens: Long = 0L,
+    val completionTokens: Long = 0L,
+    val totalTokens: Long = 0L,
+) {
+    operator fun plus(other: TokenUsage): TokenUsage =
+        TokenUsage(
+            promptTokens = promptTokens + other.promptTokens,
+            completionTokens = completionTokens + other.completionTokens,
+            totalTokens = totalTokens + other.totalTokens,
+        )
+
+    val isEmpty: Boolean
+        get() = promptTokens == 0L && completionTokens == 0L && totalTokens == 0L
 }
 
 data class ApiTestResult(
@@ -64,8 +83,9 @@ class ChatClient @Inject constructor(
         val apiKey = configProvider.getApiKey()
         val model = configProvider.getModel()
         val toolsEnabled = configProvider.getToolsEnabled()
+        val requiresApiKey = configProvider.requiresApiKey()
 
-        if (apiKey.isBlank() && !allowsBlankApiKey(apiUrl)) {
+        if (apiKey.isBlank() && requiresApiKey) {
             emit(ChatResponse.Error("请先在设置中配置 API Key"))
             return@flow
         }
@@ -109,10 +129,12 @@ class ChatClient @Inject constructor(
         val choices = root["choices"]?.jsonArray
         val choice = choices?.firstOrNull()?.jsonObject
         val message = choice?.get("message")?.jsonObject
+        val usage = parseUsage(root["usage"])
 
         if (message != null) {
             val calls = parseToolCalls(message)
             if (calls.isNotEmpty()) {
+                usage?.let { emit(ChatResponse.UsageReceived(it)) }
                 emit(
                     ChatResponse.ToolCallsRequested(
                         assistantMessage = ChatMessage(
@@ -130,6 +152,7 @@ class ChatClient @Inject constructor(
             val content = message["content"]?.jsonPrimitive?.contentOrNull
             if (!content.isNullOrBlank()) {
                 emit(ChatResponse.TextChunk(content))
+                usage?.let { emit(ChatResponse.UsageReceived(it)) }
             } else {
                 emit(ChatResponse.Error("模型没有返回可显示内容"))
             }
@@ -140,31 +163,48 @@ class ChatClient @Inject constructor(
         val apiUrl = configProvider.getApiUrl()
         val apiKey = configProvider.getApiKey()
         val model = configProvider.getModel()
+        val requiresApiKey = configProvider.requiresApiKey()
 
-        if (apiKey.isBlank() && !allowsBlankApiKey(apiUrl)) {
+        if (apiKey.isBlank() && requiresApiKey) {
             emit(ChatResponse.Error("请先在设置中配置 API Key"))
             return@flow
         }
 
-        val request = ChatRequest(
-            model = model,
-            messages = buildApiMessages(listOf(systemPrompt()) + messages),
-            stream = true,
-        )
-
-        val body = json.encodeToString(ChatRequest.serializer(), request)
-            .toRequestBody("application/json".toMediaType())
-
-        val httpRequest = buildRequest(apiUrl, apiKey, body)
-
-        val response = withContext(Dispatchers.IO) {
-            client.newCall(httpRequest).execute()
+        val apiMessages = buildApiMessages(listOf(systemPrompt()) + messages)
+        fun streamRequest(includeUsage: Boolean): Request {
+            val request = ChatRequest(
+                model = model,
+                messages = apiMessages,
+                stream = true,
+                stream_options = if (includeUsage) StreamOptions(include_usage = true) else null,
+            )
+            val body = json.encodeToString(ChatRequest.serializer(), request)
+                .toRequestBody("application/json".toMediaType())
+            return buildRequest(apiUrl, apiKey, body)
         }
 
+        var response = withContext(Dispatchers.IO) {
+            client.newCall(streamRequest(includeUsage = true)).execute()
+        }
         if (!response.isSuccessful) {
             val errorBody = response.body?.string().orEmpty()
-            emit(ChatResponse.Error("API 错误 ${response.code}: $errorBody"))
-            return@flow
+            val shouldRetryWithoutUsage = response.code in 400..499 &&
+                errorBody.contains("stream_options", ignoreCase = true)
+            response.close()
+            if (shouldRetryWithoutUsage) {
+                response = withContext(Dispatchers.IO) {
+                    client.newCall(streamRequest(includeUsage = false)).execute()
+                }
+                if (!response.isSuccessful) {
+                    val fallbackError = response.body?.string().orEmpty()
+                    emit(ChatResponse.Error("API 错误 ${response.code}: $fallbackError"))
+                    response.close()
+                    return@flow
+                }
+            } else {
+                emit(ChatResponse.Error("API 错误 ${response.code}: $errorBody"))
+                return@flow
+            }
         }
 
         val source = response.body?.source() ?: run {
@@ -173,8 +213,11 @@ class ChatClient @Inject constructor(
         }
 
         try {
-            streamProcessor.parseSseStream(source).collect { chunk ->
-                emit(ChatResponse.TextChunk(chunk))
+            streamProcessor.parseSseEvents(source).collect { event ->
+                when (event) {
+                    is StreamEvent.TextChunk -> emit(ChatResponse.TextChunk(event.text))
+                    is StreamEvent.UsageReceived -> emit(ChatResponse.UsageReceived(event.usage))
+                }
             }
         } finally {
             source.close()
@@ -185,10 +228,11 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         model: String,
+        requiresApiKey: Boolean = true,
     ): ApiTestResult {
         if (apiUrl.isBlank()) return ApiTestResult(false, "请填写 API 地址")
         if (model.isBlank()) return ApiTestResult(false, "请填写模型名称")
-        if (apiKey.isBlank() && !allowsBlankApiKey(apiUrl)) {
+        if (apiKey.isBlank() && requiresApiKey) {
             return ApiTestResult(false, "请填写 API Key")
         }
 
@@ -249,6 +293,13 @@ class ChatClient @Inject constructor(
             append("你可以在用户授权范围内调用手机工具获取设备、系统、网络和应用信息。")
             append("当用户询问设备配置、硬件状态、系统设置或性能问题时，优先调用合适工具获取真实数据。")
             append("拿到工具结果后，用简洁、通俗、可执行的中文回答。")
+            append("回答需要适配 Mason 的工作流界面：")
+            append("可以使用“思考：”“进行中：”“引导：”“最终总结：”这些可见小节。")
+            append("“思考”只写一句可见判断或计划，不输出隐藏推理过程。")
+            append("需要用户选择、授权或确认风险时，用“引导”给出 2 到 3 个清晰选项。")
+            append("任务完成后用“最终总结”收束，优先说明结果、文件、下一步。")
+            append("当用户要求生成文档、代码、报告、配置或其他文件时，必须输出一个带 filename=\"相对路径/文件名.扩展名\" 的 fenced code block，便于 Mason 自动保存为产出。")
+            append("文件代码块示例：```markdown filename=\"notes/summary.md\"。不要把普通解释性回答伪装成文件。")
         },
     )
 
@@ -303,6 +354,15 @@ class ChatClient @Inject constructor(
         }
     }
 
+    private fun parseUsage(element: JsonElement?): TokenUsage? {
+        val usage = element?.jsonObject ?: return null
+        val prompt = usage["prompt_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
+        val completion = usage["completion_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
+        val total = usage["total_tokens"]?.jsonPrimitive?.longOrNull ?: (prompt + completion)
+        if (prompt == 0L && completion == 0L && total == 0L) return null
+        return TokenUsage(promptTokens = prompt, completionTokens = completion, totalTokens = total)
+    }
+
     private fun argumentContent(element: JsonElement?): String {
         if (element == null) return "{}"
         return runCatching { element.jsonPrimitive.content }.getOrElse { element.toString() }
@@ -314,15 +374,23 @@ class ChatClient @Inject constructor(
         body: okhttp3.RequestBody,
     ): Request {
         val normalizedUrl = normalizeChatCompletionsUrl(apiUrl)
+        val lowerUrl = normalizedUrl.lowercase()
         return Request.Builder()
             .url(normalizedUrl)
             .apply {
                 if (apiKey.isNotBlank()) {
-                    addHeader("Authorization", "Bearer $apiKey")
+                    if ("xiaomimimo.com" in lowerUrl) {
+                        addHeader("api-key", apiKey)
+                    } else {
+                        addHeader("Authorization", "Bearer $apiKey")
+                    }
                 }
-                if ("openrouter.ai" in normalizedUrl.lowercase()) {
+                if ("openrouter.ai" in lowerUrl) {
                     addHeader("HTTP-Referer", "https://github.com/DENGGL2/MASON")
                     addHeader("X-Title", "Mason")
+                }
+                if ("xiaomimimo.com" in lowerUrl) {
+                    addHeader("User-Agent", "Mason Android")
                 }
             }
             .addHeader("Content-Type", "application/json")
@@ -338,8 +406,4 @@ class ChatClient @Inject constructor(
         }
     }
 
-    private fun allowsBlankApiKey(apiUrl: String): Boolean {
-        val normalized = apiUrl.lowercase()
-        return listOf("localhost", "127.0.0.1", "10.0.2.2").any { it in normalized }
-    }
 }

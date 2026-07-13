@@ -1,7 +1,10 @@
 package com.denggl2.mason.di
 
 import com.denggl2.mason.data.ApiConfigDataStore
+import com.denggl2.mason.data.AiProviderCatalog
+import com.denggl2.mason.data.LocalModelStore
 import com.denggl2.mason.llm.ApiConfigProvider
+import com.denggl2.mason.llm.LiteRtModelEngine
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -32,6 +35,19 @@ object ApiConfigModule {
             override suspend fun getToolsEnabled(): Boolean {
                 return store.config.first().toolsEnabled
             }
+
+            override suspend fun requiresApiKey(): Boolean {
+                return AiProviderCatalog.requiresApiKey(store.config.first())
+            }
         }
+    }
+
+    @Provides
+    @Singleton
+    fun provideLiteRtModelEngine(localModelStore: LocalModelStore): LiteRtModelEngine {
+        return LiteRtModelEngine(
+            modelPathProvider = { modelId -> localModelStore.readyModelPath(modelId) },
+            cacheDirProvider = { localModelStore.inferenceCacheDir() },
+        )
     }
 }
