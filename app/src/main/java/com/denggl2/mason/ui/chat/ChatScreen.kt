@@ -126,6 +126,7 @@ import com.denggl2.mason.data.extractArtifactMetadataMarkers
 import com.denggl2.mason.data.stripArtifactMarkers
 import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.AiProviderCatalog
+import com.denggl2.mason.data.MasonSkillManifest
 import com.denggl2.mason.agent.TaskStep
 import com.denggl2.mason.agent.TaskStepStatus
 import com.denggl2.mason.agent.ToolApprovalRequest
@@ -135,12 +136,14 @@ import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.ui.conversation.ConversationListItem
 import com.denggl2.mason.ui.conversation.ConversationListViewModel
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 private val TIME_FORMAT = SimpleDateFormat("HH:mm", Locale.getDefault())
+private val SKILL_MANIFEST_JSON = Json { ignoreUnknownKeys = true }
 private const val MAX_COLLAPSED_LENGTH = 500
 private const val USER_CONTEXT_HEADER = "Mason 附加上下文"
 private data class AnswerSection(val label: String, val text: String)
@@ -3207,14 +3210,16 @@ private fun loadSkillOptions(context: Context): List<SkillOption> {
             root.listFiles()
                 ?.filter { it.isDirectory || it.isFile }
                 ?.take(120)
-                ?.map { file -> file.toSkillOption() }
+                ?.mapNotNull { file -> file.toSkillOption() }
                 .orEmpty()
         }
         .distinctBy { it.path }
         .sortedBy { it.name.lowercase(Locale.getDefault()) }
 }
 
-private fun File.toSkillOption(): SkillOption {
+private fun File.toSkillOption(): SkillOption? {
+    val manifest = readSkillManifest()
+    if (manifest?.enabled == false) return null
     val skillFile = if (isDirectory) {
         listOf("SKILL.md", "README.md", "skill.json")
             .map { File(this, it) }
@@ -3223,10 +3228,25 @@ private fun File.toSkillOption(): SkillOption {
         this
     }
     return SkillOption(
-        name = skillFile?.readMarkdownHeading().orEmpty().ifBlank { nameWithoutExtension.ifBlank { name } },
-        description = skillFile?.readSkillDescription().orEmpty(),
+        name = manifest?.name
+            ?.takeIf { it.isNotBlank() }
+            ?: skillFile?.readMarkdownHeading().orEmpty().ifBlank { nameWithoutExtension.ifBlank { name } },
+        description = manifest?.description
+            ?.takeIf { it.isNotBlank() }
+            ?: skillFile?.readSkillDescription().orEmpty(),
         path = absolutePath,
     )
+}
+
+private fun File.readSkillManifest(): MasonSkillManifest? {
+    val manifest = if (isDirectory) File(this, "skill.json") else takeIf { name == "skill.json" }
+    if (manifest == null || !manifest.exists() || !manifest.isFile) return null
+    return runCatching {
+        SKILL_MANIFEST_JSON.decodeFromString(
+            MasonSkillManifest.serializer(),
+            manifest.readText(Charsets.UTF_8),
+        )
+    }.getOrNull()
 }
 
 private fun File.readMarkdownHeading(): String? =
