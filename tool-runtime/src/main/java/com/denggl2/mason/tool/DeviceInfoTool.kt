@@ -1,12 +1,9 @@
 package com.denggl2.mason.tool
 
 import dagger.hilt.android.qualifiers.ApplicationContext
-import javax.inject.Inject
-import javax.inject.Singleton
 import android.content.Context
 
-@Singleton
-class DeviceInfoTool @Inject constructor(
+class DeviceInfoTool constructor(
     @ApplicationContext private val context: Context
 ) : Tool {
     override val name = "device_info"

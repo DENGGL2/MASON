@@ -1,12 +1,9 @@
 package com.denggl2.mason.tool
 
 import dagger.hilt.android.qualifiers.ApplicationContext
-import javax.inject.Inject
-import javax.inject.Singleton
 import android.content.Context
 
-@Singleton
-class CpuTool @Inject constructor(
+class CpuTool constructor(
     @ApplicationContext private val context: Context
 ) : Tool {
     override val name = "cpu_info"

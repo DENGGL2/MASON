@@ -1,8 +1,8 @@
 [versions]
-agp = "8.5.2"
-kotlin = "2.0.20"
-ksp = "2.0.20-1.0.24"
-hilt = "2.51.1"
+agp = "8.10.1"
+kotlin = "2.2.21"
+ksp = "2.3.10"
+hilt = "2.58"
 hiltNavigationCompose = "1.2.0"
 composeBom = "2024.09.00"
 activityCompose = "1.9.2"
@@ -15,8 +15,8 @@ kotlinxSerialization = "1.7.1"
 kotlinxCoroutines = "1.9.0"
 hiltExtCompiler = "1.2.0"
 datastorePreferences = "1.1.1"
-room = "2.6.1"
-litertlm = "0.0.0-alpha06"
+room = "2.7.2"
+litertlm = "0.10.2"
 
 [libraries]
 # AndroidX Core

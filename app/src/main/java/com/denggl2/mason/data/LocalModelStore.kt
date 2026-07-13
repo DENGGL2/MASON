@@ -24,6 +24,9 @@ data class LocalModelFileState(
     val path: String? = null,
     val fileName: String? = null,
     val sourceFileName: String? = null,
+    val extension: String = "",
+    val formatSupported: Boolean = false,
+    val formatWarning: String? = null,
     val sizeBytes: Long = 0L,
     val recommendedRamGb: Int = 0,
     val availableRamGb: Int = 0,
@@ -31,6 +34,16 @@ data class LocalModelFileState(
     val installed: Boolean
         get() = state == LocalModelInstallState.Installed ||
             state == LocalModelInstallState.DeviceMayBeUnsupported
+
+    val diagnosticSummary: String
+        get() = buildString {
+            append(fileName ?: modelId)
+            if (sizeBytes > 0L) append(" · ").append(formatBytes(sizeBytes))
+            if (extension.isNotBlank()) append(" · .").append(extension)
+            append(" · RAM ").append(availableRamGb).append("GB")
+            if (recommendedRamGb > 0) append("/建议 ").append(recommendedRamGb).append("GB")
+            formatWarning?.let { append(" · ").append(it) }
+        }
 }
 
 @Singleton
@@ -48,6 +61,9 @@ class LocalModelStore @Inject constructor(
             state = LocalModelInstallState.NotInstalled,
             path = file.absolutePath,
             fileName = file.name,
+            extension = file.extension.lowercase(),
+            formatSupported = file.hasSupportedExtension(),
+            formatWarning = file.formatWarning(),
             sizeBytes = 0L,
             recommendedRamGb = model.recommendedRamGb,
             availableRamGb = availableRamGb,
@@ -87,6 +103,9 @@ class LocalModelStore @Inject constructor(
         return if (state.installed) state.path else null
     }
 
+    fun diagnostics(model: LocalModelPreset): String =
+        stateFor(model).diagnosticSummary
+
     fun inferenceCacheDir(): File =
         File(context.cacheDir, "litertlm").also { it.mkdirs() }
 
@@ -124,4 +143,29 @@ class LocalModelStore @Inject constructor(
         val gb = info.totalMem / (1024L * 1024L * 1024L)
         return gb.toInt().coerceAtLeast(1)
     }
+
+    private fun File.hasSupportedExtension(): Boolean =
+        extension.lowercase() in supportedExtensions
+
+    private fun File.formatWarning(): String? {
+        val ext = extension.lowercase()
+        return when {
+            ext.isBlank() -> "文件没有扩展名，可能无法判断格式"
+            ext !in supportedExtensions -> "格式可能不兼容 LiteRT-LM"
+            ext == "task" -> "旧 .task 格式，仅兼容部分运行时"
+            else -> null
+        }
+    }
+
+    private companion object {
+        val supportedExtensions = setOf("litertlm", "task")
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0L) return "0 B"
+    val gb = bytes / (1024.0 * 1024.0 * 1024.0)
+    if (gb >= 0.1) return "%.1f GB".format(java.util.Locale.US, gb)
+    val mb = bytes / (1024.0 * 1024.0)
+    return "%.1f MB".format(java.util.Locale.US, mb)
 }

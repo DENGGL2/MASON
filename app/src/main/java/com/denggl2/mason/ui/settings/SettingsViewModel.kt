@@ -167,6 +167,7 @@ class SettingsViewModel @Inject constructor(
             return
         }
         val fileState = localModelStore.stateFor(model)
+        val diagnostics = fileState.diagnosticSummary
         val unavailable = when (fileState.state) {
             LocalModelInstallState.Installed,
             LocalModelInstallState.DeviceMayBeUnsupported -> null
@@ -176,7 +177,7 @@ class SettingsViewModel @Inject constructor(
         if (unavailable != null) {
             _localModelTestState.value = LocalModelTestUiState(
                 modelId = modelId,
-                message = unavailable,
+                message = "$unavailable\n$diagnostics",
                 success = false,
             )
             return
@@ -192,7 +193,7 @@ class SettingsViewModel @Inject constructor(
             if (!runtimeStatus.available) {
                 _localModelTestState.value = LocalModelTestUiState(
                     modelId = modelId,
-                    message = runtimeStatus.message,
+                    message = "${runtimeStatus.message}\n$diagnostics",
                     success = false,
                 )
                 return@launch
@@ -226,13 +227,13 @@ class SettingsViewModel @Inject constructor(
             _localModelTestState.value = if (text.isNotBlank()) {
                 LocalModelTestUiState(
                     modelId = modelId,
-                    message = "测试成功：${text.trim().take(80)}",
+                    message = "测试成功：${text.trim().take(80)}\n$diagnostics",
                     success = true,
                 )
             } else {
                 LocalModelTestUiState(
                     modelId = modelId,
-                    message = error ?: "本地模型没有返回内容",
+                    message = "${error ?: "本地模型没有返回内容"}\n$diagnostics",
                     success = false,
                 )
             }

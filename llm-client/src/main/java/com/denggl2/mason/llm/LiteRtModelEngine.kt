@@ -110,8 +110,8 @@ class LiteRtModelEngine(
             messageClass.getField("Companion").get(null)
                 .javaClass
                 .getMethod("of", String::class.java)
-            Class.forName("com.google.ai.edge.litertlm.Conversation")
-                .getMethod("sendMessageAsync", messageClass)
+            val conversationClass = Class.forName("com.google.ai.edge.litertlm.Conversation")
+            findFlowSendMessageMethod(conversationClass, messageClass)
 
             LiteRtRuntimeStatus(
                 available = true,
@@ -232,9 +232,24 @@ class LiteRtModelEngine(
         val conversationClass = Class.forName("com.google.ai.edge.litertlm.Conversation")
         val message = createMessage(prompt)
         val messageClass = Class.forName("com.google.ai.edge.litertlm.Message")
-        val method = conversationClass.getMethod("sendMessageAsync", messageClass)
-        return method.invoke(conversation, message) as CoroutineFlow<Any>
+        val method = findFlowSendMessageMethod(conversationClass, messageClass)
+        val result = when (method.parameterCount) {
+            1 -> method.invoke(conversation, message)
+            2 -> method.invoke(conversation, message, emptyMap<String, Any>())
+            else -> error("Unsupported LiteRT-LM sendMessageAsync signature.")
+        }
+        return result as CoroutineFlow<Any>
     }
+
+    private fun findFlowSendMessageMethod(
+        conversationClass: Class<*>,
+        messageClass: Class<*>,
+    ): Method = conversationClass.methods.firstOrNull { method ->
+        method.name == "sendMessageAsync" &&
+            method.parameterTypes.firstOrNull() == messageClass &&
+            method.returnType.name == "kotlinx.coroutines.flow.Flow" &&
+            method.parameterCount in 1..2
+    } ?: throw NoSuchMethodException("Compatible LiteRT-LM sendMessageAsync method not found.")
 
     private fun createMessage(prompt: String): Any {
         val messageClass = Class.forName("com.google.ai.edge.litertlm.Message")
@@ -243,9 +258,16 @@ class LiteRtModelEngine(
     }
 
     private fun extractText(message: Any): String {
-        val contents = runCatching {
-            message.javaClass.getMethod("getContents").invoke(message) as? List<*>
-        }.getOrNull().orEmpty()
+        val rawContents = runCatching {
+            message.javaClass.getMethod("getContents").invoke(message)
+        }.getOrNull()
+        val contents = when (rawContents) {
+            is List<*> -> rawContents
+            null -> emptyList<Any>()
+            else -> runCatching {
+                rawContents.javaClass.getMethod("getContents").invoke(rawContents) as? List<*>
+            }.getOrNull().orEmpty()
+        }
 
         return contents.joinToString(separator = "") { content ->
             content?.textFromContent().orEmpty()
