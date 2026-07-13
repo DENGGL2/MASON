@@ -15,6 +15,7 @@ import com.denggl2.mason.data.ApiConfigDataStore
 import com.denggl2.mason.data.ArtifactMetadata
 import com.denggl2.mason.data.ArtifactStore
 import com.denggl2.mason.data.LocalModelCatalog
+import com.denggl2.mason.data.LocalModelFileState
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelStore
 import com.denggl2.mason.llm.ChatClient
@@ -171,7 +172,19 @@ class ChatViewModel @Inject constructor(
             }
 
             val producedArtifacts = mutableListOf<ArtifactMetadata>()
-            chatClient.chat(_uiState.value.messages).collect { response ->
+            val directLocalEnabled = apiConfig.value.localModelDirectEnabled
+            val responseFlow = if (directLocalEnabled) {
+                liteRtModelEngine.invoke(
+                    ModelInvocation(
+                        modality = ModelModality.Text,
+                        messages = _uiState.value.messages,
+                        modelId = selectedLocalModelId(apiConfig.value),
+                    ),
+                )
+            } else {
+                chatClient.chat(_uiState.value.messages)
+            }
+            responseFlow.collect { response ->
                 when (response) {
                     is ChatResponse.ToolCallsRequested -> {
                         _uiState.value = _uiState.value.copy(
@@ -309,8 +322,12 @@ class ChatViewModel @Inject constructor(
                     }
 
                     is ChatResponse.Error -> {
-                        val guidedContent = tryLocalFallback(response.message, _uiState.value.messages)
-                            ?: formatGuidedError(response.message)
+                        val guidedContent = if (directLocalEnabled) {
+                            "本地模型调用失败：${response.message}"
+                        } else {
+                            tryLocalFallback(response.message, _uiState.value.messages)
+                                ?: formatGuidedError(response.message)
+                        }
                         val errorMessage = ChatMessage(role = "assistant", content = guidedContent, timestamp = System.currentTimeMillis())
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + errorMessage,
@@ -433,7 +450,23 @@ class ChatViewModel @Inject constructor(
             apiConfigDataStore.updateConfig(
                 currentConfig.copy(
                     model = modelId,
+                    localModelDirectEnabled = false,
                     toolsEnabled = model?.supportsTools ?: currentConfig.toolsEnabled,
+                ),
+            )
+        }
+    }
+
+    fun localModelStates(): List<LocalModelFileState> =
+        localModelStore.states(LocalModelCatalog.gemmaModels)
+
+    fun selectLocalModelDirect(enabled: Boolean) {
+        val currentConfig = apiConfig.value
+        viewModelScope.launch {
+            apiConfigDataStore.updateConfig(
+                currentConfig.copy(
+                    localModel = selectedLocalModelId(currentConfig),
+                    localModelDirectEnabled = enabled,
                 ),
             )
         }
@@ -642,6 +675,9 @@ class ChatViewModel @Inject constructor(
             远程失败原因：$remoteError
         """.trimIndent()
     }
+
+    private fun selectedLocalModelId(config: ApiConfig): String =
+        config.localModel.ifBlank { LocalModelCatalog.gemmaModels.firstOrNull()?.id.orEmpty() }
 
     private suspend fun prepareAssistantContent(
         content: String,

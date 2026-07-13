@@ -8,6 +8,7 @@ data class ApiConfig(
     val visionModel: String = "",
     val imageModel: String = "",
     val localModel: String = "",
+    val localModelDirectEnabled: Boolean = false,
     val offlineFallbackEnabled: Boolean = false,
     val toolsEnabled: Boolean = AiProviderCatalog.defaultProvider.toolsEnabledByDefault,
     val requireToolConfirmation: Boolean = true,

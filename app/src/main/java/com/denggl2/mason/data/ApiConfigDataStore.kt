@@ -27,6 +27,7 @@ class ApiConfigDataStore @Inject constructor(
         private val KEY_VISION_MODEL = stringPreferencesKey("vision_model")
         private val KEY_IMAGE_MODEL = stringPreferencesKey("image_model")
         private val KEY_LOCAL_MODEL = stringPreferencesKey("local_model")
+        private val KEY_LOCAL_MODEL_DIRECT_ENABLED = booleanPreferencesKey("local_model_direct_enabled")
         private val KEY_OFFLINE_FALLBACK_ENABLED = booleanPreferencesKey("offline_fallback_enabled")
         private val KEY_TOOLS_ENABLED = booleanPreferencesKey("tools_enabled")
         private val KEY_REQUIRE_TOOL_CONFIRMATION = booleanPreferencesKey("require_tool_confirmation")
@@ -56,6 +57,7 @@ class ApiConfigDataStore @Inject constructor(
             visionModel = prefs[KEY_VISION_MODEL] ?: "",
             imageModel = prefs[KEY_IMAGE_MODEL] ?: "",
             localModel = prefs[KEY_LOCAL_MODEL] ?: "",
+            localModelDirectEnabled = prefs[KEY_LOCAL_MODEL_DIRECT_ENABLED] ?: false,
             offlineFallbackEnabled = prefs[KEY_OFFLINE_FALLBACK_ENABLED] ?: false,
             toolsEnabled = prefs[KEY_TOOLS_ENABLED] ?: provider.toolsEnabledByDefault,
             requireToolConfirmation = prefs[KEY_REQUIRE_TOOL_CONFIRMATION] ?: true,
@@ -72,6 +74,7 @@ class ApiConfigDataStore @Inject constructor(
             prefs[KEY_VISION_MODEL] = config.visionModel
             prefs[KEY_IMAGE_MODEL] = config.imageModel
             prefs[KEY_LOCAL_MODEL] = config.localModel
+            prefs[KEY_LOCAL_MODEL_DIRECT_ENABLED] = config.localModelDirectEnabled
             prefs[KEY_OFFLINE_FALLBACK_ENABLED] = config.offlineFallbackEnabled
             prefs[KEY_TOOLS_ENABLED] = config.toolsEnabled
             prefs[KEY_REQUIRE_TOOL_CONFIRMATION] = config.requireToolConfirmation

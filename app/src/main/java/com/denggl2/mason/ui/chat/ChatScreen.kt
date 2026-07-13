@@ -23,6 +23,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -67,8 +69,10 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Image as ImageIcon
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
@@ -124,8 +128,12 @@ import androidx.core.content.FileProvider
 import com.denggl2.mason.data.ArtifactMetadata
 import com.denggl2.mason.data.extractArtifactMetadataMarkers
 import com.denggl2.mason.data.stripArtifactMarkers
+import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.AiProviderCatalog
+import com.denggl2.mason.data.LocalModelCatalog
+import com.denggl2.mason.data.LocalModelFileState
+import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.MasonSkillManifest
 import com.denggl2.mason.agent.TaskStep
 import com.denggl2.mason.agent.TaskStepStatus
@@ -169,6 +177,14 @@ private data class MessageTextBlock(
     val text: String,
     val meta: String? = null,
 )
+private enum class ModelAvailability { Available, Warning, Unavailable }
+private data class ModelStatusItem(
+    val label: String,
+    val modelName: String,
+    val status: String,
+    val availability: ModelAvailability,
+    val icon: ImageVector,
+)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -196,6 +212,7 @@ fun ChatScreen(
     var pendingAttachments by remember { mutableStateOf<List<PendingAttachment>>(emptyList()) }
     var selectedSkill by remember { mutableStateOf<SkillOption?>(null) }
     var showSkillPicker by remember { mutableStateOf(false) }
+    var showModelStatusSheet by remember { mutableStateOf(false) }
     var pendingDrawerDeleteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
@@ -238,6 +255,7 @@ fun ChatScreen(
     }
     val apiWarning = remember(apiConfig) {
         when {
+            apiConfig.localModelDirectEnabled -> null
             AiProviderCatalog.requiresApiKey(apiConfig) && apiConfig.apiKey.isBlank() -> {
                 if (AiProviderCatalog.isFreeModel(apiConfig.providerId, apiConfig.model)) {
                     "免费模型仍需平台 Key，用来识别账号和限额"
@@ -250,6 +268,13 @@ fun ChatScreen(
             else -> null
         }
     }
+    val localModelStates = remember(apiConfig.localModel, showModelStatusSheet) {
+        viewModel.localModelStates()
+    }
+    val modelStatuses = remember(apiConfig, localModelStates) {
+        buildModelStatuses(apiConfig, localModelStates)
+    }
+    val modelSummary = remember(modelStatuses) { summarizeModelAvailability(modelStatuses) }
 
     LaunchedEffect(uiState.messages.size, uiState.streamingContent, uiState.toolCallStatus) {
         val lastIndex = listState.layoutInfo.totalItemsCount - 1
@@ -318,8 +343,11 @@ fun ChatScreen(
                     actions = {
                         uiState.lastUsage?.let { usage ->
                             UsageQuotaText(usage = usage)
-                            Spacer(Modifier.width(14.dp))
                         }
+                        ModelStatusButton(
+                            availability = modelSummary,
+                            onClick = { showModelStatusSheet = true },
+                        )
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
@@ -433,6 +461,20 @@ fun ChatScreen(
             onSelect = { skill ->
                 selectedSkill = skill
                 showSkillPicker = false
+            },
+        )
+    }
+
+    if (showModelStatusSheet) {
+        ModelStatusSheet(
+            statuses = modelStatuses,
+            summary = modelSummary,
+            localDirectEnabled = apiConfig.localModelDirectEnabled,
+            onDismiss = { showModelStatusSheet = false },
+            onModeChange = viewModel::selectLocalModelDirect,
+            onOpenSettings = {
+                showModelStatusSheet = false
+                onNavigateToSettings()
             },
         )
     }
@@ -2838,6 +2880,304 @@ private fun AttachmentMenuRow(
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+private fun buildModelStatuses(
+    config: ApiConfig,
+    localStates: List<LocalModelFileState>,
+): List<ModelStatusItem> {
+    val provider = AiProviderCatalog.getProvider(config.providerId)
+    val remoteAvailability = when {
+        AiProviderCatalog.requiresApiKey(config) && config.apiKey.isBlank() -> ModelAvailability.Unavailable
+        !AiProviderCatalog.isVerified(config) -> ModelAvailability.Warning
+        else -> ModelAvailability.Available
+    }
+    val remoteStatus = when (remoteAvailability) {
+        ModelAvailability.Available -> "可用"
+        ModelAvailability.Warning -> "尚未验证"
+        ModelAvailability.Unavailable -> "缺少 API Key"
+    }
+    val chatModelName = AiProviderCatalog.getModel(config.providerId, config.model)?.name
+        ?: config.model.ifBlank { "未配置" }
+
+    fun remoteCapability(label: String, modelId: String, icon: ImageVector): ModelStatusItem {
+        if (modelId.isBlank()) {
+            return ModelStatusItem(
+                label = label,
+                modelName = "未配置",
+                status = "未配置",
+                availability = ModelAvailability.Unavailable,
+                icon = icon,
+            )
+        }
+        val name = AiProviderCatalog.getModel(config.providerId, modelId)?.name ?: modelId
+        return ModelStatusItem(
+            label = label,
+            modelName = "${provider?.name ?: config.providerId} · $name",
+            status = remoteStatus,
+            availability = remoteAvailability,
+            icon = icon,
+        )
+    }
+
+    val selectedLocalId = config.localModel.ifBlank {
+        LocalModelCatalog.gemmaModels.firstOrNull()?.id.orEmpty()
+    }
+    val localModel = LocalModelCatalog.get(selectedLocalId)
+    val localState = localStates.firstOrNull { it.modelId == selectedLocalId }
+    val localAvailability = when (localState?.state) {
+        LocalModelInstallState.Installed -> ModelAvailability.Available
+        LocalModelInstallState.DeviceMayBeUnsupported -> ModelAvailability.Warning
+        LocalModelInstallState.FileMissing,
+        LocalModelInstallState.NotInstalled,
+        null -> ModelAvailability.Unavailable
+    }
+    val localStatus = when (localState?.state) {
+        LocalModelInstallState.Installed -> when {
+            config.localModelDirectEnabled -> "当前使用 · 可用"
+            config.offlineFallbackEnabled -> "可用 · 兜底已开启"
+            else -> "可用 · 兜底未开启"
+        }
+        LocalModelInstallState.DeviceMayBeUnsupported -> if (config.localModelDirectEnabled) {
+            "当前使用 · 内存偏低"
+        } else {
+            "可用 · 设备内存偏低"
+        }
+        LocalModelInstallState.FileMissing -> "模型文件异常"
+        LocalModelInstallState.NotInstalled, null -> "未安装"
+    }
+
+    return listOf(
+        ModelStatusItem(
+            label = "聊天模型",
+            modelName = "${provider?.name ?: config.providerId} · $chatModelName",
+            status = remoteStatus,
+            availability = remoteAvailability,
+            icon = Icons.Outlined.Forum,
+        ),
+        remoteCapability("识图模型", config.visionModel, Icons.Outlined.Visibility),
+        remoteCapability("生图模型", config.imageModel, Icons.Outlined.ImageIcon),
+        ModelStatusItem(
+            label = "本地模型",
+            modelName = localModel?.name ?: selectedLocalId.ifBlank { "未配置" },
+            status = localStatus,
+            availability = localAvailability,
+            icon = Icons.Outlined.Memory,
+        ),
+    )
+}
+
+private fun summarizeModelAvailability(statuses: List<ModelStatusItem>): ModelAvailability {
+    val remoteChat = statuses.firstOrNull { it.label == "聊天模型" }
+    return when {
+        remoteChat?.availability == ModelAvailability.Available -> ModelAvailability.Available
+        statuses.any { it.availability != ModelAvailability.Unavailable } -> ModelAvailability.Warning
+        else -> ModelAvailability.Unavailable
+    }
+}
+
+@Composable
+private fun ModelStatusButton(
+    availability: ModelAvailability,
+    onClick: () -> Unit,
+) {
+    val statusColor = modelAvailabilityColor(availability)
+    Box(modifier = Modifier.size(48.dp)) {
+        IconButton(onClick = onClick) {
+            Icon(
+                Icons.Outlined.DataUsage,
+                contentDescription = "模型状态：${modelAvailabilityLabel(availability)}",
+                tint = MaterialTheme.colorScheme.onBackground,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 9.dp, end = 8.dp)
+                .size(9.dp)
+                .clip(CircleShape)
+                .background(statusColor)
+                .border(1.dp, MaterialTheme.colorScheme.background, CircleShape),
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelStatusSheet(
+    statuses: List<ModelStatusItem>,
+    summary: ModelAvailability,
+    localDirectEnabled: Boolean,
+    onDismiss: () -> Unit,
+    onModeChange: (Boolean) -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 28.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "模型状态",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        modelSummaryText(summary),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
+                TextButton(onClick = onOpenSettings) { Text("设置") }
+            }
+            Spacer(Modifier.height(10.dp))
+            ModelModeSelector(
+                localSelected = localDirectEnabled,
+                localEnabled = statuses.lastOrNull()?.availability != ModelAvailability.Unavailable,
+                onModeChange = onModeChange,
+            )
+            Spacer(Modifier.height(8.dp))
+            statuses.forEachIndexed { index, item ->
+                ModelStatusRow(item)
+                if (index != statuses.lastIndex) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelModeSelector(
+    localSelected: Boolean,
+    localEnabled: Boolean,
+    onModeChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .padding(3.dp),
+    ) {
+        ModelModeOption(
+            label = "远程模型",
+            selected = !localSelected,
+            enabled = true,
+            modifier = Modifier.weight(1f),
+            onClick = { onModeChange(false) },
+        )
+        ModelModeOption(
+            label = "本地 Gemma",
+            selected = localSelected,
+            enabled = localEnabled,
+            modifier = Modifier.weight(1f),
+            onClick = { onModeChange(true) },
+        )
+    }
+}
+
+@Composable
+private fun ModelModeOption(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .height(38.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = when {
+                !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.40f)
+                selected -> MaterialTheme.colorScheme.onSurface
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+        )
+    }
+}
+
+@Composable
+private fun ModelStatusRow(item: ModelStatusItem) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            item.icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(21.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(item.label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            Text(
+                item.modelName,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(modelAvailabilityColor(item.availability)),
+        )
+        Spacer(Modifier.width(7.dp))
+        Text(
+            item.status,
+            color = modelAvailabilityColor(item.availability),
+            fontSize = 11.sp,
+            maxLines = 2,
+        )
+    }
+}
+
+@Composable
+private fun modelAvailabilityColor(availability: ModelAvailability): Color = when (availability) {
+    ModelAvailability.Available -> Color(0xFF2E7D32)
+    ModelAvailability.Warning -> Color(0xFFF9A825)
+    ModelAvailability.Unavailable -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+}
+
+private fun modelAvailabilityLabel(availability: ModelAvailability): String = when (availability) {
+    ModelAvailability.Available -> "远程模型可用"
+    ModelAvailability.Warning -> "仅本地可用或远程待验证"
+    ModelAvailability.Unavailable -> "没有可用模型"
+}
+
+private fun modelSummaryText(availability: ModelAvailability): String = when (availability) {
+    ModelAvailability.Available -> "远程聊天模型可用"
+    ModelAvailability.Warning -> "仅本地模型可用，或远程模型尚未验证"
+    ModelAvailability.Unavailable -> "当前没有可用模型"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
