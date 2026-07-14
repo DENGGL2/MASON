@@ -25,6 +25,8 @@ import com.denggl2.mason.data.LocalModelCatalog
 import com.denggl2.mason.data.LocalModelFileState
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelStore
+import com.denggl2.mason.data.InstalledSkill
+import com.denggl2.mason.data.SkillAutomationStore
 import com.denggl2.mason.llm.ChatClient
 import com.denggl2.mason.llm.ChatResponse
 import com.denggl2.mason.llm.LiteRtModelEngine
@@ -93,6 +95,7 @@ class ChatViewModel @Inject constructor(
     private val artifactStore: ArtifactStore,
     private val localModelStore: LocalModelStore,
     private val liteRtModelEngine: LiteRtModelEngine,
+    private val skillStore: SkillAutomationStore,
 ) : ViewModel() {
 
     private companion object {
@@ -104,6 +107,8 @@ class ChatViewModel @Inject constructor(
 
     val apiConfig: StateFlow<ApiConfig> = apiConfigDataStore.config
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ApiConfig())
+    private val _installedSkills = MutableStateFlow<List<InstalledSkill>>(emptyList())
+    val installedSkills: StateFlow<List<InstalledSkill>> = _installedSkills.asStateFlow()
 
     private var currentConversationId: Long? = savedStateHandle.get<Long>("conversationId")?.takeIf { it > 0L }
     private var isFirstMessage = currentConversationId == null
@@ -114,9 +119,16 @@ class ChatViewModel @Inject constructor(
     @Volatile private var localInferenceActive = false
 
     init {
+        refreshInstalledSkills()
         currentConversationId?.let { convId ->
             _uiState.value = _uiState.value.copy(conversationId = convId)
             loadHistory(convId)
+        }
+    }
+
+    fun refreshInstalledSkills() {
+        viewModelScope.launch {
+            _installedSkills.value = skillStore.listInstalledSkills(enabledOnly = true)
         }
     }
 

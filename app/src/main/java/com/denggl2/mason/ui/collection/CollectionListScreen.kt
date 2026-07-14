@@ -37,18 +37,21 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.EventNote
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -56,6 +59,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -72,8 +76,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.denggl2.mason.data.MasonSkillManifest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -105,20 +112,26 @@ private data class CollectionEntry(
     val summary: String,
     val sourceLabel: String,
     val previewFile: File?,
+    val skillEnabled: Boolean? = null,
 )
+
+private val COLLECTION_JSON = Json { ignoreUnknownKeys = true }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun CollectionListScreen(
     kind: CollectionKind,
     onBack: () -> Unit,
+    viewModel: CollectionListViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val skillState by viewModel.skillState.collectAsState()
     var query by remember { mutableStateOf("") }
     var searchActive by remember(kind) { mutableStateOf(false) }
     var loaded by remember(kind) { mutableStateOf(false) }
     var entries by remember(kind) { mutableStateOf<List<CollectionEntry>>(emptyList()) }
     var previewEntry by remember { mutableStateOf<CollectionEntry?>(null) }
+    var showInstallDialog by remember(kind) { mutableStateOf(false) }
     val filteredEntries = remember(entries, query) {
         val keyword = query.trim()
         if (keyword.isBlank()) {
@@ -131,12 +144,19 @@ fun CollectionListScreen(
         }
     }
 
-    LaunchedEffect(kind) {
+    LaunchedEffect(kind, skillState.revision) {
         loaded = false
         entries = withContext(Dispatchers.IO) {
             loadCollectionEntries(context.applicationContext, kind)
         }
         loaded = true
+    }
+
+    LaunchedEffect(skillState.message) {
+        skillState.message?.let { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            viewModel.consumeMessage()
+        }
     }
 
     Scaffold(
@@ -171,6 +191,18 @@ fun CollectionListScreen(
                     }
                 },
                 actions = {
+                    if (kind == CollectionKind.SKILLS) {
+                        IconButton(
+                            onClick = { showInstallDialog = true },
+                            enabled = !skillState.working,
+                        ) {
+                            Icon(
+                                Icons.Outlined.Add,
+                                contentDescription = "从 GitHub 安装 Skill",
+                                tint = MaterialTheme.colorScheme.onBackground,
+                            )
+                        }
+                    }
                     IconButton(
                         onClick = {
                             if (searchActive) {
@@ -241,6 +273,9 @@ fun CollectionListScreen(
                                         onOpen = { openEntry(context, entry, edit = false) },
                                         onEdit = { openEntry(context, entry, edit = true) },
                                         onShare = { shareEntry(context, entry) },
+                                        onToggleSkill = entry.skillEnabled?.let { enabled ->
+                                            { viewModel.setSkillEnabled(entry.path, !enabled) }
+                                        },
                                     )
                                 }
                             }
@@ -258,6 +293,17 @@ fun CollectionListScreen(
             onOpen = { openEntry(context, entry, edit = false) },
             onEdit = { openEntry(context, entry, edit = true) },
             onShare = { shareEntry(context, entry) },
+        )
+    }
+
+    if (showInstallDialog) {
+        InstallSkillDialog(
+            working = skillState.working,
+            onDismiss = { if (!skillState.working) showInstallDialog = false },
+            onInstall = { url ->
+                showInstallDialog = false
+                viewModel.installSkillFromGitHub(url)
+            },
         )
     }
 }
@@ -303,6 +349,7 @@ private fun CollectionEntryRow(
     onOpen: () -> Unit,
     onEdit: () -> Unit,
     onShare: () -> Unit,
+    onToggleSkill: (() -> Unit)?,
 ) {
     Column(
         modifier = Modifier
@@ -385,8 +432,52 @@ private fun CollectionEntryRow(
                     onClick = onShare,
                 )
             }
+            if (onToggleSkill != null) {
+                EntryActionChip(
+                    label = if (entry.skillEnabled == true) "停用" else "启用",
+                    icon = Icons.Outlined.PowerSettingsNew,
+                    onClick = onToggleSkill,
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun InstallSkillDialog(
+    working: Boolean,
+    onDismiss: () -> Unit,
+    onInstall: (String) -> Unit,
+) {
+    var url by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("从 GitHub 安装 Skill") },
+        text = {
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                enabled = !working,
+                singleLine = true,
+                label = { Text("公开仓库或 Skill 目录链接") },
+                placeholder = { Text("https://github.com/owner/repo") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onInstall(url.trim()) },
+                enabled = !working && url.isNotBlank(),
+            ) {
+                Text(if (working) "安装中..." else "安装")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !working) {
+                Text("取消")
+            }
+        },
+    )
 }
 
 @Composable
@@ -587,8 +678,9 @@ private fun collectEntries(root: File, kind: CollectionKind): List<CollectionEnt
 
 private fun File.toCollectionEntry(kind: CollectionKind, root: File): CollectionEntry {
     val preview = previewFileFor(kind)
+    val skillManifest = if (kind == CollectionKind.SKILLS && isDirectory) readCollectionSkillManifest() else null
     return CollectionEntry(
-        name = displayNameFor(kind),
+        name = skillManifest?.name?.takeIf(String::isNotBlank) ?: displayNameFor(kind),
         path = absolutePath,
         modifiedAt = lastModifiedDeep(preview),
         sizeLabel = if (isDirectory) "文件夹" else formatFileSize(length()),
@@ -598,7 +690,20 @@ private fun File.toCollectionEntry(kind: CollectionKind, root: File): Collection
         summary = summaryFor(kind, root, preview),
         sourceLabel = sourceLabelFor(root),
         previewFile = preview,
+        skillEnabled = if (kind == CollectionKind.SKILLS && isDirectory) {
+            skillManifest?.enabled ?: true
+        } else {
+            null
+        },
     )
+}
+
+private fun File.readCollectionSkillManifest(): MasonSkillManifest? {
+    val manifest = File(this, "skill.json")
+    if (!manifest.exists() || !manifest.isFile) return null
+    return runCatching {
+        COLLECTION_JSON.decodeFromString(MasonSkillManifest.serializer(), manifest.readText(Charsets.UTF_8))
+    }.getOrNull()
 }
 
 private fun File.displayNameFor(kind: CollectionKind): String {

@@ -6,6 +6,7 @@ import android.os.Environment
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
 import com.denggl2.mason.data.stripArtifactMarkers
+import com.denggl2.mason.agent.stripTaskRunMarkers
 import com.denggl2.mason.sync.SyncManager
 import com.denggl2.mason.sync.data.entity.Conversation
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -51,7 +52,7 @@ class ConversationListViewModel @Inject constructor(
                             "tool" -> "[工具] "
                             else -> ""
                         }
-                        val body = stripArtifactMarkers(content).replace("\n", " ").trim()
+                        val body = stripTaskRunMarkers(stripArtifactMarkers(content)).replace("\n", " ").trim()
                         roleLabel + if (body.length > 40) body.take(40) + "..." else body
                     }
                     ConversationListItem(conversation = conv, lastMessage = preview)

@@ -273,11 +273,13 @@ private val terminalRunStatuses = setOf(
 
 private const val TASK_RUN_MARKER_PREFIX = "<!-- mason-task-run"
 private const val TASK_RUN_MARKER_SUFFIX = "-->"
+private const val TASK_GOAL_MAX_CHARS = 500
+private const val USER_CONTEXT_SEPARATOR = "\n---\nMason 附加上下文"
 private val taskRunJson = Json { ignoreUnknownKeys = true }
 
 fun createTaskRun(goal: String, now: Long = System.currentTimeMillis()): TaskRun = TaskRun(
     id = UUID.randomUUID().toString(),
-    goal = goal,
+    goal = goal.substringBefore(USER_CONTEXT_SEPARATOR).trim().take(TASK_GOAL_MAX_CHARS),
     status = TaskRunStatus.Running,
     steps = TaskStepFactory.initial(goal, now),
     createdAt = now,
