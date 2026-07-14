@@ -143,6 +143,7 @@ import com.denggl2.mason.data.MasonSkillManifest
 import com.denggl2.mason.agent.TaskStep
 import com.denggl2.mason.agent.TaskStepStatus
 import com.denggl2.mason.agent.ToolApprovalRequest
+import com.denggl2.mason.agent.stripTaskRunMarkers
 import com.denggl2.mason.agent.ToolRiskLevel
 import com.denggl2.mason.llm.TokenUsage
 import com.denggl2.mason.llm.model.ChatMessage
@@ -413,12 +414,13 @@ fun ChatScreen(
                             }
                         }
 
-                        if (uiState.isStreaming || uiState.pendingToolApproval != null) {
+                        if (uiState.taskSteps.isNotEmpty()) {
                             item {
                                 MasonProcessPanel(
                                     steps = uiState.taskSteps,
                                     toolCallStatus = uiState.toolCallStatus,
                                     hasDraft = uiState.streamingContent.isNotBlank(),
+                                    onRetryStep = viewModel::retryTaskStep,
                                 )
                             }
                         }
@@ -1148,6 +1150,7 @@ private fun MasonProcessPanel(
     steps: List<TaskStep>,
     toolCallStatus: String?,
     hasDraft: Boolean,
+    onRetryStep: (String) -> Unit,
 ) {
     if (steps.isNotEmpty()) {
         Column(
@@ -1180,7 +1183,7 @@ private fun MasonProcessPanel(
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
             steps.forEach { step ->
-                TaskProcessLine(step)
+                TaskProcessLine(step, onRetry = { onRetryStep(step.id) })
             }
         }
         return
@@ -1221,7 +1224,7 @@ private fun MasonProcessPanel(
 }
 
 @Composable
-private fun TaskProcessLine(step: TaskStep) {
+private fun TaskProcessLine(step: TaskStep, onRetry: () -> Unit) {
     val active = step.status == TaskStepStatus.Running || step.status == TaskStepStatus.WaitingForUser
     val dotColor = when (step.status) {
         TaskStepStatus.Completed -> MaterialTheme.colorScheme.primary
@@ -1258,6 +1261,20 @@ private fun TaskProcessLine(step: TaskStep) {
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
+                if (step.status == TaskStepStatus.Failed && step.retryable) {
+                    IconButton(
+                        onClick = onRetry,
+                        modifier = Modifier.size(30.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Refresh,
+                            contentDescription = "重试此步骤",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(3.dp))
+                }
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(999.dp))
@@ -1281,8 +1298,33 @@ private fun TaskProcessLine(step: TaskStep) {
                 fontSize = 11.sp,
                 lineHeight = 16.sp,
             )
+            taskStepMeta(step)?.let { meta ->
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    meta,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                )
+            }
         }
     }
+}
+
+private fun taskStepMeta(step: TaskStep): String? {
+    val parts = mutableListOf<String>()
+    if (step.attempt > 1) parts += "第 ${step.attempt} 次尝试"
+    val startedAt = step.startedAt
+    val finishedAt = step.finishedAt
+    if (startedAt != null && finishedAt != null && finishedAt >= startedAt) {
+        val durationMs = finishedAt - startedAt
+        parts += if (durationMs < 1_000L) {
+            "${durationMs}ms"
+        } else {
+            "%.1f 秒".format(Locale.US, durationMs / 1_000.0)
+        }
+    }
+    return parts.joinToString(" · ").ifBlank { null }
 }
 
 @Composable
@@ -1324,7 +1366,7 @@ private fun processSummaryText(steps: List<TaskStep>): String {
     val active = steps.firstOrNull {
         it.status == TaskStepStatus.Running || it.status == TaskStepStatus.WaitingForUser
     }
-    return active?.let { "${it.title} · ${it.detail}" } ?: "规划、执行、检查、总结会按本轮任务动态更新"
+    return active?.let { "${it.title} · ${it.detail}" } ?: "本轮任务步骤已记录"
 }
 
 @Composable
@@ -1403,7 +1445,7 @@ private fun AssistantAnswerCard(
 ) {
     val rawContent = message.content.orEmpty()
     val artifacts = remember(rawContent) { extractArtifactMetadata(rawContent) }
-    val content = remember(rawContent) { stripArtifactMarkers(rawContent) }
+    val content = remember(rawContent) { stripTaskRunMarkers(stripArtifactMarkers(rawContent)) }
     val isStopped = remember(content) { content.contains("已停止生成") }
     val sections = remember(content, isStreaming) { parseAnswerSections(content, isStreaming) }
     val references = remember(content) { extractReferenceUrls(content) }

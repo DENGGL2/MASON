@@ -5,10 +5,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.denggl2.mason.agent.TaskStep
 import com.denggl2.mason.agent.TaskStepStatus
+import com.denggl2.mason.agent.TaskRun
 import com.denggl2.mason.agent.ToolApprovalRequest
 import com.denggl2.mason.agent.ToolPolicy
-import com.denggl2.mason.agent.MasonTaskPlanner
+import com.denggl2.mason.agent.annotateTaskRun
+import com.denggl2.mason.agent.createTaskRun
+import com.denggl2.mason.agent.extractTaskRunMarker
+import com.denggl2.mason.agent.stripTaskRunMarkers
+import com.denggl2.mason.agent.taskStepId
 import com.denggl2.mason.agent.updateStep
+import com.denggl2.mason.agent.withSteps
+import com.denggl2.mason.agent.withToolSteps
 import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
@@ -64,6 +71,7 @@ data class ChatUiState(
     val conversationUsage: TokenUsage = TokenUsage(),
     val lastUsageMissing: Boolean = false,
     val taskSteps: List<TaskStep> = emptyList(),
+    val taskRun: TaskRun? = null,
     val pendingToolApproval: ToolApprovalRequest? = null,
 )
 
@@ -100,6 +108,8 @@ class ChatViewModel @Inject constructor(
     private var currentConversationId: Long? = savedStateHandle.get<Long>("conversationId")?.takeIf { it > 0L }
     private var isFirstMessage = currentConversationId == null
     private var pendingToolBatch: PendingToolBatch? = null
+    private var pendingRetryStepId: String? = null
+    private var activeTaskRun: TaskRun? = null
     private var generationJob: Job? = null
     @Volatile private var localInferenceActive = false
 
@@ -119,16 +129,27 @@ class ChatViewModel @Inject constructor(
 
             // Load messages
             syncManager.getMessagesFlow(convId).collect { messages ->
+                val restoredTaskRun = messages.asReversed()
+                    .firstNotNullOfOrNull { message -> extractTaskRunMarker(message.content.orEmpty()) }
                 val chatMessages = messages.map { msg ->
                     ChatMessage(
                         role = msg.role,
-                        content = msg.content,
+                        content = msg.content?.let(::stripTaskRunMarkers),
                         tool_call_id = msg.toolCallId,
                         name = msg.toolCallName,
                         timestamp = msg.timestamp,
                     )
                 }
-                _uiState.value = _uiState.value.copy(messages = chatMessages)
+                val taskInFlight = generationJob?.isActive == true ||
+                    _uiState.value.isStreaming ||
+                    _uiState.value.pendingToolApproval != null
+                val taskRun = if (taskInFlight) activeTaskRun else restoredTaskRun
+                activeTaskRun = taskRun
+                _uiState.value = _uiState.value.copy(
+                    messages = chatMessages,
+                    taskRun = taskRun,
+                    taskSteps = taskRun?.steps.orEmpty(),
+                )
             }
         }
     }
@@ -146,6 +167,8 @@ class ChatViewModel @Inject constructor(
         if (content.isBlank() || generationJob?.isActive == true) return
 
         val startedAt = System.currentTimeMillis()
+        val taskRun = createTaskRun(content, startedAt)
+        activeTaskRun = taskRun
         var usageSeen = false
         var modelAnswered = false
         val userMessage = ChatMessage(role = "user", content = content, timestamp = startedAt)
@@ -158,7 +181,8 @@ class ChatViewModel @Inject constructor(
             lastProcessingMs = null,
             lastUsage = null,
             lastUsageMissing = false,
-            taskSteps = MasonTaskPlanner.createInitialPlan(content).steps,
+            taskSteps = taskRun.steps,
+            taskRun = taskRun,
             pendingToolApproval = null,
         )
 
@@ -185,6 +209,12 @@ class ChatViewModel @Inject constructor(
             }
 
             val producedArtifacts = mutableListOf<ArtifactMetadata>()
+            _uiState.value = _uiState.value.copy(
+                taskSteps = _uiState.value.taskSteps
+                    .updateStep("plan", TaskStepStatus.Completed, "已识别目标和所需能力")
+                    .updateStep("prepare-inputs", TaskStepStatus.Completed, "已整理本轮输入材料")
+                    .updateStep("execute", TaskStepStatus.Running, "正在等待模型生成方案"),
+            )
             val directLocalEnabled = apiConfig.value.localModelDirectEnabled
             val responseFlow = if (directLocalEnabled) {
                 localCapabilityGuidance(content)?.let { guidance ->
@@ -202,7 +232,9 @@ class ChatViewModel @Inject constructor(
                         _uiState.value = _uiState.value.copy(
                             taskSteps = _uiState.value.taskSteps
                                 .updateStep("plan", TaskStepStatus.Completed, "已判断需要调用手机能力")
-                                .updateStep("execute", TaskStepStatus.Running, "准备执行 ${response.calls.size} 个工具调用"),
+                                .updateStep("prepare-inputs", TaskStepStatus.Completed, "已整理本轮输入材料")
+                                .updateStep("execute", TaskStepStatus.Completed, "模型已生成 ${response.calls.size} 个工具调用")
+                                .withToolSteps(response.calls),
                         )
 
                         val approval = response.calls
@@ -228,7 +260,7 @@ class ChatViewModel @Inject constructor(
                                 toolCallStatus = null,
                                 pendingToolApproval = approval,
                                 taskSteps = _uiState.value.taskSteps
-                                    .updateStep("execute", TaskStepStatus.WaitingForUser, "等待用户确认 ${approval.toolName}")
+                                    .updateStep(approval.call.taskStepId(), TaskStepStatus.WaitingForUser, "等待用户确认 ${approval.toolName}")
                                     .updateStep("summary", TaskStepStatus.Pending, "确认后继续生成结果"),
                             )
                             return@collect
@@ -237,7 +269,12 @@ class ChatViewModel @Inject constructor(
                         val toolMessages = mutableListOf<ChatMessage>()
                         for (call in response.calls) {
                             _uiState.value = _uiState.value.copy(
-                                toolCallStatus = "正在执行 ${call.function.name} 工具..."
+                                toolCallStatus = "正在执行 ${call.function.name} 工具...",
+                                taskSteps = _uiState.value.taskSteps.updateStep(
+                                    call.taskStepId(),
+                                    TaskStepStatus.Running,
+                                    "正在执行 ${call.function.name}",
+                                ),
                             )
 
                             val args = try {
@@ -248,6 +285,13 @@ class ChatViewModel @Inject constructor(
                                 emptyMap()
                             }
                             val result = toolExecutor.execute(call.function.name, args)
+                            _uiState.value = _uiState.value.copy(
+                                taskSteps = _uiState.value.taskSteps.updateStep(
+                                    call.taskStepId(),
+                                    if (result.success) TaskStepStatus.Completed else TaskStepStatus.Failed,
+                                    if (result.success) "${call.function.name} 执行完成" else result.error ?: "工具执行失败",
+                                ),
+                            )
                             if (call.function.name == "file_write" && result.success) {
                                 artifactStore.metadataForExistingFile(result.artifactPath())?.let(producedArtifacts::add)
                             }
@@ -290,7 +334,6 @@ class ChatViewModel @Inject constructor(
                             _uiState.value = _uiState.value.copy(
                                 streamingContent = _uiState.value.streamingContent + streamResponse.text,
                                 taskSteps = _uiState.value.taskSteps
-                                    .updateStep("execute", TaskStepStatus.Completed, "工具调用完成")
                                     .updateStep("review", TaskStepStatus.Completed, "已检查工具返回结果")
                                     .updateStep("summary", TaskStepStatus.Running, "正在生成最终回复"),
                             )
@@ -312,16 +355,19 @@ class ChatViewModel @Inject constructor(
 
                     is ChatResponse.TextChunk -> {
                         modelAnswered = true
-                        val finalContent = prepareAssistantContent(response.text)
+                        val finalSteps = completeOpenTaskSteps(
+                            _uiState.value.taskSteps
+                                .updateStep("execute", TaskStepStatus.Completed, "模型已生成回答")
+                                .updateStep("review", TaskStepStatus.Completed, "已检查回答完整性")
+                                .updateStep("summary", TaskStepStatus.Completed, "已生成回复"),
+                        )
+                        val finalContent = prepareAssistantContent(response.text, taskSteps = finalSteps)
                         val assistantMessage = ChatMessage(role = "assistant", content = finalContent, timestamp = System.currentTimeMillis())
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + assistantMessage,
                             lastProcessingMs = System.currentTimeMillis() - startedAt,
-                            taskSteps = _uiState.value.taskSteps
-                                .updateStep("plan", TaskStepStatus.Completed, "已完成理解")
-                                .updateStep("execute", TaskStepStatus.Completed, "无需调用额外能力")
-                                .updateStep("review", TaskStepStatus.Completed, "已检查回答完整性")
-                                .updateStep("summary", TaskStepStatus.Completed, "已生成回复"),
+                            taskSteps = finalSteps,
+                            taskRun = activeTaskRun,
                         )
                         currentConversationId?.let { convId ->
                             syncManager.saveMessage(convId, role = "assistant", content = finalContent)
@@ -340,15 +386,18 @@ class ChatViewModel @Inject constructor(
                             tryLocalFallback(response.message, _uiState.value.messages)
                                 ?: formatGuidedError(response.message)
                         }
-                        val errorMessage = ChatMessage(role = "assistant", content = guidedContent, timestamp = System.currentTimeMillis())
+                        val failedSteps = _uiState.value.taskSteps
+                            .updateStep("summary", TaskStepStatus.Failed, response.message)
+                        val persistedError = annotateCurrentTaskRun(guidedContent, failedSteps)
+                        val errorMessage = ChatMessage(role = "assistant", content = persistedError, timestamp = System.currentTimeMillis())
                         _uiState.value = _uiState.value.copy(
                             messages = _uiState.value.messages + errorMessage,
                             lastProcessingMs = System.currentTimeMillis() - startedAt,
-                            taskSteps = _uiState.value.taskSteps
-                                .updateStep("summary", TaskStepStatus.Failed, response.message),
+                            taskSteps = failedSteps,
+                            taskRun = activeTaskRun,
                         )
                         currentConversationId?.let { convId ->
-                            syncManager.saveMessage(convId, role = "assistant", content = guidedContent)
+                            syncManager.saveMessage(convId, role = "assistant", content = persistedError)
                         }
                     }
                 }
@@ -359,15 +408,25 @@ class ChatViewModel @Inject constructor(
                     isStreaming = false,
                     toolCallStatus = null,
                     requestStartedAt = null,
-                    taskSteps = _uiState.value.taskSteps
-                        .updateStep("execute", TaskStepStatus.WaitingForUser),
+                    taskRun = activeTaskRun?.withSteps(_uiState.value.taskSteps),
                 )
                 return@launchGeneration
             }
 
             if (_uiState.value.streamingContent.isNotEmpty()) {
                 modelAnswered = true
-                val finalContent = prepareAssistantContent(_uiState.value.streamingContent, producedArtifacts)
+                val finalSteps = completeOpenTaskSteps(
+                    completeTaskStepUnlessFailed(
+                        _uiState.value.taskSteps.updateStep("review", TaskStepStatus.Completed, "已检查执行结果"),
+                        "summary",
+                        "已生成最终回复",
+                    ),
+                )
+                val finalContent = prepareAssistantContent(
+                    _uiState.value.streamingContent,
+                    producedArtifacts,
+                    finalSteps,
+                )
                 val assistantMessage = ChatMessage(role = "assistant", content = finalContent, timestamp = System.currentTimeMillis())
                 _uiState.value = _uiState.value.copy(
                     messages = _uiState.value.messages + assistantMessage,
@@ -376,9 +435,8 @@ class ChatViewModel @Inject constructor(
                     requestStartedAt = null,
                     lastProcessingMs = System.currentTimeMillis() - startedAt,
                     lastUsageMissing = modelAnswered && !usageSeen,
-                    taskSteps = _uiState.value.taskSteps
-                        .updateStep("review", TaskStepStatus.Completed, "已检查执行结果")
-                        .updateStep("summary", TaskStepStatus.Completed, "已生成最终回复"),
+                    taskSteps = finalSteps,
+                    taskRun = activeTaskRun,
                 )
                 currentConversationId?.let { convId ->
                     syncManager.saveMessage(convId, role = "assistant", content = finalContent)
@@ -412,11 +470,37 @@ class ChatViewModel @Inject constructor(
         sendMessage(content)
     }
 
+    fun retryTaskStep(stepId: String) {
+        if (_uiState.value.isStreaming || _uiState.value.pendingToolApproval != null) return
+        val step = _uiState.value.taskSteps.firstOrNull { it.id == stepId && it.retryable } ?: return
+        val call = step.toolCall ?: return
+        if (apiConfig.value.requireToolConfirmation && ToolPolicy.requiresUserApproval(call.function.name)) {
+            pendingRetryStepId = stepId
+            _uiState.value = _uiState.value.copy(
+                pendingToolApproval = ToolApprovalRequest(
+                    toolName = call.function.name,
+                    riskLevel = ToolPolicy.riskFor(call.function.name),
+                    reason = "这是失败步骤的重试。${ToolPolicy.approvalReason(call.function.name)}",
+                    call = call,
+                ),
+                taskSteps = _uiState.value.taskSteps.updateStep(
+                    stepId,
+                    TaskStepStatus.WaitingForUser,
+                    "等待确认后重试 ${call.function.name}",
+                ),
+            )
+            return
+        }
+        launchToolStepRetry(stepId, call)
+    }
+
     fun stopGeneration() {
         val job = generationJob?.takeIf { it.isActive } ?: return
         markGenerationStopped()
-        job.cancel(CancellationException("用户停止生成"))
-        viewModelScope.launch { liteRtModelEngine.release() }
+        viewModelScope.launch {
+            liteRtModelEngine.cancelActiveInvocation()
+            job.cancel(CancellationException("用户停止生成"))
+        }
     }
 
     fun onAppBackgrounded() {
@@ -428,14 +512,27 @@ class ChatViewModel @Inject constructor(
     }
 
     fun approvePendingToolCall() {
+        val retryStepId = pendingRetryStepId
+        if (retryStepId != null) {
+            val call = _uiState.value.pendingToolApproval?.call ?: return
+            pendingRetryStepId = null
+            _uiState.value = _uiState.value.copy(pendingToolApproval = null)
+            launchToolStepRetry(retryStepId, call)
+            return
+        }
         val batch = pendingToolBatch ?: return
+        val approval = _uiState.value.pendingToolApproval
         pendingToolBatch = null
         _uiState.value = _uiState.value.copy(
             pendingToolApproval = null,
             isStreaming = true,
             requestStartedAt = batch.startedAt,
             taskSteps = _uiState.value.taskSteps
-                .updateStep("execute", TaskStepStatus.Running, "用户已确认，正在执行工具")
+                .let { steps ->
+                    approval?.call?.let { call ->
+                        steps.updateStep(call.taskStepId(), TaskStepStatus.Running, "用户已确认，正在执行工具")
+                    } ?: steps
+                }
                 .updateStep("summary", TaskStepStatus.Pending, "工具完成后继续生成结果"),
         )
         launchGeneration {
@@ -446,8 +543,39 @@ class ChatViewModel @Inject constructor(
 
     fun rejectPendingToolCall() {
         val approval = _uiState.value.pendingToolApproval ?: return
+        val retryStepId = pendingRetryStepId
+        if (retryStepId != null) {
+            pendingRetryStepId = null
+            _uiState.value = _uiState.value.copy(
+                pendingToolApproval = null,
+                taskSteps = _uiState.value.taskSteps.updateStep(
+                    retryStepId,
+                    TaskStepStatus.Failed,
+                    "用户取消了这次重试",
+                ),
+            )
+            return
+        }
         pendingToolBatch = null
-        val content = "引导：已取消 ${approval.toolName} 工具调用。\n最终总结：这次操作没有继续执行，手机状态不会被更改。"
+        val finalSteps = _uiState.value.taskSteps.map { step ->
+            when {
+                step.id == approval.call.taskStepId() -> step.copy(
+                    status = TaskStepStatus.Cancelled,
+                    detail = "用户已拒绝 ${approval.toolName}",
+                    finishedAt = System.currentTimeMillis(),
+                )
+                step.status == TaskStepStatus.Pending -> step.copy(
+                    status = TaskStepStatus.Cancelled,
+                    detail = "前置操作已取消",
+                    finishedAt = System.currentTimeMillis(),
+                )
+                else -> step
+            }
+        }.updateStep("summary", TaskStepStatus.Completed, "已停止本轮任务")
+        val content = annotateCurrentTaskRun(
+            "引导：已取消 ${approval.toolName} 工具调用。\n最终总结：这次操作没有继续执行，手机状态不会被更改。",
+            finalSteps,
+        )
         val assistantMessage = ChatMessage(
             role = "assistant",
             content = content,
@@ -458,10 +586,8 @@ class ChatViewModel @Inject constructor(
             isStreaming = false,
             requestStartedAt = null,
             messages = _uiState.value.messages + assistantMessage,
-            taskSteps = _uiState.value.taskSteps
-                .updateStep("execute", TaskStepStatus.Cancelled, "用户已拒绝工具调用")
-                .updateStep("review", TaskStepStatus.Cancelled, "无需继续检查")
-                .updateStep("summary", TaskStepStatus.Completed, "已停止本轮任务"),
+            taskSteps = finalSteps,
+            taskRun = activeTaskRun,
         )
         currentConversationId?.let { convId ->
             viewModelScope.launch {
@@ -511,6 +637,81 @@ class ChatViewModel @Inject constructor(
         )
     }
 
+    private fun launchToolStepRetry(stepId: String, call: ToolCall) {
+        val startedAt = System.currentTimeMillis()
+        _uiState.value = _uiState.value.copy(
+            isStreaming = true,
+            requestStartedAt = startedAt,
+            taskSteps = _uiState.value.taskSteps.updateStep(
+                stepId,
+                TaskStepStatus.Running,
+                "正在重试 ${call.function.name}",
+            ),
+        )
+        launchGeneration {
+            val args = try {
+                Json.parseToJsonElement(call.function.arguments)
+                    .jsonObject
+                    .mapValues { it.value.jsonPrimitive.content }
+            } catch (_: Exception) {
+                emptyMap()
+            }
+            val result = toolExecutor.execute(call.function.name, args)
+            val retriedSteps = _uiState.value.taskSteps.updateStep(
+                stepId,
+                if (result.success) TaskStepStatus.Completed else TaskStepStatus.Failed,
+                if (result.success) "${call.function.name} 重试成功" else result.error ?: "工具重试失败",
+            )
+            val resultText = if (result.success) {
+                result.data.entries.joinToString("\n") { "${it.key}: ${it.value}" }.ifBlank { "工具已执行完成" }
+            } else {
+                "执行失败：${result.error ?: "未知错误"}"
+            }
+            val artifacts = if (call.function.name == "file_write" && result.success) {
+                listOfNotNull(artifactStore.metadataForExistingFile(result.artifactPath()))
+            } else {
+                emptyList()
+            }
+            val responseText = if (result.success) {
+                "进行中：已单独重试 ${call.function.name}。\n最终总结：$resultText"
+            } else {
+                "引导：${call.function.name} 重试仍然失败。\n最终总结：$resultText"
+            }
+            val finalContent = prepareAssistantContent(responseText, artifacts, retriedSteps)
+            val toolMessage = ChatMessage(
+                role = "tool",
+                content = resultText,
+                tool_call_id = call.id,
+                name = call.function.name,
+                timestamp = System.currentTimeMillis(),
+            )
+            val assistantMessage = ChatMessage(
+                role = "assistant",
+                content = finalContent,
+                timestamp = System.currentTimeMillis(),
+            )
+            _uiState.value = _uiState.value.copy(
+                messages = _uiState.value.messages + toolMessage + assistantMessage,
+                isStreaming = false,
+                requestStartedAt = null,
+                lastProcessingMs = System.currentTimeMillis() - startedAt,
+                taskSteps = retriedSteps,
+                taskRun = activeTaskRun,
+            )
+            currentConversationId?.let { convId ->
+                syncManager.saveMessage(
+                    convId,
+                    role = toolMessage.role,
+                    content = toolMessage.content,
+                    toolCallId = toolMessage.tool_call_id,
+                    toolCallName = toolMessage.name,
+                )
+                syncManager.saveMessage(convId, role = "assistant", content = finalContent)
+            }
+            notifyTaskCompletedIfNeeded()
+        }
+    }
+
     private suspend fun executeApprovedToolBatch(batch: PendingToolBatch) {
         var usageSeen = false
         var modelAnswered = false
@@ -521,7 +722,7 @@ class ChatViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 toolCallStatus = "正在执行 ${call.function.name} 工具...",
                 taskSteps = _uiState.value.taskSteps
-                    .updateStep("execute", TaskStepStatus.Running, "正在执行 ${call.function.name}"),
+                    .updateStep(call.taskStepId(), TaskStepStatus.Running, "正在执行 ${call.function.name}"),
             )
 
             val args = try {
@@ -532,6 +733,13 @@ class ChatViewModel @Inject constructor(
                 emptyMap()
             }
             val result = toolExecutor.execute(call.function.name, args)
+            _uiState.value = _uiState.value.copy(
+                taskSteps = _uiState.value.taskSteps.updateStep(
+                    call.taskStepId(),
+                    if (result.success) TaskStepStatus.Completed else TaskStepStatus.Failed,
+                    if (result.success) "${call.function.name} 执行完成" else result.error ?: "工具执行失败",
+                ),
+            )
             if (call.function.name == "file_write" && result.success) {
                 artifactStore.metadataForExistingFile(result.artifactPath())?.let(toolArtifacts::add)
             }
@@ -556,7 +764,6 @@ class ChatViewModel @Inject constructor(
             messages = nextMessages,
             toolCallStatus = null,
             taskSteps = _uiState.value.taskSteps
-                .updateStep("execute", TaskStepStatus.Completed, "工具调用完成")
                 .updateStep("review", TaskStepStatus.Running, "正在检查工具返回结果")
                 .updateStep("summary", TaskStepStatus.Running, "正在生成最终回复"),
         )
@@ -598,7 +805,18 @@ class ChatViewModel @Inject constructor(
         }
 
         if (_uiState.value.streamingContent.isNotEmpty()) {
-            val finalContent = prepareAssistantContent(_uiState.value.streamingContent, toolArtifacts)
+            val finalSteps = completeOpenTaskSteps(
+                completeTaskStepUnlessFailed(
+                    _uiState.value.taskSteps.updateStep("review", TaskStepStatus.Completed, "已检查执行结果"),
+                    "summary",
+                    "已生成最终回复",
+                ),
+            )
+            val finalContent = prepareAssistantContent(
+                _uiState.value.streamingContent,
+                toolArtifacts,
+                finalSteps,
+            )
             val assistantMessage = ChatMessage(
                 role = "assistant",
                 content = finalContent,
@@ -611,9 +829,8 @@ class ChatViewModel @Inject constructor(
                 requestStartedAt = null,
                 lastProcessingMs = System.currentTimeMillis() - batch.startedAt,
                 lastUsageMissing = modelAnswered && !usageSeen,
-                taskSteps = _uiState.value.taskSteps
-                    .updateStep("review", TaskStepStatus.Completed, "已检查执行结果")
-                    .updateStep("summary", TaskStepStatus.Completed, "已生成最终回复"),
+                taskSteps = finalSteps,
+                taskRun = activeTaskRun,
             )
             currentConversationId?.let { convId ->
                 syncManager.saveMessage(convId, role = "assistant", content = finalContent)
@@ -770,7 +987,18 @@ class ChatViewModel @Inject constructor(
 
     private fun markGenerationStopped() {
         if (!_uiState.value.isStreaming) return
-        val stoppedContent = "最终总结：已停止生成。"
+        val stoppedSteps = _uiState.value.taskSteps.map { step ->
+            if (step.status == TaskStepStatus.Running || step.status == TaskStepStatus.Pending) {
+                step.copy(
+                    status = TaskStepStatus.Cancelled,
+                    detail = "已停止生成",
+                    finishedAt = System.currentTimeMillis(),
+                )
+            } else {
+                step
+            }
+        }
+        val stoppedContent = annotateCurrentTaskRun("最终总结：已停止生成。", stoppedSteps)
         val stoppedMessage = ChatMessage(
             role = "assistant",
             content = stoppedContent,
@@ -782,13 +1010,8 @@ class ChatViewModel @Inject constructor(
             streamingContent = "",
             toolCallStatus = null,
             requestStartedAt = null,
-            taskSteps = _uiState.value.taskSteps.map { step ->
-                if (step.status == TaskStepStatus.Running || step.status == TaskStepStatus.Pending) {
-                    step.copy(status = TaskStepStatus.Cancelled, detail = "已停止生成")
-                } else {
-                    step
-                }
-            },
+            taskSteps = stoppedSteps,
+            taskRun = activeTaskRun,
         )
         currentConversationId?.let { convId ->
             viewModelScope.launch {
@@ -800,11 +1023,43 @@ class ChatViewModel @Inject constructor(
     private suspend fun prepareAssistantContent(
         content: String,
         existingArtifacts: List<ArtifactMetadata> = emptyList(),
+        taskSteps: List<TaskStep> = _uiState.value.taskSteps,
     ): String {
-        return artifactStore.saveArtifactsAndAnnotate(
+        val artifactContent = artifactStore.saveArtifactsAndAnnotate(
             content = content,
             existingArtifacts = existingArtifacts,
         ).content
+        return annotateCurrentTaskRun(artifactContent, taskSteps)
+    }
+
+    private fun annotateCurrentTaskRun(content: String, steps: List<TaskStep>): String {
+        val snapshot = activeTaskRun?.withSteps(steps)
+        activeTaskRun = snapshot
+        return annotateTaskRun(content, snapshot)
+    }
+
+    private fun completeOpenTaskSteps(steps: List<TaskStep>): List<TaskStep> = steps.map { step ->
+        if (step.status == TaskStepStatus.Pending || step.status == TaskStepStatus.Running) {
+            step.copy(
+                status = TaskStepStatus.Completed,
+                finishedAt = System.currentTimeMillis(),
+            )
+        } else {
+            step
+        }
+    }
+
+    private fun completeTaskStepUnlessFailed(
+        steps: List<TaskStep>,
+        stepId: String,
+        detail: String,
+    ): List<TaskStep> {
+        val step = steps.firstOrNull { it.id == stepId }
+        return if (step?.status == TaskStepStatus.Failed) {
+            steps
+        } else {
+            steps.updateStep(stepId, TaskStepStatus.Completed, detail)
+        }
     }
 
     private fun ToolResult.artifactPath(): String? =

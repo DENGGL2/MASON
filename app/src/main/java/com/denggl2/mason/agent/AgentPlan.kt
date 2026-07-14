@@ -54,6 +54,6 @@ object MasonTaskPlanner {
         MasonTaskPlan(
             userGoal = userGoal,
             agents = MasonAgentCatalog.defaultAgents,
-            steps = TaskStepFactory.initial(),
+            steps = TaskStepFactory.initial(userGoal),
         )
 }

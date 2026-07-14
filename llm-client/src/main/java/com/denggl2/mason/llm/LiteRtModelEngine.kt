@@ -1,6 +1,7 @@
 ﻿package com.denggl2.mason.llm
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -25,6 +26,14 @@ class LiteRtModelEngine(
     private val mutex = Mutex()
     private var loadedModelId: String? = null
     private var engine: AutoCloseable? = null
+    @Volatile
+    private var activeConversation: Any? = null
+
+    suspend fun cancelActiveInvocation() {
+        withContext(Dispatchers.IO) {
+            activeConversation?.let(::cancelQuietly)
+        }
+    }
 
     suspend fun release() {
         withContext(Dispatchers.IO) {
@@ -65,20 +74,26 @@ class LiteRtModelEngine(
             return@flow
         }
 
-        val text = runCatching {
-            val loadedEngine = loadEngine(invocation.modelId, modelPath)
-            val conversation = createConversation(loadedEngine)
-            val builder = StringBuilder()
-            try {
-                sendMessageAsync(conversation, prompt).collect { partial ->
-                    val chunk = extractText(partial)
-                    if (chunk.isNotBlank()) builder.append(chunk)
+        val text = try {
+            mutex.withLock {
+                val loadedEngine = loadEngineLocked(invocation.modelId, modelPath)
+                val conversation = createConversation(loadedEngine)
+                activeConversation = conversation
+                val builder = StringBuilder()
+                try {
+                    sendMessageAsync(conversation, prompt).collect { partial ->
+                        val chunk = extractText(partial)
+                        if (chunk.isNotBlank()) builder.append(chunk)
+                    }
+                } finally {
+                    activeConversation = null
+                    closeQuietly(conversation)
                 }
-            } finally {
-                closeQuietly(conversation)
+                builder.toString().trim()
             }
-            builder.toString().trim()
-        }.getOrElse { throwable ->
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (throwable: Throwable) {
             emit(ChatResponse.Error(throwable.toLocalRuntimeMessage()))
             return@flow
         }
@@ -128,22 +143,21 @@ class LiteRtModelEngine(
         }
     }
 
-    private suspend fun loadEngine(modelId: String, modelPath: String): AutoCloseable =
-        mutex.withLock {
-            engine?.takeIf { loadedModelId == modelId }?.let { return@withLock it }
-            engine?.close()
-            val backendClass = Class.forName("com.google.ai.edge.litertlm.Backend")
-            val backend = createCpuBackend(backendClass)
-            val engineConfigClass = Class.forName("com.google.ai.edge.litertlm.EngineConfig")
-            val config = createEngineConfig(engineConfigClass, backendClass, modelPath, backend)
-            val engineClass = Class.forName("com.google.ai.edge.litertlm.Engine")
-            val loaded = engineClass.getConstructor(engineConfigClass).newInstance(config) as AutoCloseable
-            engineClass.getMethod("initialize").invoke(loaded)
-            loaded.also {
-                engine = it
-                loadedModelId = modelId
-            }
+    private fun loadEngineLocked(modelId: String, modelPath: String): AutoCloseable {
+        engine?.takeIf { loadedModelId == modelId }?.let { return it }
+        engine?.close()
+        val backendClass = Class.forName("com.google.ai.edge.litertlm.Backend")
+        val backend = createCpuBackend(backendClass)
+        val engineConfigClass = Class.forName("com.google.ai.edge.litertlm.EngineConfig")
+        val config = createEngineConfig(engineConfigClass, backendClass, modelPath, backend)
+        val engineClass = Class.forName("com.google.ai.edge.litertlm.Engine")
+        val loaded = engineClass.getConstructor(engineConfigClass).newInstance(config) as AutoCloseable
+        engineClass.getMethod("initialize").invoke(loaded)
+        return loaded.also {
+            engine = it
+            loadedModelId = modelId
         }
+    }
 
     private fun createCpuBackend(backendClass: Class<*>): Any {
         if (backendClass.isEnum) {
@@ -291,6 +305,12 @@ class LiteRtModelEngine(
     private fun closeQuietly(value: Any) {
         runCatching {
             (value as? AutoCloseable)?.close()
+        }
+    }
+
+    private fun cancelQuietly(conversation: Any) {
+        runCatching {
+            conversation.javaClass.getMethod("cancelProcess").invoke(conversation)
         }
     }
 
