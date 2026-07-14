@@ -131,12 +131,31 @@ class SkillAutomationStore @Inject constructor(
 
     suspend fun saveAutomation(spec: MasonAutomationSpec): MasonAutomationSpec =
         withContext(Dispatchers.IO) {
+            require(spec.id.matches(Regex("[a-z0-9._-]{1,80}"))) { "自动化 ID 格式不正确" }
+            require(spec.name.isNotBlank()) { "自动化名称不能为空" }
+            require(spec.actions.isNotEmpty()) { "自动化至少需要一个动作" }
             val folder = File(automationsRoot(), spec.id)
+            check(folder.isInside(automationsRoot())) { "自动化路径不安全" }
             folder.mkdirs()
             val next = spec.copy(updatedAt = System.currentTimeMillis())
             File(folder, AUTOMATION_MANIFEST).writeText(json.encodeToString(next), Charsets.UTF_8)
             next
         }
+
+    suspend fun automation(automationId: String): MasonAutomationSpec? = withContext(Dispatchers.IO) {
+        if (!automationId.isSafeAutomationId()) return@withContext null
+        readAutomationSpec(File(automationsRoot(), automationId))
+    }
+
+    suspend fun setAutomationEnabled(
+        automationId: String,
+        enabled: Boolean,
+    ): MasonAutomationSpec? = withContext(Dispatchers.IO) {
+        if (!automationId.isSafeAutomationId()) return@withContext null
+        val current = readAutomationSpec(File(automationsRoot(), automationId))
+            ?: return@withContext null
+        saveAutomation(current.copy(enabled = enabled))
+    }
 
     suspend fun listAutomations(): List<MasonAutomationSpec> = withContext(Dispatchers.IO) {
         automationsRoot().listFiles()
@@ -147,6 +166,7 @@ class SkillAutomationStore @Inject constructor(
     }
 
     suspend fun appendAutomationLog(log: MasonAutomationRunLog) = withContext(Dispatchers.IO) {
+        require(log.automationId.isSafeAutomationId()) { "自动化 ID 格式不正确" }
         val folder = File(automationsRoot(), log.automationId).also { it.mkdirs() }
         val logFile = File(folder, AUTOMATION_LOG)
         val logs = readAutomationLogs(log.automationId).takeLast(MAX_LOGS - 1) + log
@@ -158,6 +178,7 @@ class SkillAutomationStore @Inject constructor(
 
     suspend fun readAutomationLogs(automationId: String): List<MasonAutomationRunLog> =
         withContext(Dispatchers.IO) {
+            if (!automationId.isSafeAutomationId()) return@withContext emptyList()
             val logFile = File(File(automationsRoot(), automationId), AUTOMATION_LOG)
             if (!logFile.exists() || !logFile.isFile) return@withContext emptyList()
             runCatching {
@@ -451,6 +472,8 @@ class SkillAutomationStore @Inject constructor(
 
     private fun String.cleanSkillDescription(): String =
         if (startsWith("description:", ignoreCase = true)) substringAfter(':').trim() else trim()
+
+    private fun String.isSafeAutomationId(): Boolean = matches(Regex("[a-z0-9._-]{1,80}"))
 
     private fun ZipEntry.safeRepositoryPath(): String {
         val normalized = name.replace('\\', '/').trimStart('/')

@@ -45,6 +45,8 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.PowerSettingsNew
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -53,6 +55,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -78,8 +83,11 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.denggl2.mason.data.MasonSkillManifest
+import com.denggl2.mason.data.MasonAutomationRunLog
+import com.denggl2.mason.data.MasonAutomationSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.text.SimpleDateFormat
@@ -113,6 +121,8 @@ private data class CollectionEntry(
     val sourceLabel: String,
     val previewFile: File?,
     val skillEnabled: Boolean? = null,
+    val automationId: String? = null,
+    val automationEnabled: Boolean? = null,
 )
 
 private val COLLECTION_JSON = Json { ignoreUnknownKeys = true }
@@ -126,12 +136,15 @@ fun CollectionListScreen(
 ) {
     val context = LocalContext.current
     val skillState by viewModel.skillState.collectAsState()
+    val automationState by viewModel.automationState.collectAsState()
     var query by remember { mutableStateOf("") }
     var searchActive by remember(kind) { mutableStateOf(false) }
     var loaded by remember(kind) { mutableStateOf(false) }
     var entries by remember(kind) { mutableStateOf<List<CollectionEntry>>(emptyList()) }
     var previewEntry by remember { mutableStateOf<CollectionEntry?>(null) }
     var showInstallDialog by remember(kind) { mutableStateOf(false) }
+    var showCreateAutomationDialog by remember(kind) { mutableStateOf(false) }
+    var pendingAutomationRun by remember { mutableStateOf<CollectionEntry?>(null) }
     val filteredEntries = remember(entries, query) {
         val keyword = query.trim()
         if (keyword.isBlank()) {
@@ -144,7 +157,7 @@ fun CollectionListScreen(
         }
     }
 
-    LaunchedEffect(kind, skillState.revision) {
+    LaunchedEffect(kind, skillState.revision, automationState.revision) {
         loaded = false
         entries = withContext(Dispatchers.IO) {
             loadCollectionEntries(context.applicationContext, kind)
@@ -156,6 +169,13 @@ fun CollectionListScreen(
         skillState.message?.let { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             viewModel.consumeMessage()
+        }
+    }
+
+    LaunchedEffect(automationState.message) {
+        automationState.message?.let { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            viewModel.consumeAutomationMessage()
         }
     }
 
@@ -191,14 +211,28 @@ fun CollectionListScreen(
                     }
                 },
                 actions = {
-                    if (kind == CollectionKind.SKILLS) {
+                    if (kind == CollectionKind.SKILLS || kind == CollectionKind.AUTOMATIONS) {
                         IconButton(
-                            onClick = { showInstallDialog = true },
-                            enabled = !skillState.working,
+                            onClick = {
+                                if (kind == CollectionKind.SKILLS) {
+                                    showInstallDialog = true
+                                } else {
+                                    showCreateAutomationDialog = true
+                                }
+                            },
+                            enabled = if (kind == CollectionKind.SKILLS) {
+                                !skillState.working
+                            } else {
+                                !automationState.working
+                            },
                         ) {
                             Icon(
                                 Icons.Outlined.Add,
-                                contentDescription = "从 GitHub 安装 Skill",
+                                contentDescription = if (kind == CollectionKind.SKILLS) {
+                                    "从 GitHub 安装 Skill"
+                                } else {
+                                    "创建自动化"
+                                },
                                 tint = MaterialTheme.colorScheme.onBackground,
                             )
                         }
@@ -276,6 +310,15 @@ fun CollectionListScreen(
                                         onToggleSkill = entry.skillEnabled?.let { enabled ->
                                             { viewModel.setSkillEnabled(entry.path, !enabled) }
                                         },
+                                        onToggleAutomation = entry.automationId?.let { id ->
+                                            { viewModel.setAutomationEnabled(id, entry.automationEnabled != true) }
+                                        },
+                                        onRunAutomation = entry.automationId?.let {
+                                            { pendingAutomationRun = entry }
+                                        },
+                                        onShowAutomationLogs = entry.automationId?.let { id ->
+                                            { viewModel.showAutomationLogs(id, entry.name) }
+                                        },
                                     )
                                 }
                             }
@@ -304,6 +347,41 @@ fun CollectionListScreen(
                 showInstallDialog = false
                 viewModel.installSkillFromGitHub(url)
             },
+        )
+    }
+    if (showCreateAutomationDialog) {
+        CreateAutomationDialog(
+            working = automationState.working,
+            onDismiss = { if (!automationState.working) showCreateAutomationDialog = false },
+            onCreate = { name, type, arguments ->
+                showCreateAutomationDialog = false
+                viewModel.createAutomation(name, type, arguments)
+            },
+        )
+    }
+    pendingAutomationRun?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { pendingAutomationRun = null },
+            title = { Text("运行 ${entry.name}？") },
+            text = { Text(entry.summary) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        entry.automationId?.let(viewModel::runAutomation)
+                        pendingAutomationRun = null
+                    },
+                ) { Text("运行") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingAutomationRun = null }) { Text("取消") }
+            },
+        )
+    }
+    automationState.logTitle?.let { title ->
+        AutomationLogsDialog(
+            title = title,
+            logs = automationState.logs,
+            onDismiss = viewModel::closeAutomationLogs,
         )
     }
 }
@@ -350,6 +428,9 @@ private fun CollectionEntryRow(
     onEdit: () -> Unit,
     onShare: () -> Unit,
     onToggleSkill: (() -> Unit)?,
+    onToggleAutomation: (() -> Unit)?,
+    onRunAutomation: (() -> Unit)?,
+    onShowAutomationLogs: (() -> Unit)?,
 ) {
     Column(
         modifier = Modifier
@@ -439,6 +520,27 @@ private fun CollectionEntryRow(
                     onClick = onToggleSkill,
                 )
             }
+            if (onRunAutomation != null) {
+                EntryActionChip(
+                    label = "运行",
+                    icon = Icons.Outlined.PlayArrow,
+                    onClick = onRunAutomation,
+                )
+            }
+            if (onShowAutomationLogs != null) {
+                EntryActionChip(
+                    label = "日志",
+                    icon = Icons.Outlined.History,
+                    onClick = onShowAutomationLogs,
+                )
+            }
+            if (onToggleAutomation != null) {
+                EntryActionChip(
+                    label = if (entry.automationEnabled == true) "停用" else "启用",
+                    icon = Icons.Outlined.PowerSettingsNew,
+                    onClick = onToggleAutomation,
+                )
+            }
         }
     }
 }
@@ -476,6 +578,135 @@ private fun InstallSkillDialog(
             TextButton(onClick = onDismiss, enabled = !working) {
                 Text("取消")
             }
+        },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CreateAutomationDialog(
+    working: Boolean,
+    onDismiss: () -> Unit,
+    onCreate: (String, String, Map<String, String>) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var actionType by remember { mutableStateOf("notification") }
+    var notificationTitle by remember { mutableStateOf("Mason") }
+    var notificationText by remember { mutableStateOf("") }
+    var packageName by remember { mutableStateOf("") }
+    val valid = name.isNotBlank() && when (actionType) {
+        "notification" -> notificationTitle.isNotBlank() && notificationText.isNotBlank()
+        "launch_app" -> packageName.isNotBlank()
+        else -> false
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("创建手动自动化") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    enabled = !working,
+                    singleLine = true,
+                    label = { Text("名称") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    listOf("notification" to "通知", "launch_app" to "打开 App")
+                        .forEachIndexed { index, option ->
+                            SegmentedButton(
+                                selected = actionType == option.first,
+                                onClick = { actionType = option.first },
+                                shape = SegmentedButtonDefaults.itemShape(index, 2),
+                                label = { Text(option.second) },
+                            )
+                        }
+                }
+                if (actionType == "notification") {
+                    OutlinedTextField(
+                        value = notificationTitle,
+                        onValueChange = { notificationTitle = it },
+                        enabled = !working,
+                        singleLine = true,
+                        label = { Text("通知标题") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = notificationText,
+                        onValueChange = { notificationText = it },
+                        enabled = !working,
+                        label = { Text("通知内容") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = packageName,
+                        onValueChange = { packageName = it },
+                        enabled = !working,
+                        singleLine = true,
+                        label = { Text("App 包名") },
+                        placeholder = { Text("com.example.app") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val arguments = if (actionType == "notification") {
+                        mapOf("title" to notificationTitle.trim(), "text" to notificationText.trim())
+                    } else {
+                        mapOf("action" to "launch", "package_name" to packageName.trim())
+                    }
+                    onCreate(name.trim(), actionType, arguments)
+                },
+                enabled = !working && valid,
+            ) { Text("创建") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !working) { Text("取消") }
+        },
+    )
+}
+
+@Composable
+private fun AutomationLogsDialog(
+    title: String,
+    logs: List<MasonAutomationRunLog>,
+    onDismiss: () -> Unit,
+) {
+    val formatter = remember { SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("$title · 运行日志") },
+        text = {
+            if (logs.isEmpty()) {
+                Text("暂无运行记录")
+            } else {
+                LazyColumn(
+                    modifier = Modifier.height(260.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(logs) { log ->
+                        Column {
+                            Text(
+                                if (log.status == "success") "成功" else "失败",
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "${formatter.format(Date(log.ranAt))} · ${log.message}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
         },
     )
 }
@@ -679,15 +910,28 @@ private fun collectEntries(root: File, kind: CollectionKind): List<CollectionEnt
 private fun File.toCollectionEntry(kind: CollectionKind, root: File): CollectionEntry {
     val preview = previewFileFor(kind)
     val skillManifest = if (kind == CollectionKind.SKILLS && isDirectory) readCollectionSkillManifest() else null
+    val automation = if (kind == CollectionKind.AUTOMATIONS && isDirectory) readCollectionAutomation() else null
+    val lastRun = if (automation != null) readCollectionAutomationLogs().maxByOrNull { it.ranAt } else null
+    val automationSummary = automation?.let { spec ->
+        buildString {
+            append(spec.description.ifBlank { "手动自动化" })
+            append(if (spec.enabled) " · 已启用" else " · 已停用")
+            lastRun?.let { log ->
+                append(if (log.status == "success") " · 上次成功" else " · 上次失败")
+            }
+        }
+    }
     return CollectionEntry(
-        name = skillManifest?.name?.takeIf(String::isNotBlank) ?: displayNameFor(kind),
+        name = automation?.name?.takeIf(String::isNotBlank)
+            ?: skillManifest?.name?.takeIf(String::isNotBlank)
+            ?: displayNameFor(kind),
         path = absolutePath,
         modifiedAt = lastModifiedDeep(preview),
         sizeLabel = if (isDirectory) "文件夹" else formatFileSize(length()),
         isDirectory = isDirectory,
         kind = kind,
         typeLabel = typeLabelFor(kind),
-        summary = summaryFor(kind, root, preview),
+        summary = automationSummary ?: summaryFor(kind, root, preview),
         sourceLabel = sourceLabelFor(root),
         previewFile = preview,
         skillEnabled = if (kind == CollectionKind.SKILLS && isDirectory) {
@@ -695,6 +939,8 @@ private fun File.toCollectionEntry(kind: CollectionKind, root: File): Collection
         } else {
             null
         },
+        automationId = automation?.id,
+        automationEnabled = automation?.enabled,
     )
 }
 
@@ -704,6 +950,25 @@ private fun File.readCollectionSkillManifest(): MasonSkillManifest? {
     return runCatching {
         COLLECTION_JSON.decodeFromString(MasonSkillManifest.serializer(), manifest.readText(Charsets.UTF_8))
     }.getOrNull()
+}
+
+private fun File.readCollectionAutomation(): MasonAutomationSpec? {
+    val manifest = File(this, "automation.json")
+    if (!manifest.exists() || !manifest.isFile) return null
+    return runCatching {
+        COLLECTION_JSON.decodeFromString(MasonAutomationSpec.serializer(), manifest.readText(Charsets.UTF_8))
+    }.getOrNull()
+}
+
+private fun File.readCollectionAutomationLogs(): List<MasonAutomationRunLog> {
+    val logs = File(this, "runs.json")
+    if (!logs.exists() || !logs.isFile) return emptyList()
+    return runCatching {
+        COLLECTION_JSON.decodeFromString(
+            ListSerializer(MasonAutomationRunLog.serializer()),
+            logs.readText(Charsets.UTF_8),
+        )
+    }.getOrDefault(emptyList())
 }
 
 private fun File.displayNameFor(kind: CollectionKind): String {
