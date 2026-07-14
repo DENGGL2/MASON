@@ -13,6 +13,9 @@ import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.AiModelRepository
 import com.denggl2.mason.data.LocalModelCatalog
+import com.denggl2.mason.data.LocalModelDownloadState
+import com.denggl2.mason.data.LocalModelDownloadStatus
+import com.denggl2.mason.data.LocalModelDownloader
 import com.denggl2.mason.data.LocalModelFileState
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelStore
@@ -31,6 +34,8 @@ import com.denggl2.mason.sync.SyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -87,6 +92,7 @@ class SettingsViewModel @Inject constructor(
     private val userMemoryStore: UserMemoryStore,
     private val officialChannelStore: OfficialChannelPreferencesDataStore,
     private val localModelStore: LocalModelStore,
+    private val localModelDownloader: LocalModelDownloader,
     private val liteRtModelEngine: LiteRtModelEngine,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
@@ -118,6 +124,11 @@ class SettingsViewModel @Inject constructor(
     private val _localModelTestState = MutableStateFlow(LocalModelTestUiState())
     val localModelTestState = _localModelTestState.asStateFlow()
 
+    private val _localModelDownloadStates = MutableStateFlow<Map<String, LocalModelDownloadState>>(emptyMap())
+    val localModelDownloadStates = _localModelDownloadStates.asStateFlow()
+    private var localModelDownloadJob: Job? = null
+    private var activeLocalModelDownloadId: String? = null
+
     val appVersion: String by lazy {
         try {
             val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
@@ -135,10 +146,97 @@ class SettingsViewModel @Inject constructor(
 
     init {
         refreshLocalModelStates()
+        refreshLocalModelDownloadStates()
     }
 
     fun refreshLocalModelStates() {
         _localModelStates.value = localModelStore.states(LocalModelCatalog.gemmaModels)
+    }
+
+    private fun refreshLocalModelDownloadStates() {
+        _localModelDownloadStates.value = LocalModelCatalog.gemmaModels.associate { model ->
+            model.id to localModelDownloader.stateFor(model)
+        }
+    }
+
+    fun downloadLocalModel(modelId: String) {
+        val model = LocalModelCatalog.get(modelId) ?: run {
+            _toastEvent.tryEmit("未找到本地模型配置")
+            return
+        }
+        if (localModelStore.stateFor(model).installed) {
+            _toastEvent.tryEmit("${model.name} 已安装")
+            return
+        }
+        if (localModelDownloadJob?.isActive == true) {
+            _toastEvent.tryEmit("请先暂停当前模型下载")
+            return
+        }
+
+        activeLocalModelDownloadId = modelId
+        localModelDownloadJob = viewModelScope.launch {
+            try {
+                localModelDownloader.download(model) { state ->
+                    updateLocalModelDownloadState(state)
+                }
+                refreshLocalModelStates()
+                _toastEvent.emit("${model.name} 已下载并校验")
+            } catch (_: CancellationException) {
+                updateLocalModelDownloadState(localModelDownloader.stateFor(model))
+            } catch (e: Exception) {
+                val partialState = localModelDownloader.stateFor(model)
+                updateLocalModelDownloadState(
+                    partialState.copy(
+                        status = LocalModelDownloadStatus.Failed,
+                        message = e.message ?: e.javaClass.simpleName,
+                    ),
+                )
+            } finally {
+                activeLocalModelDownloadId = null
+            }
+        }
+    }
+
+    fun pauseLocalModelDownload(modelId: String) {
+        if (activeLocalModelDownloadId == modelId) {
+            localModelDownloadJob?.cancel()
+        }
+    }
+
+    fun deleteLocalModel(modelId: String) {
+        val model = LocalModelCatalog.get(modelId) ?: return
+        viewModelScope.launch {
+            try {
+                if (activeLocalModelDownloadId == modelId) {
+                    localModelDownloadJob?.cancel()
+                    localModelDownloadJob?.join()
+                }
+                liteRtModelEngine.release()
+                localModelStore.deleteModel(model)
+                refreshLocalModelStates()
+                refreshLocalModelDownloadStates()
+                val currentConfig = config.value
+                if (currentConfig.localModel == modelId) {
+                    val replacement = LocalModelCatalog.gemmaModels.firstOrNull { candidate ->
+                        localModelStore.stateFor(candidate).installed
+                    }
+                    configDataStore.updateConfig(
+                        currentConfig.copy(
+                            localModel = replacement?.id.orEmpty(),
+                            localModelDirectEnabled = false,
+                            offlineFallbackEnabled = currentConfig.offlineFallbackEnabled && replacement != null,
+                        ),
+                    )
+                }
+                _toastEvent.emit("已删除 ${model.name} 的本地文件")
+            } catch (e: Exception) {
+                _toastEvent.emit("删除失败：${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    private fun updateLocalModelDownloadState(state: LocalModelDownloadState) {
+        _localModelDownloadStates.value = _localModelDownloadStates.value + (state.modelId to state)
     }
 
     fun importLocalModel(modelId: String, uri: Uri) {

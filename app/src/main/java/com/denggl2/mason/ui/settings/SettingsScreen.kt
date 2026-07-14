@@ -33,6 +33,7 @@ import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Fingerprint
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Storage
@@ -57,6 +59,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -94,6 +97,8 @@ import com.denggl2.mason.data.AiProviderPreset
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.IslandVendorMode
 import com.denggl2.mason.data.LocalModelCatalog
+import com.denggl2.mason.data.LocalModelDownloadState
+import com.denggl2.mason.data.LocalModelDownloadStatus
 import com.denggl2.mason.data.LocalModelFileState
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelPreset
@@ -158,6 +163,7 @@ fun SettingsScreen(
     val cacheOverviewState by viewModel.cacheOverviewState.collectAsState()
     val localModelStates by viewModel.localModelStates.collectAsState()
     val localModelTestState by viewModel.localModelTestState.collectAsState()
+    val localModelDownloadStates by viewModel.localModelDownloadStates.collectAsState()
     val memoryItems by viewModel.memoryItems.collectAsState()
     val officialChannels by viewModel.officialChannels.collectAsState()
     val context = LocalContext.current
@@ -178,6 +184,7 @@ fun SettingsScreen(
     var showCacheDialog by remember { mutableStateOf(false) }
     var officialDetail by remember { mutableStateOf<OfficialChannelDetail?>(null) }
     var pendingLocalModelImportId by remember { mutableStateOf<String?>(null) }
+    var pendingLocalModelDeleteId by remember { mutableStateOf<String?>(null) }
     var editingMemoryId by remember { mutableStateOf<String?>(null) }
     var memoryEditorExpanded by remember { mutableStateOf(false) }
     var memoryLabel by remember { mutableStateOf("") }
@@ -471,7 +478,7 @@ fun SettingsScreen(
                 GroupDivider()
                 SwitchSettingRow(
                     title = "网络失败时尝试本地模型",
-                    description = "远程模型失败后改用已安装的本地模型生成草稿；当前先保存策略，推理运行时后续接入。",
+                    description = "远程模型失败后改用已安装的本地模型继续文字问答；手机工具和附件仍需远程模型。",
                     checked = offlineFallbackEnabled,
                     onCheckedChange = {
                         val fallbackModel = localModel.ifBlank { LocalModelCatalog.gemmaModels.firstOrNull()?.id.orEmpty() }
@@ -491,6 +498,7 @@ fun SettingsScreen(
                 selectedModelId = localModel,
                 states = localModelStates,
                 testState = localModelTestState,
+                downloadStates = localModelDownloadStates,
                 fallbackEnabled = offlineFallbackEnabled,
                 onSelect = { item ->
                     localModel = item.id
@@ -506,6 +514,17 @@ fun SettingsScreen(
                     localModel = item.id
                     persistApiConfig(nextLocalModel = item.id)
                     viewModel.testLocalModel(item.id)
+                },
+                onDownload = { item ->
+                    localModel = item.id
+                    persistApiConfig(nextLocalModel = item.id)
+                    viewModel.downloadLocalModel(item.id)
+                },
+                onPauseDownload = { item ->
+                    viewModel.pauseLocalModelDownload(item.id)
+                },
+                onDelete = { item ->
+                    pendingLocalModelDeleteId = item.id
                 },
             )
 
@@ -841,6 +860,32 @@ fun SettingsScreen(
             onRefresh = viewModel::refreshCacheOverview,
             onClean = viewModel::clearCache,
             onDismiss = { showCacheDialog = false },
+        )
+    }
+
+    pendingLocalModelDeleteId?.let { modelId ->
+        val localPreset = LocalModelCatalog.get(modelId)
+        AlertDialog(
+            onDismissRequest = { pendingLocalModelDeleteId = null },
+            title = { Text("删除本地模型") },
+            text = {
+                Text("将删除 ${localPreset?.name ?: modelId} 的模型文件和未完成下载。切换远程模型不会执行此操作。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingLocalModelDeleteId = null
+                        viewModel.deleteLocalModel(modelId)
+                    },
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingLocalModelDeleteId = null }) {
+                    Text("取消")
+                }
+            },
         )
     }
 
@@ -1273,15 +1318,19 @@ private fun LocalModelFallbackContent(
     selectedModelId: String,
     states: List<LocalModelFileState>,
     testState: LocalModelTestUiState,
+    downloadStates: Map<String, LocalModelDownloadState>,
     fallbackEnabled: Boolean,
     onSelect: (LocalModelPreset) -> Unit,
     onImport: (LocalModelPreset) -> Unit,
     onTest: (LocalModelPreset) -> Unit,
+    onDownload: (LocalModelPreset) -> Unit,
+    onPauseDownload: (LocalModelPreset) -> Unit,
+    onDelete: (LocalModelPreset) -> Unit,
 ) {
     SettingGroup {
         ApiHintRow(
             title = if (fallbackEnabled) "已启用本地兜底" else "本地模型待启用",
-            description = "先导入 Gemma 4 LiteRT-LM 模型文件；当前接好文件状态和兜底路由，真实推理运行时后续接入。",
+            description = "可直接下载或手动导入 Gemma 4；下载支持暂停、继续、空间检查和 SHA-256 校验。",
         )
         models.forEach { item ->
             GroupDivider()
@@ -1289,10 +1338,14 @@ private fun LocalModelFallbackContent(
                 item = item,
                 state = states.firstOrNull { it.modelId == item.id },
                 testState = testState.takeIf { it.modelId == item.id },
+                downloadState = downloadStates[item.id],
                 selected = item.id == selectedModelId,
                 onClick = { onSelect(item) },
                 onImport = { onImport(item) },
                 onTest = { onTest(item) },
+                onDownload = { onDownload(item) },
+                onPauseDownload = { onPauseDownload(item) },
+                onDelete = { onDelete(item) },
             )
         }
     }
@@ -1303,11 +1356,22 @@ private fun LocalModelRowWithTest(
     item: LocalModelPreset,
     state: LocalModelFileState?,
     testState: LocalModelTestUiState?,
+    downloadState: LocalModelDownloadState?,
     selected: Boolean,
     onClick: () -> Unit,
     onImport: () -> Unit,
     onTest: () -> Unit,
+    onDownload: () -> Unit,
+    onPauseDownload: () -> Unit,
+    onDelete: () -> Unit,
 ) {
+    val downloadActive = downloadState?.status in setOf(
+        LocalModelDownloadStatus.Checking,
+        LocalModelDownloadStatus.Downloading,
+        LocalModelDownloadStatus.Verifying,
+    )
+    val hasPartialDownload = (downloadState?.downloadedBytes ?: 0L) > 0L
+    val hasLocalFile = state?.state != null && state.state != LocalModelInstallState.NotInstalled
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1358,28 +1422,76 @@ private fun LocalModelRowWithTest(
             ModelSelectionIndicator(selected = selected)
         }
         Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            localModelStateDescription(state),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+        )
+        if (downloadState != null && (downloadActive || hasPartialDownload || downloadState.message != null)) {
+            Spacer(Modifier.height(6.dp))
+            LinearProgressIndicator(
+                progress = { downloadState.progress },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(4.dp))
             Text(
-                localModelStateDescription(state),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                localModelDownloadDescription(downloadState),
+                color = if (downloadState.status == LocalModelDownloadStatus.Failed) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
                 fontSize = 11.sp,
                 lineHeight = 15.sp,
-                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.width(8.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (state?.installed != true) {
+                OutlinedButton(
+                    onClick = if (downloadActive) onPauseDownload else onDownload,
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Icon(
+                        imageVector = if (downloadActive) Icons.Outlined.Pause else Icons.Outlined.Download,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(if (downloadActive) "暂停" else if (hasPartialDownload) "继续" else "下载")
+                }
+                Spacer(Modifier.width(8.dp))
+            }
             OutlinedButton(
                 onClick = onImport,
                 shape = RoundedCornerShape(8.dp),
             ) {
-                Text(if (state?.installed == true) "重新导入" else "导入模型")
+                Text(if (state?.installed == true) "重新导入" else "导入")
             }
-            Spacer(Modifier.width(8.dp))
-            OutlinedButton(
-                onClick = onTest,
-                enabled = state?.installed == true && testState?.isTesting != true,
-                shape = RoundedCornerShape(8.dp),
-            ) {
-                Text(if (testState?.isTesting == true) "测试中" else "测试")
+            if (state?.installed == true) {
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = onTest,
+                    enabled = testState?.isTesting != true,
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text(if (testState?.isTesting == true) "测试中" else "测试")
+                }
+            }
+            if (hasLocalFile || hasPartialDownload) {
+                Spacer(Modifier.width(4.dp))
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Outlined.Delete,
+                        contentDescription = "删除本地模型",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         }
         if (!testState?.message.isNullOrBlank()) {
@@ -1500,6 +1612,19 @@ private fun localModelStateDescription(state: LocalModelFileState?): String {
         }
         LocalModelInstallState.FileMissing -> "模型路径存在异常，请重新导入单个 LiteRT-LM 模型文件"
         LocalModelInstallState.NotInstalled, null -> "未安装模型文件；导入后才可作为离线兜底候选"
+    }
+}
+
+private fun localModelDownloadDescription(state: LocalModelDownloadState): String {
+    val progress = "${formatLocalModelSize(state.downloadedBytes)} / ${formatLocalModelSize(state.totalBytes)}"
+    return when (state.status) {
+        LocalModelDownloadStatus.Idle -> state.message ?: "等待下载"
+        LocalModelDownloadStatus.Checking -> state.message ?: "正在检查下载条件"
+        LocalModelDownloadStatus.Downloading -> "正在下载：$progress"
+        LocalModelDownloadStatus.Paused -> "已暂停：$progress"
+        LocalModelDownloadStatus.Verifying -> state.message ?: "正在校验文件"
+        LocalModelDownloadStatus.Completed -> state.message ?: "下载完成"
+        LocalModelDownloadStatus.Failed -> state.message ?: "下载失败，可继续重试"
     }
 }
 

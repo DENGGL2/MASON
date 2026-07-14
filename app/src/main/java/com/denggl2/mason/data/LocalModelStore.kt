@@ -3,6 +3,7 @@ package com.denggl2.mason.data
 import android.app.ActivityManager
 import android.content.Context
 import android.net.Uri
+import android.os.StatFs
 import android.provider.OpenableColumns
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -108,6 +109,25 @@ class LocalModelStore @Inject constructor(
 
     fun inferenceCacheDir(): File =
         File(context.cacheDir, "litertlm").also { it.mkdirs() }
+
+    internal fun modelFileForDownload(modelId: String): File =
+        File(File(context.filesDir, "local_models"), "$modelId.litertlm")
+
+    internal fun partialFileForDownload(modelId: String): File =
+        File(File(context.filesDir, "local_models"), "$modelId.litertlm.part")
+
+    fun partialDownloadBytes(modelId: String): Long =
+        partialFileForDownload(modelId).takeIf { it.isFile }?.length() ?: 0L
+
+    fun availableStorageBytes(): Long =
+        StatFs(context.filesDir.absolutePath).availableBytes
+
+    suspend fun deleteModel(model: LocalModelPreset) = withContext(Dispatchers.IO) {
+        val target = modelFile(model.id)
+        val partial = partialFileForDownload(model.id)
+        if (target.exists()) check(target.delete()) { "无法删除模型文件" }
+        if (partial.exists()) check(partial.delete()) { "无法删除未完成的下载" }
+    }
 
     fun displayName(uri: Uri): String? {
         return runCatching {
