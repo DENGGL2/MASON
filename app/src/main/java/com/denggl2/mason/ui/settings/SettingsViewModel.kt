@@ -13,9 +13,9 @@ import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.AiModelRepository
 import com.denggl2.mason.data.LocalModelCatalog
-import com.denggl2.mason.data.LocalModelDownloadState
+import com.denggl2.mason.data.LocalModelDownloadCoordinator
+import com.denggl2.mason.data.LocalModelDownloadService
 import com.denggl2.mason.data.LocalModelDownloadStatus
-import com.denggl2.mason.data.LocalModelDownloader
 import com.denggl2.mason.data.LocalModelFileState
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelStore
@@ -34,8 +34,6 @@ import com.denggl2.mason.sync.SyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -92,7 +90,7 @@ class SettingsViewModel @Inject constructor(
     private val userMemoryStore: UserMemoryStore,
     private val officialChannelStore: OfficialChannelPreferencesDataStore,
     private val localModelStore: LocalModelStore,
-    private val localModelDownloader: LocalModelDownloader,
+    private val localModelDownloadCoordinator: LocalModelDownloadCoordinator,
     private val liteRtModelEngine: LiteRtModelEngine,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
@@ -124,10 +122,7 @@ class SettingsViewModel @Inject constructor(
     private val _localModelTestState = MutableStateFlow(LocalModelTestUiState())
     val localModelTestState = _localModelTestState.asStateFlow()
 
-    private val _localModelDownloadStates = MutableStateFlow<Map<String, LocalModelDownloadState>>(emptyMap())
-    val localModelDownloadStates = _localModelDownloadStates.asStateFlow()
-    private var localModelDownloadJob: Job? = null
-    private var activeLocalModelDownloadId: String? = null
+    val localModelDownloadStates = localModelDownloadCoordinator.states
 
     val appVersion: String by lazy {
         try {
@@ -146,7 +141,14 @@ class SettingsViewModel @Inject constructor(
 
     init {
         refreshLocalModelStates()
-        refreshLocalModelDownloadStates()
+        localModelDownloadCoordinator.refreshStates()
+        viewModelScope.launch {
+            localModelDownloadCoordinator.states.collect { states ->
+                if (states.values.any { it.status == LocalModelDownloadStatus.Completed }) {
+                    refreshLocalModelStates()
+                }
+            }
+        }
     }
 
     fun refreshLocalModelStates() {
@@ -154,9 +156,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     private fun refreshLocalModelDownloadStates() {
-        _localModelDownloadStates.value = LocalModelCatalog.gemmaModels.associate { model ->
-            model.id to localModelDownloader.stateFor(model)
-        }
+        localModelDownloadCoordinator.refreshStates()
     }
 
     fun downloadLocalModel(modelId: String) {
@@ -168,51 +168,31 @@ class SettingsViewModel @Inject constructor(
             _toastEvent.tryEmit("${model.name} 已安装")
             return
         }
-        if (localModelDownloadJob?.isActive == true) {
+        if (localModelDownloadCoordinator.isAnyDownloadActive()) {
             _toastEvent.tryEmit("请先暂停当前模型下载")
             return
         }
-
-        activeLocalModelDownloadId = modelId
-        localModelDownloadJob = viewModelScope.launch {
-            try {
-                localModelDownloader.download(model) { state ->
-                    updateLocalModelDownloadState(state)
-                }
-                refreshLocalModelStates()
-                _toastEvent.emit("${model.name} 已下载并校验")
-            } catch (_: CancellationException) {
-                updateLocalModelDownloadState(localModelDownloader.stateFor(model))
-            } catch (e: Exception) {
-                val partialState = localModelDownloader.stateFor(model)
-                updateLocalModelDownloadState(
-                    partialState.copy(
-                        status = LocalModelDownloadStatus.Failed,
-                        message = e.message ?: e.javaClass.simpleName,
-                    ),
-                )
-            } finally {
-                activeLocalModelDownloadId = null
-            }
+        runCatching {
+            LocalModelDownloadService.start(context, modelId)
+        }.onFailure { error ->
+            _toastEvent.tryEmit("无法启动后台下载：${error.message ?: error.javaClass.simpleName}")
         }
     }
 
     fun pauseLocalModelDownload(modelId: String) {
-        if (activeLocalModelDownloadId == modelId) {
-            localModelDownloadJob?.cancel()
-        }
+        LocalModelDownloadService.pause(context, modelId)
     }
 
     fun deleteLocalModel(modelId: String) {
         val model = LocalModelCatalog.get(modelId) ?: return
         viewModelScope.launch {
             try {
-                if (activeLocalModelDownloadId == modelId) {
-                    localModelDownloadJob?.cancel()
-                    localModelDownloadJob?.join()
-                }
+                localModelDownloadCoordinator.cancelAndJoin(modelId)
                 liteRtModelEngine.release()
                 localModelStore.deleteModel(model)
+                if (!localModelDownloadCoordinator.isAnyDownloadActive()) {
+                    LocalModelDownloadService.clearNotification(context)
+                }
                 refreshLocalModelStates()
                 refreshLocalModelDownloadStates()
                 val currentConfig = config.value
@@ -233,10 +213,6 @@ class SettingsViewModel @Inject constructor(
                 _toastEvent.emit("删除失败：${e.message ?: e.javaClass.simpleName}")
             }
         }
-    }
-
-    private fun updateLocalModelDownloadState(state: LocalModelDownloadState) {
-        _localModelDownloadStates.value = _localModelDownloadStates.value + (state.modelId to state)
     }
 
     fun importLocalModel(modelId: String, uri: Uri) {
