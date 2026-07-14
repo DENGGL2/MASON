@@ -77,6 +77,7 @@ import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.Warning
@@ -98,6 +99,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -125,6 +127,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.denggl2.mason.data.ArtifactMetadata
 import com.denggl2.mason.data.extractArtifactMetadataMarkers
 import com.denggl2.mason.data.stripArtifactMarkers
@@ -216,6 +221,7 @@ fun ChatScreen(
     var pendingDrawerDeleteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -285,6 +291,14 @@ fun ChatScreen(
         historyViewModel.toastEvent.collect { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) viewModel.onAppBackgrounded()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     fun closeThen(action: () -> Unit) {
@@ -432,6 +446,8 @@ fun ChatScreen(
                         selectedSkill = null
                         focusManager.clearFocus()
                     },
+                    onStop = viewModel::stopGeneration,
+                    isGenerating = uiState.isStreaming,
                     enabled = !uiState.isStreaming,
                     attachments = pendingAttachments,
                     selectedSkill = selectedSkill,
@@ -1388,6 +1404,7 @@ private fun AssistantAnswerCard(
     val rawContent = message.content.orEmpty()
     val artifacts = remember(rawContent) { extractArtifactMetadata(rawContent) }
     val content = remember(rawContent) { stripArtifactMarkers(rawContent) }
+    val isStopped = remember(content) { content.contains("已停止生成") }
     val sections = remember(content, isStreaming) { parseAnswerSections(content, isStreaming) }
     val references = remember(content) { extractReferenceUrls(content) }
     val outputs = remember(content) { extractOutputMentions(content) }
@@ -1425,8 +1442,12 @@ private fun AssistantAnswerCard(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                if (isStreaming) "进行中" else "完成",
-                color = MaterialTheme.colorScheme.primary,
+                when {
+                    isStreaming -> "进行中"
+                    isStopped -> "已停止"
+                    else -> "完成"
+                },
+                color = if (isStopped) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -2417,6 +2438,8 @@ private fun InputBar(
     text: String,
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
+    onStop: () -> Unit,
+    isGenerating: Boolean,
     enabled: Boolean,
     attachments: List<PendingAttachment>,
     selectedSkill: SkillOption?,
@@ -2589,7 +2612,9 @@ private fun InputBar(
 
                 ComposerSendButton(
                     active = active,
+                    isGenerating = isGenerating,
                     onSend = onSend,
+                    onStop = onStop,
                 )
             }
         }
@@ -2808,14 +2833,16 @@ private fun ComposerIconButton(
 @Composable
 private fun ComposerSendButton(
     active: Boolean,
+    isGenerating: Boolean,
     onSend: () -> Unit,
+    onStop: () -> Unit,
 ) {
     Box(
         modifier = Modifier
             .size(34.dp)
             .clip(CircleShape)
             .background(
-                if (active) {
+                if (active || isGenerating) {
                     MaterialTheme.colorScheme.primary
                 } else {
                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
@@ -2823,17 +2850,20 @@ private fun ComposerSendButton(
             )
             .border(
                 1.dp,
-                if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
+                if (active || isGenerating) MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
                 else MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
                 CircleShape,
             )
-            .clickable(enabled = active, onClick = onSend),
+            .clickable(
+                enabled = active || isGenerating,
+                onClick = if (isGenerating) onStop else onSend,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            imageVector = Icons.Outlined.ArrowUpward,
-            contentDescription = "发送",
-            tint = if (active) {
+            imageVector = if (isGenerating) Icons.Outlined.Stop else Icons.Outlined.ArrowUpward,
+            contentDescription = if (isGenerating) "停止生成" else "发送",
+            tint = if (active || isGenerating) {
                 MaterialTheme.colorScheme.onPrimary
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f)

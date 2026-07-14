@@ -1,6 +1,7 @@
 ﻿package com.denggl2.mason.llm
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -25,6 +26,16 @@ class LiteRtModelEngine(
     private var loadedModelId: String? = null
     private var engine: AutoCloseable? = null
 
+    suspend fun release() {
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                engine?.close()
+                engine = null
+                loadedModelId = null
+            }
+        }
+    }
+
     override fun canHandle(invocation: ModelInvocation): Boolean =
         invocation.modality == ModelModality.Text && invocation.modelId.isNotBlank()
 
@@ -47,15 +58,7 @@ class LiteRtModelEngine(
             return@flow
         }
 
-        val prompt = invocation.messages
-            .filter { it.role == "user" || it.role == "assistant" }
-            .joinToString("\n") { message ->
-                val speaker = if (message.role == "user") "User" else "Mason"
-                "$speaker: ${message.content.orEmpty()}"
-            }
-            .ifBlank {
-                invocation.messages.lastOrNull()?.content.orEmpty()
-            }
+        val prompt = buildLocalPrompt(invocation.messages)
 
         if (prompt.isBlank()) {
             emit(ChatResponse.Error("本地模型没有可处理的输入"))
@@ -329,5 +332,40 @@ class LiteRtModelEngine(
             current = current.cause ?: break
         }
         return current
+    }
+}
+
+internal const val LOCAL_CONTEXT_MAX_MESSAGES = 12
+internal const val LOCAL_CONTEXT_MAX_CHARS = 8_000
+private const val LOCAL_CONTEXT_OMITTED_MARKER = "[Earlier conversation omitted]\n"
+
+internal fun buildLocalPrompt(messages: List<com.denggl2.mason.llm.model.ChatMessage>): String {
+    val eligible = messages.filter { message ->
+        (message.role == "user" || message.role == "assistant") && !message.content.isNullOrBlank()
+    }
+    if (eligible.isEmpty()) return messages.lastOrNull()?.content.orEmpty().take(LOCAL_CONTEXT_MAX_CHARS)
+
+    val selected = ArrayDeque<String>()
+    var remaining = LOCAL_CONTEXT_MAX_CHARS - LOCAL_CONTEXT_OMITTED_MARKER.length
+    var omitted = eligible.size > LOCAL_CONTEXT_MAX_MESSAGES
+
+    for (message in eligible.takeLast(LOCAL_CONTEXT_MAX_MESSAGES).asReversed()) {
+        val speaker = if (message.role == "user") "User" else "Mason"
+        val formatted = "$speaker: ${message.content.orEmpty().trim()}"
+        if (formatted.length > remaining) {
+            if (selected.isEmpty()) {
+                selected.addFirst(formatted.take(remaining))
+            }
+            omitted = true
+            break
+        }
+        selected.addFirst(formatted)
+        remaining -= formatted.length + 1
+        if (remaining <= 0) break
+    }
+
+    return buildString {
+        if (omitted) append(LOCAL_CONTEXT_OMITTED_MARKER)
+        append(selected.joinToString("\n"))
     }
 }

@@ -32,13 +32,20 @@ import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.tool.ToolExecutor
 import com.denggl2.mason.tool.ToolResult
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -80,6 +87,10 @@ class ChatViewModel @Inject constructor(
     private val liteRtModelEngine: LiteRtModelEngine,
 ) : ViewModel() {
 
+    private companion object {
+        const val LOCAL_INFERENCE_TIMEOUT_MS = 120_000L
+    }
+
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
@@ -89,6 +100,8 @@ class ChatViewModel @Inject constructor(
     private var currentConversationId: Long? = savedStateHandle.get<Long>("conversationId")?.takeIf { it > 0L }
     private var isFirstMessage = currentConversationId == null
     private var pendingToolBatch: PendingToolBatch? = null
+    private var generationJob: Job? = null
+    @Volatile private var localInferenceActive = false
 
     init {
         currentConversationId?.let { convId ->
@@ -130,7 +143,7 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendMessage(content: String) {
-        if (content.isBlank()) return
+        if (content.isBlank() || generationJob?.isActive == true) return
 
         val startedAt = System.currentTimeMillis()
         var usageSeen = false
@@ -149,7 +162,7 @@ class ChatViewModel @Inject constructor(
             pendingToolApproval = null,
         )
 
-        viewModelScope.launch {
+        launchGeneration {
             // Ensure a conversation exists and save user message
             if (currentConversationId == null) {
                 val title = content.take(20)
@@ -174,13 +187,12 @@ class ChatViewModel @Inject constructor(
             val producedArtifacts = mutableListOf<ArtifactMetadata>()
             val directLocalEnabled = apiConfig.value.localModelDirectEnabled
             val responseFlow = if (directLocalEnabled) {
-                liteRtModelEngine.invoke(
-                    ModelInvocation(
-                        modality = ModelModality.Text,
-                        messages = _uiState.value.messages,
-                        modelId = selectedLocalModelId(apiConfig.value),
-                    ),
-                )
+                localCapabilityGuidance(content)?.let { guidance ->
+                    flowOf(ChatResponse.TextChunk(guidance))
+                } ?: invokeLocalModel(
+                    messages = _uiState.value.messages,
+                    modelId = selectedLocalModelId(apiConfig.value),
+                ).asFlow()
             } else {
                 chatClient.chat(_uiState.value.messages)
             }
@@ -350,7 +362,7 @@ class ChatViewModel @Inject constructor(
                     taskSteps = _uiState.value.taskSteps
                         .updateStep("execute", TaskStepStatus.WaitingForUser),
                 )
-                return@launch
+                return@launchGeneration
             }
 
             if (_uiState.value.streamingContent.isNotEmpty()) {
@@ -400,6 +412,21 @@ class ChatViewModel @Inject constructor(
         sendMessage(content)
     }
 
+    fun stopGeneration() {
+        val job = generationJob?.takeIf { it.isActive } ?: return
+        markGenerationStopped()
+        job.cancel(CancellationException("用户停止生成"))
+        viewModelScope.launch { liteRtModelEngine.release() }
+    }
+
+    fun onAppBackgrounded() {
+        if (localInferenceActive) {
+            stopGeneration()
+        } else {
+            viewModelScope.launch { liteRtModelEngine.release() }
+        }
+    }
+
     fun approvePendingToolCall() {
         val batch = pendingToolBatch ?: return
         pendingToolBatch = null
@@ -411,7 +438,7 @@ class ChatViewModel @Inject constructor(
                 .updateStep("execute", TaskStepStatus.Running, "用户已确认，正在执行工具")
                 .updateStep("summary", TaskStepStatus.Pending, "工具完成后继续生成结果"),
         )
-        viewModelScope.launch {
+        launchGeneration {
             executeApprovedToolBatch(batch)
             notifyTaskCompletedIfNeeded()
         }
@@ -463,12 +490,14 @@ class ChatViewModel @Inject constructor(
     fun selectLocalModelDirect(enabled: Boolean) {
         val currentConfig = apiConfig.value
         viewModelScope.launch {
+            if (!enabled && localInferenceActive) stopGeneration()
             apiConfigDataStore.updateConfig(
                 currentConfig.copy(
                     localModel = selectedLocalModelId(currentConfig),
                     localModelDirectEnabled = enabled,
                 ),
             )
+            if (!enabled) liteRtModelEngine.release()
         }
     }
 
@@ -635,13 +664,7 @@ class ChatViewModel @Inject constructor(
         if (unavailableStatus == null) {
             var localText: String? = null
             var localError: String? = null
-            liteRtModelEngine.invoke(
-                ModelInvocation(
-                    modality = ModelModality.Text,
-                    messages = messages,
-                    modelId = localModel.id,
-                ),
-            ).collect { response ->
+            invokeLocalModel(messages, localModel.id).forEach { response ->
                 when (response) {
                     is ChatResponse.TextChunk -> {
                         localText = (localText.orEmpty() + response.text).trim()
@@ -678,6 +701,101 @@ class ChatViewModel @Inject constructor(
 
     private fun selectedLocalModelId(config: ApiConfig): String =
         config.localModel.ifBlank { LocalModelCatalog.gemmaModels.firstOrNull()?.id.orEmpty() }
+
+    private fun localCapabilityGuidance(content: String): String? {
+        if (content.contains("Mason 附加上下文")) {
+            return "引导：本地 Gemma 目前只支持文字问答，不能读取图片、文件或调用 Skill。请切换到远程模型后重试。"
+        }
+
+        val normalized = content.lowercase()
+        val actionWords = listOf(
+            "帮我", "请帮", "打开", "关闭", "发送", "删除", "读取", "查看", "查询",
+            "设置", "创建", "写入", "拨打", "拍照", "录音", "截图", "获取",
+            "open", "close", "send", "delete", "read", "check", "set", "get",
+        )
+        val capabilityWords = listOf(
+            "手机", "电量", "存储", "内存", "位置", "联系人", "短信", "电话", "闹钟",
+            "日历", "应用", "系统设置", "wifi", "wi-fi", "蓝牙", "剪贴板", "相机",
+            "phone", "battery", "storage", "location", "contacts", "sms", "alarm", "calendar",
+            "bluetooth", "clipboard", "camera",
+        )
+        val explicitFileOperations = listOf("删除文件", "读取文件", "打开文件", "查看文件")
+        if (
+            (actionWords.any(normalized::contains) && capabilityWords.any(normalized::contains)) ||
+            explicitFileOperations.any(normalized::contains)
+        ) {
+            return "引导：这个请求需要读取或操作手机能力，本地 Gemma 不能直接执行。请切换到远程模型，由 Mason 在确认权限后处理。"
+        }
+        return null
+    }
+
+    private suspend fun invokeLocalModel(
+        messages: List<ChatMessage>,
+        modelId: String,
+    ): List<ChatResponse> {
+        localInferenceActive = true
+        return try {
+            withTimeoutOrNull(LOCAL_INFERENCE_TIMEOUT_MS) {
+                liteRtModelEngine.invoke(
+                    ModelInvocation(
+                        modality = ModelModality.Text,
+                        messages = messages,
+                        modelId = modelId,
+                    ),
+                ).toList()
+            } ?: run {
+                liteRtModelEngine.release()
+                listOf(ChatResponse.Error("本地模型响应超过 120 秒，已停止并释放内存"))
+            }
+        } finally {
+            localInferenceActive = false
+        }
+    }
+
+    private fun launchGeneration(block: suspend CoroutineScope.() -> Unit) {
+        if (generationJob?.isActive == true) return
+        val job = viewModelScope.launch(block = block)
+        generationJob = job
+        job.invokeOnCompletion { cause ->
+            viewModelScope.launch {
+                if (generationJob !== job) return@launch
+                generationJob = null
+                if (cause is CancellationException) {
+                    markGenerationStopped()
+                    liteRtModelEngine.release()
+                }
+            }
+        }
+    }
+
+    private fun markGenerationStopped() {
+        if (!_uiState.value.isStreaming) return
+        val stoppedContent = "最终总结：已停止生成。"
+        val stoppedMessage = ChatMessage(
+            role = "assistant",
+            content = stoppedContent,
+            timestamp = System.currentTimeMillis(),
+        )
+        _uiState.value = _uiState.value.copy(
+            messages = _uiState.value.messages + stoppedMessage,
+            isStreaming = false,
+            streamingContent = "",
+            toolCallStatus = null,
+            requestStartedAt = null,
+            taskSteps = _uiState.value.taskSteps.map { step ->
+                if (step.status == TaskStepStatus.Running || step.status == TaskStepStatus.Pending) {
+                    step.copy(status = TaskStepStatus.Cancelled, detail = "已停止生成")
+                } else {
+                    step
+                }
+            },
+        )
+        currentConversationId?.let { convId ->
+            viewModelScope.launch {
+                syncManager.saveMessage(convId, role = "assistant", content = stoppedContent)
+            }
+        }
+    }
 
     private suspend fun prepareAssistantContent(
         content: String,
