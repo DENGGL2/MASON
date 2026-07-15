@@ -92,6 +92,7 @@ fun MasonNavGraph(
         composable(Routes.CHAT_NEW) {
             ChatScreen(
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
                 onConversationSelected = { id ->
                     navController.navigate(Routes.chat(id)) {
                         launchSingleTop = true
@@ -136,6 +137,7 @@ fun MasonNavGraph(
         ) {
             ChatScreen(
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
                 onConversationSelected = { id ->
                     navController.navigate(Routes.chat(id)) {
                         launchSingleTop = true

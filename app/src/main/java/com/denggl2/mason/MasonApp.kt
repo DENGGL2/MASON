@@ -4,10 +4,16 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.denggl2.mason.automation.AutomationScheduler
+import com.denggl2.mason.automation.AutomationEventMonitor
 import com.denggl2.mason.crashguard.CrashGuard
 import com.denggl2.mason.tool.NotificationTool
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 @HiltAndroidApp
 class MasonApp : Application() {
@@ -15,10 +21,22 @@ class MasonApp : Application() {
     @Inject
     lateinit var crashGuard: CrashGuard
 
+    @Inject
+    lateinit var automationScheduler: AutomationScheduler
+
+    @Inject
+    lateinit var automationEventMonitor: AutomationEventMonitor
+
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     override fun onCreate() {
         super.onCreate()
         crashGuard.init()
         createNotificationChannel()
+        automationEventMonitor.start(this)
+        applicationScope.launch {
+            automationScheduler.reconcileAtStartup()
+        }
     }
 
     private fun createNotificationChannel() {

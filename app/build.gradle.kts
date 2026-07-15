@@ -46,6 +46,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.datastore.preferences)
+    implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.okhttp)
     runtimeOnly(libs.litertlm.android)
 
@@ -55,4 +56,5 @@ dependencies {
     implementation(project(":crash-guard"))
 
     debugImplementation(libs.compose.ui.tooling)
+    testImplementation("junit:junit:4.13.2")
 }

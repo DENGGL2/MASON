@@ -30,6 +30,23 @@ data class MasonSkillManifest(
     val entry: String = "SKILL.md",
     val permissions: List<String> = emptyList(),
     val version: String = "1.0.0",
+    val dependencies: List<String> = emptyList(),
+    val parameters: List<MasonSkillParameter> = emptyList(),
+    val archived: Boolean = false,
+)
+
+@Serializable
+data class MasonSkillParameter(
+    val key: String,
+    val label: String,
+    val required: Boolean = false,
+    val defaultValue: String = "",
+    val secret: Boolean = false,
+)
+
+data class SkillSafetyReport(
+    val safe: Boolean,
+    val warnings: List<String>,
 )
 
 data class InstalledSkill(
@@ -48,6 +65,26 @@ data class MasonAutomationTrigger(
 data class MasonAutomationAction(
     val type: String,
     val arguments: Map<String, String> = emptyMap(),
+    val id: String = "",
+    val title: String = "",
+    val inputKey: String = "",
+    val outputKey: String = "",
+    val condition: MasonAutomationCondition? = null,
+    val continueOnFailure: Boolean = false,
+)
+
+@Serializable
+data class MasonAutomationCondition(
+    val key: String,
+    val operator: String = "not_empty",
+    val value: String = "",
+)
+
+@Serializable
+data class MasonAutomationConstraints(
+    val network: String = "none",
+    val requiresCharging: Boolean = false,
+    val requiresBatteryNotLow: Boolean = false,
 )
 
 @Serializable
@@ -58,8 +95,20 @@ data class MasonAutomationSpec(
     val enabled: Boolean = false,
     val trigger: MasonAutomationTrigger,
     val actions: List<MasonAutomationAction>,
+    val constraints: MasonAutomationConstraints = MasonAutomationConstraints(),
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    val archived: Boolean = false,
+)
+
+@Serializable
+data class MasonAutomationStepLog(
+    val actionId: String,
+    val title: String,
+    val status: String,
+    val message: String,
+    val startedAt: Long,
+    val finishedAt: Long = System.currentTimeMillis(),
 )
 
 @Serializable
@@ -67,7 +116,10 @@ data class MasonAutomationRunLog(
     val automationId: String,
     val status: String,
     val message: String,
+    val source: String = "manual",
+    val artifactPath: String? = null,
     val ranAt: Long = System.currentTimeMillis(),
+    val steps: List<MasonAutomationStepLog> = emptyList(),
 )
 
 @Singleton
@@ -87,12 +139,13 @@ class SkillAutomationStore @Inject constructor(
         .build()
 
     suspend fun listSkills(): List<MasonSkillManifest> = withContext(Dispatchers.IO) {
-        listInstalledSkillsInternal().map(InstalledSkill::manifest)
+        listInstalledSkillsInternal().filterNot { it.manifest.archived }.map(InstalledSkill::manifest)
     }
 
     suspend fun listInstalledSkills(enabledOnly: Boolean = false): List<InstalledSkill> =
         withContext(Dispatchers.IO) {
             listInstalledSkillsInternal()
+                .filterNot { it.manifest.archived }
                 .filter { !enabledOnly || it.manifest.enabled }
         }
 
@@ -129,6 +182,48 @@ class SkillAutomationStore @Inject constructor(
         }
     }
 
+    suspend fun updateFromGitHub(skillId: String): InstalledSkill = withContext(Dispatchers.IO) {
+        val current = listInstalledSkillsInternal().firstOrNull { it.manifest.id == skillId }
+            ?: error("Skill 未安装：$skillId")
+        require(current.manifest.source.startsWith("https://github.com/")) { "这个 Skill 不是从 GitHub 安装的" }
+        val source = parseGitHubSource(current.manifest.source)
+        val archive = File.createTempFile("mason-skill-update-", ".zip", context.cacheDir)
+        try {
+            val downloaded = source.refs.firstOrNull { downloadGitHubArchive(source, it, archive) }
+            checkNotNull(downloaded) { "GitHub 仓库没有找到可更新分支" }
+            installArchive(archive, source, replaceSkillId = skillId)
+        } finally {
+            archive.delete()
+        }
+    }
+
+    suspend fun archiveSkill(skillId: String): MasonSkillManifest? = withContext(Dispatchers.IO) {
+        val installed = listInstalledSkillsInternal().firstOrNull { it.manifest.id == skillId }
+            ?: return@withContext null
+        val folder = File(installed.path)
+        val next = installed.manifest.copy(enabled = false, archived = true)
+        File(folder, SKILL_MANIFEST).writeText(json.encodeToString(next), Charsets.UTF_8)
+        next
+    }
+
+    suspend fun safetyReport(skillId: String): SkillSafetyReport = withContext(Dispatchers.IO) {
+        val skill = listInstalledSkillsInternal().firstOrNull { it.manifest.id == skillId }
+            ?: return@withContext SkillSafetyReport(false, listOf("Skill 未安装"))
+        val warnings = buildList {
+            if (skill.manifest.permissions.any { it.equals("shell", true) || it.equals("root", true) }) {
+                add("声明了高风险系统执行权限")
+            }
+            if (skill.instructions.contains(Regex("(?i)(rm -rf|rmdir /s|del /s|curl.+\\|.+sh)"))) {
+                add("说明中包含高风险命令模式")
+            }
+            val missing = skill.manifest.dependencies.filter { dependency ->
+                listInstalledSkillsInternal().none { it.manifest.id == dependency && it.manifest.enabled }
+            }
+            if (missing.isNotEmpty()) add("缺少依赖：${missing.joinToString()}")
+        }
+        SkillSafetyReport(warnings.isEmpty(), warnings)
+    }
+
     suspend fun saveAutomation(spec: MasonAutomationSpec): MasonAutomationSpec =
         withContext(Dispatchers.IO) {
             require(spec.id.matches(Regex("[a-z0-9._-]{1,80}"))) { "自动化 ID 格式不正确" }
@@ -162,7 +257,14 @@ class SkillAutomationStore @Inject constructor(
             .orEmpty()
             .filter { it.isDirectory || it.isFile }
             .mapNotNull(::readAutomationSpec)
+            .filterNot { it.archived }
             .sortedByDescending { it.updatedAt }
+    }
+
+    suspend fun archiveAutomation(automationId: String): MasonAutomationSpec? = withContext(Dispatchers.IO) {
+        if (!automationId.isSafeAutomationId()) return@withContext null
+        val current = readAutomationSpec(File(automationsRoot(), automationId)) ?: return@withContext null
+        saveAutomation(current.copy(enabled = false, archived = true))
     }
 
     suspend fun appendAutomationLog(log: MasonAutomationRunLog) = withContext(Dispatchers.IO) {
@@ -241,7 +343,7 @@ class SkillAutomationStore @Inject constructor(
         val skill = File(path)
         if (!skill.isDirectory || skillRoots().none { skill.isInside(it) }) return null
         val current = readSkillManifest(skill) ?: return null
-        val next = current.copy(enabled = enabled)
+        val next = current.copy(enabled = enabled, archived = if (enabled) false else current.archived)
         File(skill, SKILL_MANIFEST).writeText(json.encodeToString(next), Charsets.UTF_8)
         return next
     }
@@ -303,7 +405,11 @@ class SkillAutomationStore @Inject constructor(
         return true
     }
 
-    private fun installArchive(archive: File, source: GitHubSource): InstalledSkill {
+    private fun installArchive(
+        archive: File,
+        source: GitHubSource,
+        replaceSkillId: String? = null,
+    ): InstalledSkill {
         ZipFile(archive).use { zip ->
             val files = zip.entries().asSequence()
                 .filterNot(ZipEntry::isDirectory)
@@ -350,10 +456,10 @@ class SkillAutomationStore @Inject constructor(
             val entryName = archivedManifest?.entry ?: "SKILL.md"
             check(selected.any { it.relativePath == entryName }) { "Skill 入口文件不存在：$entryName" }
             val fallbackId = installRoot.substringAfterLast('/').ifBlank { source.repository }
-            val skillId = (archivedManifest?.id ?: fallbackId).toSafeSkillId()
+            val skillId = (replaceSkillId ?: archivedManifest?.id ?: fallbackId).toSafeSkillId()
             val target = File(skillsRoot(), skillId)
-            check(!target.exists()) { "Skill $skillId 已安装，请先处理现有版本" }
-            check(target.mkdirs()) { "无法创建 Skill 目录" }
+            check(replaceSkillId != null || !target.exists()) { "Skill $skillId 已安装，请先处理现有版本" }
+            check(target.exists() || target.mkdirs()) { "无法创建 Skill 目录" }
 
             val targetRoot = target.canonicalFile
             var extractedBytes = 0L
@@ -388,6 +494,7 @@ class SkillAutomationStore @Inject constructor(
                 id = skillId,
                 enabled = true,
                 source = source.originalUrl,
+                archived = false,
             )
             File(target, SKILL_MANIFEST).writeText(json.encodeToString(installedManifest), Charsets.UTF_8)
             return checkNotNull(readInstalledSkill(target)) { "Skill 入口文件不存在：${installedManifest.entry}" }

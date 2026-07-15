@@ -17,6 +17,7 @@ hiltExtCompiler = "1.2.0"
 datastorePreferences = "1.1.1"
 room = "2.7.2"
 litertlm = "0.10.2"
+workManager = "2.9.1"
 
 [libraries]
 # AndroidX Core
@@ -59,6 +60,7 @@ room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
 
 # On-device LLM
 litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version.ref = "litertlm" }
+androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "workManager" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

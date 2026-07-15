@@ -11,6 +11,7 @@ data class ChatRequest(
     val tools: List<com.denggl2.mason.tool.ToolDefinition>? = null,
     val tool_choice: String? = null,
     val stream_options: StreamOptions? = null,
+    val max_tokens: Int? = null,
 )
 
 @Serializable

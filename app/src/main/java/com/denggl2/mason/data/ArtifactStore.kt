@@ -52,6 +52,41 @@ class ArtifactStore @Inject constructor(
         }
     }
 
+    suspend fun saveTextArtifact(
+        fileName: String,
+        content: String,
+        createdAt: Long = System.currentTimeMillis(),
+    ): ArtifactMetadata = withContext(Dispatchers.IO) {
+        require(content.isNotBlank()) { "产出内容不能为空" }
+        requireNotNull(saveArtifact(fileName, content.trimEnd(), createdAt)) {
+            "产出文件名不正确"
+        }
+    }
+
+    suspend fun saveBinaryArtifact(
+        fileName: String,
+        bytes: ByteArray,
+        mimeType: String,
+        createdAt: Long = System.currentTimeMillis(),
+    ): ArtifactMetadata = withContext(Dispatchers.IO) {
+        require(bytes.isNotEmpty()) { "产出内容不能为空" }
+        val relativePath = sanitizeRelativePath(fileName).ifBlank { "generated-image.png" }
+        val root = File(context.filesDir, "artifacts")
+        val target = uniqueFile(File(root, relativePath))
+        val canonicalRoot = root.canonicalFile
+        val canonicalTarget = target.canonicalFile
+        require(canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) { "产出路径不安全" }
+        target.parentFile?.mkdirs()
+        target.writeBytes(bytes)
+        ArtifactMetadata(
+            name = target.name,
+            path = target.absolutePath,
+            mimeType = mimeType,
+            bytes = target.length(),
+            createdAt = createdAt,
+        )
+    }
+
     fun metadataForExistingFile(path: String?): ArtifactMetadata? {
         if (path.isNullOrBlank()) return null
         val file = File(path)

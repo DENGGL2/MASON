@@ -9,6 +9,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,6 +24,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -48,8 +51,13 @@ import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -82,9 +90,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.denggl2.mason.automation.AutomationScheduler
+import com.denggl2.mason.automation.AutomationRunner
 import com.denggl2.mason.data.MasonSkillManifest
 import com.denggl2.mason.data.MasonAutomationRunLog
+import com.denggl2.mason.data.MasonAutomationConstraints
 import com.denggl2.mason.data.MasonAutomationSpec
+import com.denggl2.mason.data.MasonAutomationAction
+import com.denggl2.mason.data.MasonAutomationCondition
+import com.denggl2.mason.data.MasonAutomationTrigger
+import com.denggl2.mason.automation.AutomationWorkflowLogic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
@@ -123,9 +138,15 @@ private data class CollectionEntry(
     val skillEnabled: Boolean? = null,
     val automationId: String? = null,
     val automationEnabled: Boolean? = null,
+    val automation: MasonAutomationSpec? = null,
+    val skillManifest: MasonSkillManifest? = null,
 )
 
 private val COLLECTION_JSON = Json { ignoreUnknownKeys = true }
+private val TIMED_TRIGGER_TYPES = setOf(
+    AutomationScheduler.TRIGGER_DAILY,
+    AutomationScheduler.TRIGGER_WEEKDAYS,
+)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -137,6 +158,8 @@ fun CollectionListScreen(
     val context = LocalContext.current
     val skillState by viewModel.skillState.collectAsState()
     val automationState by viewModel.automationState.collectAsState()
+    val automationCapabilityIssues by viewModel.automationCapabilityIssues.collectAsState()
+    val automationPreferences by viewModel.automationPreferences.collectAsState()
     var query by remember { mutableStateOf("") }
     var searchActive by remember(kind) { mutableStateOf(false) }
     var loaded by remember(kind) { mutableStateOf(false) }
@@ -144,7 +167,11 @@ fun CollectionListScreen(
     var previewEntry by remember { mutableStateOf<CollectionEntry?>(null) }
     var showInstallDialog by remember(kind) { mutableStateOf(false) }
     var showCreateAutomationDialog by remember(kind) { mutableStateOf(false) }
+    var editingAutomation by remember(kind) { mutableStateOf<MasonAutomationSpec?>(null) }
     var pendingAutomationRun by remember { mutableStateOf<CollectionEntry?>(null) }
+    LaunchedEffect(kind, automationState.revision) {
+        if (kind == CollectionKind.AUTOMATIONS) viewModel.refreshAutomationCapabilities()
+    }
     val filteredEntries = remember(entries, query) {
         val keyword = query.trim()
         if (keyword.isBlank()) {
@@ -305,10 +332,19 @@ fun CollectionListScreen(
                                         icon = kind.iconFor(entry),
                                         onPreview = { previewEntry = entry },
                                         onOpen = { openEntry(context, entry, edit = false) },
-                                        onEdit = { openEntry(context, entry, edit = true) },
+                                        onEdit = {
+                                            entry.automation?.let { editingAutomation = it }
+                                                ?: openEntry(context, entry, edit = true)
+                                        },
                                         onShare = { shareEntry(context, entry) },
                                         onToggleSkill = entry.skillEnabled?.let { enabled ->
                                             { viewModel.setSkillEnabled(entry.path, !enabled) }
+                                        },
+                                        onUpdateSkill = entry.skillManifest
+                                            ?.takeIf { it.source.startsWith("https://github.com/") }
+                                            ?.let { manifest -> { viewModel.updateSkill(manifest.id) } },
+                                        onArchiveSkill = entry.skillManifest?.let { manifest ->
+                                            { viewModel.archiveSkill(manifest.id) }
                                         },
                                         onToggleAutomation = entry.automationId?.let { id ->
                                             { viewModel.setAutomationEnabled(id, entry.automationEnabled != true) }
@@ -318,6 +354,16 @@ fun CollectionListScreen(
                                         },
                                         onShowAutomationLogs = entry.automationId?.let { id ->
                                             { viewModel.showAutomationLogs(id, entry.name) }
+                                        },
+                                        automationStatus = entry.automation?.let { spec ->
+                                            when {
+                                                !spec.enabled -> "已停用"
+                                                automationCapabilityIssues[spec.id].orEmpty().isNotEmpty() ->
+                                                    "缺权限 · ${automationCapabilityIssues[spec.id].orEmpty().first()}"
+                                                spec.trigger.type != "manual" &&
+                                                    !automationPreferences.backgroundExecutionEnabled -> "后台关闭"
+                                                else -> "可运行"
+                                            }
                                         },
                                     )
                                 }
@@ -334,7 +380,10 @@ fun CollectionListScreen(
             entry = entry,
             onDismiss = { previewEntry = null },
             onOpen = { openEntry(context, entry, edit = false) },
-            onEdit = { openEntry(context, entry, edit = true) },
+            onEdit = {
+                entry.automation?.let { editingAutomation = it }
+                    ?: openEntry(context, entry, edit = true)
+            },
             onShare = { shareEntry(context, entry) },
         )
     }
@@ -352,12 +401,39 @@ fun CollectionListScreen(
     if (showCreateAutomationDialog) {
         CreateAutomationDialog(
             working = automationState.working,
+            initialSpec = null,
             onDismiss = { if (!automationState.working) showCreateAutomationDialog = false },
-            onCreate = { name, type, arguments ->
+            onCreate = { name, type, arguments, triggerType, triggerValue, constraints ->
                 showCreateAutomationDialog = false
-                viewModel.createAutomation(name, type, arguments)
+                viewModel.createAutomation(name, type, arguments, triggerType, triggerValue, constraints)
             },
         )
+    }
+    editingAutomation?.let { spec ->
+        if (spec.requiresWorkflowEditor()) {
+            WorkflowAutomationDialog(
+                working = automationState.working,
+                spec = spec,
+                onDismiss = { if (!automationState.working) editingAutomation = null },
+                onSave = { name, trigger, actions ->
+                    editingAutomation = null
+                    viewModel.updateAutomationWorkflow(spec.id, name, trigger, actions)
+                },
+                onTestThroughStep = { actionId ->
+                    viewModel.testAutomationThroughStep(spec.id, actionId)
+                },
+            )
+        } else {
+            CreateAutomationDialog(
+                working = automationState.working,
+                initialSpec = spec,
+                onDismiss = { if (!automationState.working) editingAutomation = null },
+                onCreate = { name, type, arguments, triggerType, triggerValue, constraints ->
+                    editingAutomation = null
+                    viewModel.updateAutomation(spec.id, name, type, arguments, triggerType, triggerValue, constraints)
+                },
+            )
+        }
     }
     pendingAutomationRun?.let { entry ->
         AlertDialog(
@@ -428,9 +504,12 @@ private fun CollectionEntryRow(
     onEdit: () -> Unit,
     onShare: () -> Unit,
     onToggleSkill: (() -> Unit)?,
+    onUpdateSkill: (() -> Unit)?,
+    onArchiveSkill: (() -> Unit)?,
     onToggleAutomation: (() -> Unit)?,
     onRunAutomation: (() -> Unit)?,
     onShowAutomationLogs: (() -> Unit)?,
+    automationStatus: String?,
 ) {
     Column(
         modifier = Modifier
@@ -487,6 +566,17 @@ private fun CollectionEntryRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                automationStatus?.let { status ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        status,
+                        color = if (status == "可运行") MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
 
@@ -502,9 +592,13 @@ private fun CollectionEntryRow(
                 onClick = onPreview,
             )
             EntryActionChip(
-                label = if (entry.kind == CollectionKind.ARTIFACTS) "编辑" else "打开",
-                icon = if (entry.kind == CollectionKind.ARTIFACTS) Icons.Outlined.Edit else Icons.AutoMirrored.Outlined.OpenInNew,
-                onClick = if (entry.kind == CollectionKind.ARTIFACTS) onEdit else onOpen,
+                label = if (entry.kind == CollectionKind.ARTIFACTS || entry.automation != null) "编辑" else "打开",
+                icon = if (entry.kind == CollectionKind.ARTIFACTS || entry.automation != null) {
+                    Icons.Outlined.Edit
+                } else {
+                    Icons.AutoMirrored.Outlined.OpenInNew
+                },
+                onClick = if (entry.kind == CollectionKind.ARTIFACTS || entry.automation != null) onEdit else onOpen,
             )
             if (!entry.isDirectory) {
                 EntryActionChip(
@@ -518,6 +612,20 @@ private fun CollectionEntryRow(
                     label = if (entry.skillEnabled == true) "停用" else "启用",
                     icon = Icons.Outlined.PowerSettingsNew,
                     onClick = onToggleSkill,
+                )
+            }
+            if (onUpdateSkill != null) {
+                EntryActionChip(
+                    label = "更新",
+                    icon = Icons.Outlined.Refresh,
+                    onClick = onUpdateSkill,
+                )
+            }
+            if (onArchiveSkill != null) {
+                EntryActionChip(
+                    label = "卸载",
+                    icon = Icons.Outlined.Delete,
+                    onClick = onArchiveSkill,
                 )
             }
             if (onRunAutomation != null) {
@@ -582,28 +690,340 @@ private fun InstallSkillDialog(
     )
 }
 
+private fun MasonAutomationSpec.requiresWorkflowEditor(): Boolean =
+    actions.size > 1 || actions.any { action ->
+        action.type !in setOf("notification", AutomationRunner.ACTION_MODEL_ARTIFACT, "launch_app") ||
+            action.id.isNotBlank() || action.inputKey.isNotBlank() || action.outputKey.isNotBlank() ||
+            action.condition != null || action.continueOnFailure
+    }
+
 @OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WorkflowAutomationDialog(
+    working: Boolean,
+    spec: MasonAutomationSpec,
+    onDismiss: () -> Unit,
+    onSave: (String, MasonAutomationTrigger, List<MasonAutomationAction>) -> Unit,
+    onTestThroughStep: (String) -> Unit,
+) {
+    var name by remember(spec.id) { mutableStateOf(spec.name) }
+    var triggerType by remember(spec.id) { mutableStateOf(spec.trigger.type) }
+    var triggerValue by remember(spec.id) { mutableStateOf(spec.trigger.value) }
+    var actions by remember(spec.id) {
+        mutableStateOf(AutomationWorkflowLogic.normalizedActions(spec.actions))
+    }
+    var editingStep by remember(spec.id) { mutableStateOf<Int?>(null) }
+
+    AlertDialog(
+        onDismissRequest = { if (!working) onDismiss() },
+        title = { Text("编辑多步骤自动化") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("名称") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = triggerType,
+                        onValueChange = { triggerType = it },
+                        label = { Text("触发类型") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = triggerValue,
+                        onValueChange = { triggerValue = it },
+                        label = { Text("触发值") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Text("执行步骤", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                actions.forEachIndexed { index, action ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(
+                                1.dp,
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
+                                RoundedCornerShape(8.dp),
+                            )
+                            .clickable { editingStep = index }
+                            .padding(8.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${index + 1}. ${action.title}",
+                                modifier = Modifier.weight(1f),
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp,
+                            )
+                            IconButton(
+                                onClick = {
+                                    if (index > 0) actions = actions.toMutableList().apply {
+                                        val item = removeAt(index)
+                                        add(index - 1, item)
+                                    }
+                                },
+                                enabled = index > 0 && !working,
+                                modifier = Modifier.size(30.dp),
+                            ) { Icon(Icons.Outlined.ArrowUpward, "上移", Modifier.size(16.dp)) }
+                            IconButton(
+                                onClick = {
+                                    if (index < actions.lastIndex) actions = actions.toMutableList().apply {
+                                        val item = removeAt(index)
+                                        add(index + 1, item)
+                                    }
+                                },
+                                enabled = index < actions.lastIndex && !working,
+                                modifier = Modifier.size(30.dp),
+                            ) { Icon(Icons.Outlined.ArrowDownward, "下移", Modifier.size(16.dp)) }
+                            IconButton(
+                                onClick = { if (actions.size > 1) actions = actions.filterIndexed { i, _ -> i != index } },
+                                enabled = actions.size > 1 && !working,
+                                modifier = Modifier.size(30.dp),
+                            ) { Icon(Icons.Outlined.Delete, "移除步骤", Modifier.size(16.dp)) }
+                        }
+                        Text(
+                            action.type + buildString {
+                                if (action.inputKey.isNotBlank()) append(" · 输入 ${action.inputKey}")
+                                if (action.outputKey.isNotBlank()) append(" · 输出 ${action.outputKey}")
+                                action.condition?.let { append(" · 条件 ${it.key} ${it.operator}") }
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp,
+                        )
+                        TextButton(
+                            onClick = { onTestThroughStep(action.id) },
+                            enabled = !working,
+                        ) { Text("测试到此步骤") }
+                    }
+                }
+                TextButton(
+                    onClick = {
+                        actions = actions + MasonAutomationAction(
+                            id = "action-${System.currentTimeMillis()}",
+                            title = "发送通知",
+                            type = "notification",
+                            arguments = mapOf("title" to name, "text" to "自动化已完成"),
+                        )
+                    },
+                    enabled = !working,
+                ) { Text("添加步骤") }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(
+                        name,
+                        MasonAutomationTrigger(triggerType.trim(), triggerValue.trim()),
+                        AutomationWorkflowLogic.normalizedActions(actions),
+                    )
+                },
+                enabled = !working && name.isNotBlank() && triggerType.isNotBlank() && actions.isNotEmpty(),
+            ) { Text(if (working) "保存中" else "保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !working) { Text("取消") } },
+    )
+
+    editingStep?.let { index ->
+        actions.getOrNull(index)?.let { action ->
+            AutomationStepDialog(
+                action = action,
+                onDismiss = { editingStep = null },
+                onSave = { updated ->
+                    actions = actions.toMutableList().apply { set(index, updated) }
+                    editingStep = null
+                },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AutomationStepDialog(
+    action: MasonAutomationAction,
+    onDismiss: () -> Unit,
+    onSave: (MasonAutomationAction) -> Unit,
+) {
+    var title by remember(action.id) { mutableStateOf(action.title) }
+    var type by remember(action.id) { mutableStateOf(action.type) }
+    var inputKey by remember(action.id) { mutableStateOf(action.inputKey) }
+    var outputKey by remember(action.id) { mutableStateOf(action.outputKey) }
+    var conditionKey by remember(action.id) { mutableStateOf(action.condition?.key.orEmpty()) }
+    var conditionOperator by remember(action.id) { mutableStateOf(action.condition?.operator ?: "not_empty") }
+    var conditionValue by remember(action.id) { mutableStateOf(action.condition?.value.orEmpty()) }
+    var continueOnFailure by remember(action.id) { mutableStateOf(action.continueOnFailure) }
+    var argumentsText by remember(action.id) {
+        mutableStateOf(action.arguments.entries.joinToString("\n") { "${it.key}=${it.value}" })
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑步骤") },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                listOf(
+                    Triple("标题", title, { value: String -> title = value }),
+                    Triple("类型", type, { value: String -> type = value }),
+                    Triple("输入变量", inputKey, { value: String -> inputKey = value }),
+                    Triple("输出变量", outputKey, { value: String -> outputKey = value }),
+                    Triple("条件变量", conditionKey, { value: String -> conditionKey = value }),
+                    Triple("条件操作", conditionOperator, { value: String -> conditionOperator = value }),
+                    Triple("条件值", conditionValue, { value: String -> conditionValue = value }),
+                ).forEach { (label, value, setter) ->
+                    OutlinedTextField(
+                        value = value,
+                        onValueChange = setter,
+                        label = { Text(label) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                OutlinedTextField(
+                    value = argumentsText,
+                    onValueChange = { argumentsText = it },
+                    label = { Text("参数（每行 key=value）") },
+                    minLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                FilterChip(
+                    selected = continueOnFailure,
+                    onClick = { continueOnFailure = !continueOnFailure },
+                    label = { Text("失败后继续") },
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(
+                        action.copy(
+                            title = title.trim(),
+                            type = type.trim(),
+                            arguments = argumentsText.lines().mapNotNull { line ->
+                                val key = line.substringBefore('=', "").trim()
+                                if (key.isBlank() || '=' !in line) null
+                                else key to line.substringAfter('=').trim()
+                            }.toMap(),
+                            inputKey = inputKey.trim(),
+                            outputKey = outputKey.trim(),
+                            condition = conditionKey.trim().takeIf(String::isNotBlank)?.let {
+                                MasonAutomationCondition(it, conditionOperator.trim(), conditionValue)
+                            },
+                            continueOnFailure = continueOnFailure,
+                        ),
+                    )
+                },
+                enabled = title.isNotBlank() && type.isNotBlank(),
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun CreateAutomationDialog(
     working: Boolean,
+    initialSpec: MasonAutomationSpec?,
     onDismiss: () -> Unit,
-    onCreate: (String, String, Map<String, String>) -> Unit,
+    onCreate: (String, String, Map<String, String>, String, String, MasonAutomationConstraints) -> Unit,
 ) {
-    var name by remember { mutableStateOf("") }
-    var actionType by remember { mutableStateOf("notification") }
-    var notificationTitle by remember { mutableStateOf("Mason") }
-    var notificationText by remember { mutableStateOf("") }
-    var packageName by remember { mutableStateOf("") }
+    val initialAction = initialSpec?.actions?.firstOrNull()
+    val initialTriggerType = initialSpec
+        ?.trigger
+        ?.type
+        ?.takeIf { initialAction?.type != "launch_app" }
+        ?: "manual"
+    val initialTriggerValue = initialSpec?.trigger?.value.orEmpty()
+    val initialTime = AutomationScheduler.scheduledTime(initialTriggerValue).split(':')
+    var name by remember(initialSpec?.id) { mutableStateOf(initialSpec?.name.orEmpty()) }
+    var actionType by remember(initialSpec?.id) { mutableStateOf(initialAction?.type ?: "notification") }
+    var notificationTitle by remember(initialSpec?.id) {
+        mutableStateOf(initialAction?.arguments?.get("title") ?: "Mason")
+    }
+    var notificationText by remember(initialSpec?.id) {
+        mutableStateOf(initialAction?.arguments?.get("text").orEmpty())
+    }
+    var modelPrompt by remember(initialSpec?.id) {
+        mutableStateOf(initialAction?.arguments?.get("prompt").orEmpty())
+    }
+    var artifactFileName by remember(initialSpec?.id) {
+        mutableStateOf(initialAction?.arguments?.get("file_name") ?: "automation-output.md")
+    }
+    var packageName by remember(initialSpec?.id) {
+        mutableStateOf(initialAction?.arguments?.get("package_name").orEmpty())
+    }
+    var triggerType by remember(initialSpec?.id) { mutableStateOf(initialTriggerType) }
+    var intervalMinutes by remember(initialSpec?.id) {
+        mutableStateOf(
+            initialSpec?.trigger?.value
+                ?.takeIf { initialTriggerType == AutomationScheduler.TRIGGER_INTERVAL }
+                ?: AutomationScheduler.MIN_INTERVAL_MINUTES.toString(),
+        )
+    }
+    var scheduledHour by remember(initialSpec?.id) {
+        mutableStateOf(initialTime.getOrNull(0)?.takeIf { initialTriggerType in TIMED_TRIGGER_TYPES } ?: "08")
+    }
+    var scheduledMinute by remember(initialSpec?.id) {
+        mutableStateOf(initialTime.getOrNull(1)?.takeIf { initialTriggerType in TIMED_TRIGGER_TYPES } ?: "00")
+    }
+    var selectedWeekdays by remember(initialSpec?.id) {
+        mutableStateOf(AutomationScheduler.selectedWeekdays(initialTriggerValue))
+    }
+    var networkRequirement by remember(initialSpec?.id) {
+        mutableStateOf(initialSpec?.constraints?.network ?: AutomationScheduler.NETWORK_NONE)
+    }
+    var requiresCharging by remember(initialSpec?.id) {
+        mutableStateOf(initialSpec?.constraints?.requiresCharging ?: false)
+    }
+    var requiresBatteryNotLow by remember(initialSpec?.id) {
+        mutableStateOf(initialSpec?.constraints?.requiresBatteryNotLow ?: false)
+    }
+    val parsedInterval = intervalMinutes.toLongOrNull()
+    val parsedHour = scheduledHour.toIntOrNull()
+    val parsedMinute = scheduledMinute.toIntOrNull()
+    val fixedTimeValid = parsedHour != null && parsedHour in 0..23 &&
+        parsedMinute != null && parsedMinute in 0..59
+    val triggerValid = when (triggerType) {
+        "manual" -> true
+        AutomationScheduler.TRIGGER_INTERVAL -> (parsedInterval ?: 0L) >= AutomationScheduler.MIN_INTERVAL_MINUTES
+        AutomationScheduler.TRIGGER_DAILY -> fixedTimeValid
+        AutomationScheduler.TRIGGER_WEEKDAYS -> fixedTimeValid && selectedWeekdays.isNotEmpty()
+        else -> false
+    }
     val valid = name.isNotBlank() && when (actionType) {
-        "notification" -> notificationTitle.isNotBlank() && notificationText.isNotBlank()
+        "notification" -> notificationTitle.isNotBlank() && notificationText.isNotBlank() && triggerValid
+        AutomationRunner.ACTION_MODEL_ARTIFACT ->
+            modelPrompt.isNotBlank() && artifactFileName.isNotBlank() && triggerValid
         "launch_app" -> packageName.isNotBlank()
         else -> false
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("创建手动自动化") },
+        title = { Text(if (initialSpec == null) "创建自动化" else "编辑自动化") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -613,32 +1033,168 @@ private fun CreateAutomationDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                    listOf("notification" to "通知", "launch_app" to "打开 App")
+                    val actionOptions = listOf(
+                        "notification" to "通知",
+                        AutomationRunner.ACTION_MODEL_ARTIFACT to "AI 产出",
+                        "launch_app" to "打开 App",
+                    )
+                    actionOptions
                         .forEachIndexed { index, option ->
                             SegmentedButton(
                                 selected = actionType == option.first,
-                                onClick = { actionType = option.first },
-                                shape = SegmentedButtonDefaults.itemShape(index, 2),
+                                onClick = {
+                                    actionType = option.first
+                                    if (option.first == "launch_app") triggerType = "manual"
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(index, actionOptions.size),
                                 label = { Text(option.second) },
                             )
                         }
                 }
-                if (actionType == "notification") {
-                    OutlinedTextField(
-                        value = notificationTitle,
-                        onValueChange = { notificationTitle = it },
-                        enabled = !working,
-                        singleLine = true,
-                        label = { Text("通知标题") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = notificationText,
-                        onValueChange = { notificationText = it },
-                        enabled = !working,
-                        label = { Text("通知内容") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                if (actionType != "launch_app") {
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        listOf(
+                            "manual" to "手动",
+                            AutomationScheduler.TRIGGER_INTERVAL to "间隔",
+                            AutomationScheduler.TRIGGER_DAILY to "每天",
+                            AutomationScheduler.TRIGGER_WEEKDAYS to "每周",
+                        )
+                            .forEachIndexed { index, option ->
+                                SegmentedButton(
+                                    selected = triggerType == option.first,
+                                    onClick = { triggerType = option.first },
+                                    shape = SegmentedButtonDefaults.itemShape(index, 4),
+                                    label = { Text(option.second) },
+                                )
+                            }
+                    }
+                    if (triggerType == AutomationScheduler.TRIGGER_INTERVAL) {
+                        OutlinedTextField(
+                            value = intervalMinutes,
+                            onValueChange = { value -> intervalMinutes = value.filter(Char::isDigit).take(6) },
+                            enabled = !working,
+                            singleLine = true,
+                            label = { Text("间隔分钟（最少 15）") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    if (triggerType == AutomationScheduler.TRIGGER_DAILY ||
+                        triggerType == AutomationScheduler.TRIGGER_WEEKDAYS
+                    ) {
+                        if (triggerType == AutomationScheduler.TRIGGER_WEEKDAYS) {
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                listOf("一", "二", "三", "四", "五", "六", "日")
+                                    .forEachIndexed { index, label ->
+                                        val day = index + 1
+                                        FilterChip(
+                                            selected = day in selectedWeekdays,
+                                            onClick = {
+                                                selectedWeekdays = if (day in selectedWeekdays) {
+                                                    selectedWeekdays - day
+                                                } else {
+                                                    selectedWeekdays + day
+                                                }
+                                            },
+                                            enabled = !working,
+                                            label = { Text(label) },
+                                        )
+                                    }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            OutlinedTextField(
+                                value = scheduledHour,
+                                onValueChange = { value -> scheduledHour = value.filter(Char::isDigit).take(2) },
+                                enabled = !working,
+                                singleLine = true,
+                                label = { Text("小时（0-23）") },
+                                modifier = Modifier.weight(1f),
+                            )
+                            OutlinedTextField(
+                                value = scheduledMinute,
+                                onValueChange = { value -> scheduledMinute = value.filter(Char::isDigit).take(2) },
+                                enabled = !working,
+                                singleLine = true,
+                                label = { Text("分钟（0-59）") },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    if (triggerType != "manual") {
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            listOf(
+                                AutomationScheduler.NETWORK_NONE to "不限",
+                                AutomationScheduler.NETWORK_CONNECTED to "联网",
+                                AutomationScheduler.NETWORK_UNMETERED to "非计费",
+                            ).forEachIndexed { index, option ->
+                                SegmentedButton(
+                                    selected = networkRequirement == option.first,
+                                    onClick = { networkRequirement = option.first },
+                                    shape = SegmentedButtonDefaults.itemShape(index, 3),
+                                    label = { Text(option.second) },
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            FilterChip(
+                                selected = requiresCharging,
+                                onClick = { requiresCharging = !requiresCharging },
+                                enabled = !working,
+                                label = { Text("充电时") },
+                            )
+                            FilterChip(
+                                selected = requiresBatteryNotLow,
+                                onClick = { requiresBatteryNotLow = !requiresBatteryNotLow },
+                                enabled = !working,
+                                label = { Text("电量充足") },
+                            )
+                        }
+                    }
+                    if (actionType == "notification") {
+                        OutlinedTextField(
+                            value = notificationTitle,
+                            onValueChange = { notificationTitle = it },
+                            enabled = !working,
+                            singleLine = true,
+                            label = { Text("通知标题") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = notificationText,
+                            onValueChange = { notificationText = it },
+                            enabled = !working,
+                            label = { Text("通知内容") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        OutlinedTextField(
+                            value = modelPrompt,
+                            onValueChange = { modelPrompt = it },
+                            enabled = !working,
+                            label = { Text("任务内容") },
+                            minLines = 3,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = artifactFileName,
+                            onValueChange = { artifactFileName = it },
+                            enabled = !working,
+                            singleLine = true,
+                            label = { Text("产出文件名") },
+                            placeholder = { Text("automation-output.md") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 } else {
                     OutlinedTextField(
                         value = packageName,
@@ -655,15 +1211,42 @@ private fun CreateAutomationDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    val arguments = if (actionType == "notification") {
-                        mapOf("title" to notificationTitle.trim(), "text" to notificationText.trim())
-                    } else {
-                        mapOf("action" to "launch", "package_name" to packageName.trim())
+                    val arguments = when (actionType) {
+                        "notification" -> mapOf(
+                            "title" to notificationTitle.trim(),
+                            "text" to notificationText.trim(),
+                        )
+                        AutomationRunner.ACTION_MODEL_ARTIFACT -> mapOf(
+                            "prompt" to modelPrompt.trim(),
+                            "file_name" to artifactFileName.trim(),
+                        )
+                        else -> mapOf("action" to "launch", "package_name" to packageName.trim())
                     }
-                    onCreate(name.trim(), actionType, arguments)
+                    val triggerValue = when (triggerType) {
+                        AutomationScheduler.TRIGGER_INTERVAL -> parsedInterval?.toString().orEmpty()
+                        AutomationScheduler.TRIGGER_DAILY ->
+                            "%02d:%02d".format(Locale.ROOT, parsedHour ?: 0, parsedMinute ?: 0)
+                        AutomationScheduler.TRIGGER_WEEKDAYS -> AutomationScheduler.encodeWeekdays(
+                            selectedWeekdays,
+                            "%02d:%02d".format(Locale.ROOT, parsedHour ?: 0, parsedMinute ?: 0),
+                        )
+                        else -> ""
+                    }
+                    onCreate(
+                        name.trim(),
+                        actionType,
+                        arguments,
+                        triggerType,
+                        triggerValue,
+                        MasonAutomationConstraints(
+                            network = networkRequirement,
+                            requiresCharging = requiresCharging,
+                            requiresBatteryNotLow = requiresBatteryNotLow,
+                        ),
+                    )
                 },
                 enabled = !working && valid,
-            ) { Text("创建") }
+            ) { Text(if (initialSpec == null) "创建" else "保存") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss, enabled = !working) { Text("取消") }
@@ -678,6 +1261,7 @@ private fun AutomationLogsDialog(
     onDismiss: () -> Unit,
 ) {
     val formatter = remember { SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()) }
+    var expandedRunAt by remember { mutableStateOf<Long?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("$title · 运行日志") },
@@ -690,16 +1274,47 @@ private fun AutomationLogsDialog(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(logs) { log ->
-                        Column {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = log.steps.isNotEmpty()) {
+                                    expandedRunAt = if (expandedRunAt == log.ranAt) null else log.ranAt
+                                },
+                        ) {
                             Text(
                                 if (log.status == "success") "成功" else "失败",
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                "${formatter.format(Date(log.ranAt))} · ${log.message}",
+                                "${formatter.format(Date(log.ranAt))} · ${when (log.source) {
+                                    "schedule" -> "定时"
+                                    "event" -> "事件"
+                                    else -> "手动"
+                                }} · ${log.message}",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 12.sp,
                             )
+                            if (log.steps.isNotEmpty()) {
+                                Text(
+                                    if (expandedRunAt == log.ranAt) "收起步骤" else "查看步骤",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontSize = 11.sp,
+                                )
+                            }
+                            if (expandedRunAt == log.ranAt) {
+                                log.steps.forEachIndexed { index, step ->
+                                    Text(
+                                        "${index + 1}. ${step.title} · ${when (step.status) {
+                                            "success" -> "成功"
+                                            "skipped" -> "跳过"
+                                            else -> "失败"
+                                        }}\n${step.message}",
+                                        modifier = Modifier.padding(top = 5.dp, start = 8.dp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 11.sp,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -851,6 +1466,7 @@ private fun loadCollectionEntries(context: Context, kind: CollectionKind): List<
         .distinctBy { it.safePath() }
         .flatMap { root -> collectEntries(root, kind) }
         .distinctBy { it.path }
+        .filterNot { it.skillManifest?.archived == true }
         .sortedByDescending { it.modifiedAt }
 }
 
@@ -941,6 +1557,8 @@ private fun File.toCollectionEntry(kind: CollectionKind, root: File): Collection
         },
         automationId = automation?.id,
         automationEnabled = automation?.enabled,
+        automation = automation,
+        skillManifest = skillManifest,
     )
 }
 

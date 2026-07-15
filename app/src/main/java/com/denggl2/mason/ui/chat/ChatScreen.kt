@@ -74,6 +74,8 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Stop
@@ -82,6 +84,7 @@ import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -138,10 +141,14 @@ import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.LocalModelCatalog
 import com.denggl2.mason.data.LocalModelFileState
 import com.denggl2.mason.data.LocalModelInstallState
+import com.denggl2.mason.data.MasonSkillParameter
 import com.denggl2.mason.agent.TaskStep
 import com.denggl2.mason.agent.TaskStepStatus
 import com.denggl2.mason.agent.ToolApprovalRequest
 import com.denggl2.mason.agent.stripTaskRunMarkers
+import com.denggl2.mason.automation.AutomationApplyResult
+import com.denggl2.mason.automation.AutomationDraft
+import com.denggl2.mason.automation.AutomationDraftService
 import com.denggl2.mason.agent.ToolRiskLevel
 import com.denggl2.mason.llm.TokenUsage
 import com.denggl2.mason.llm.model.ChatMessage
@@ -168,6 +175,8 @@ private data class SkillOption(
     val description: String,
     val path: String,
     val instructions: String = "",
+    val parameters: List<MasonSkillParameter> = emptyList(),
+    val parameterValues: Map<String, String> = emptyMap(),
 )
 private data class UserMessagePresentation(
     val body: String,
@@ -193,6 +202,7 @@ private data class ModelStatusItem(
 @Composable
 fun ChatScreen(
     onNavigateToSettings: () -> Unit,
+    onNavigateToPermission: () -> Unit = {},
     onConversationSelected: (Long) -> Unit,
     onNewChat: (() -> Unit)? = null,
     onOpenArtifacts: () -> Unit,
@@ -215,6 +225,7 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     var pendingAttachments by remember { mutableStateOf<List<PendingAttachment>>(emptyList()) }
     var selectedSkill by remember { mutableStateOf<SkillOption?>(null) }
+    var parameterizingSkill by remember { mutableStateOf<SkillOption?>(null) }
     var showSkillPicker by remember { mutableStateOf(false) }
     var showModelStatusSheet by remember { mutableStateOf(false) }
     var pendingDrawerDeleteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
@@ -246,6 +257,11 @@ fun ChatScreen(
         message.role == "assistant" &&
             message.content.isNullOrBlank() &&
             !message.tool_calls.isNullOrEmpty()
+    }
+    val appliedAutomationDraftIds = remember(visibleMessages) {
+        visibleMessages.mapNotNull { message ->
+            AutomationDraftService.extractAutomationApplyMarker(message.content.orEmpty())?.draftId
+        }.toSet()
     }
     val hasMessages = visibleMessages.isNotEmpty() ||
         uiState.streamingContent.isNotEmpty() ||
@@ -408,6 +424,11 @@ fun ChatScreen(
                                         null
                                     },
                                     onRetry = { viewModel.retryLastUserMessage() },
+                                    automationApplied = AutomationDraftService
+                                        .extractAutomationDraftMarker(message.content.orEmpty())
+                                        ?.draftId in appliedAutomationDraftIds,
+                                    onApplyAutomationDraft = viewModel::applyAutomationDraft,
+                                    onOpenAutomationPermissions = onNavigateToPermission,
                                 )
                             }
                         }
@@ -419,6 +440,7 @@ fun ChatScreen(
                                     toolCallStatus = uiState.toolCallStatus,
                                     hasDraft = uiState.streamingContent.isNotBlank(),
                                     onRetryStep = viewModel::retryTaskStep,
+                                    onPause = viewModel::pauseCurrentTask,
                                 )
                             }
                         }
@@ -482,12 +504,28 @@ fun ChatScreen(
                     description = installed.manifest.description,
                     path = installed.path,
                     instructions = installed.instructions,
+                    parameters = installed.manifest.parameters,
                 )
             },
             onDismiss = { showSkillPicker = false },
             onSelect = { skill ->
-                selectedSkill = skill
                 showSkillPicker = false
+                if (skill.parameters.any { !it.secret }) {
+                    parameterizingSkill = skill
+                } else {
+                    selectedSkill = skill
+                }
+            },
+        )
+    }
+
+    parameterizingSkill?.let { skill ->
+        SkillParameterDialog(
+            skill = skill,
+            onDismiss = { parameterizingSkill = null },
+            onConfirm = { values ->
+                selectedSkill = skill.copy(parameterValues = values)
+                parameterizingSkill = null
             },
         )
     }
@@ -509,7 +547,8 @@ fun ChatScreen(
     uiState.pendingToolApproval?.let { approval ->
         ToolApprovalDialog(
             approval = approval,
-            onApprove = viewModel::approvePendingToolCall,
+            onApprove = { viewModel.approvePendingToolCall() },
+            onAlwaysApprove = { viewModel.approvePendingToolCall(alwaysAllow = true) },
             onReject = viewModel::rejectPendingToolCall,
         )
     }
@@ -545,6 +584,7 @@ fun ChatScreen(
 private fun ToolApprovalDialog(
     approval: ToolApprovalRequest,
     onApprove: () -> Unit,
+    onAlwaysApprove: () -> Unit,
     onReject: () -> Unit,
 ) {
     val riskLabel = when (approval.riskLevel) {
@@ -568,11 +608,14 @@ private fun ToolApprovalDialog(
                 Text("级别：$riskLabel")
                 Text("影响范围：${approval.reason}")
                 Text(
-                    text = "允许一次后只继续本轮任务；拒绝后本轮不会执行这个能力。",
+                    text = "允许一次只继续本轮任务；总是允许会记住该工具，之后可在设置中撤销。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
                     lineHeight = 17.sp,
                 )
+                TextButton(onClick = onAlwaysApprove) {
+                    Text("总是允许")
+                }
             }
         },
         confirmButton = {
@@ -585,6 +628,49 @@ private fun ToolApprovalDialog(
                 Text("拒绝")
             }
         },
+    )
+}
+
+@Composable
+private fun SkillParameterDialog(
+    skill: SkillOption,
+    onDismiss: () -> Unit,
+    onConfirm: (Map<String, String>) -> Unit,
+) {
+    val parameters = skill.parameters.filterNot(MasonSkillParameter::secret)
+    var values by remember(skill.path) {
+        mutableStateOf(parameters.associate { it.key to it.defaultValue })
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(skill.name) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                parameters.forEach { parameter ->
+                    OutlinedTextField(
+                        value = values[parameter.key].orEmpty(),
+                        onValueChange = { value -> values = values + (parameter.key to value) },
+                        label = { Text(parameter.label) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (skill.parameters.any(MasonSkillParameter::secret)) {
+                    Text(
+                        "敏感参数不会写入对话，请在 Skill 的安全配置中提供。",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(values) },
+                enabled = parameters.none { it.required && values[it.key].isNullOrBlank() },
+            ) { Text("使用 Skill") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
@@ -1160,8 +1246,15 @@ private fun MasonProcessPanel(
     toolCallStatus: String?,
     hasDraft: Boolean,
     onRetryStep: (String) -> Unit,
+    onPause: () -> Unit,
 ) {
     if (steps.isNotEmpty()) {
+        val finished = steps.none {
+            it.status == TaskStepStatus.Running ||
+                it.status == TaskStepStatus.Pending ||
+                it.status == TaskStepStatus.WaitingForUser
+        }
+        var detailsExpanded by remember(steps.map { it.status }) { mutableStateOf(!finished) }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1188,11 +1281,41 @@ private fun MasonProcessPanel(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                if (steps.any { it.status == TaskStepStatus.Running }) {
+                    IconButton(onClick = onPause, modifier = Modifier.size(30.dp)) {
+                        Icon(
+                            Icons.Outlined.Pause,
+                            contentDescription = "暂停任务",
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
                 ProcessStatusPill(processStatusText(steps), steps.any { it.status == TaskStepStatus.WaitingForUser })
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
-            steps.forEach { step ->
-                TaskProcessLine(step, onRetry = { onRetryStep(step.id) })
+            if (finished && !detailsExpanded) {
+                Text(
+                    "查看执行详情",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .clickable { detailsExpanded = true }
+                        .padding(vertical = 2.dp),
+                )
+            } else {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
+                steps.forEach { step ->
+                    TaskProcessLine(step, onRetry = { onRetryStep(step.id) })
+                }
+                if (finished) {
+                    Text(
+                        "收起详情",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .clickable { detailsExpanded = false }
+                            .padding(vertical = 2.dp),
+                    )
+                }
             }
         }
         return
@@ -1270,14 +1393,16 @@ private fun TaskProcessLine(step: TaskStep, onRetry: () -> Unit) {
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
-                if (step.status == TaskStepStatus.Failed && step.retryable) {
+                if ((step.status == TaskStepStatus.Failed && step.retryable) ||
+                    step.status == TaskStepStatus.WaitingForUser
+                ) {
                     IconButton(
                         onClick = onRetry,
                         modifier = Modifier.size(30.dp),
                     ) {
                         Icon(
-                            Icons.Outlined.Refresh,
-                            contentDescription = "重试此步骤",
+                            if (step.status == TaskStepStatus.WaitingForUser) Icons.Outlined.PlayArrow else Icons.Outlined.Refresh,
+                            contentDescription = if (step.status == TaskStepStatus.WaitingForUser) "继续任务" else "重试此步骤",
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(16.dp),
                         )
@@ -1631,6 +1756,229 @@ private fun ToolResultWorkCard(message: ChatMessage) {
     }
 }
 
+@Composable
+private fun AutomationDraftCard(
+    draft: AutomationDraft,
+    applied: Boolean,
+    onApply: (AutomationDraft, Boolean) -> Unit,
+    onOpenPermissions: () -> Unit,
+) {
+    var detailsExpanded by remember(draft.draftId, applied) { mutableStateOf(!applied) }
+    val operationTitle = when (draft.operation) {
+        AutomationDraftService.OPERATION_UPDATE -> "更新自动化"
+        AutomationDraftService.OPERATION_ENABLE -> "恢复自动化"
+        AutomationDraftService.OPERATION_DISABLE -> "暂停自动化"
+        AutomationDraftService.OPERATION_ARCHIVE -> "删除自动化"
+        else -> "自动化草稿"
+    }
+    val triggerLabel = remember(draft.triggerType, draft.triggerValue) {
+        when (draft.triggerType) {
+            "manual" -> "手动运行"
+            "interval" -> "每 ${draft.triggerValue} 分钟"
+            "daily" -> "每天 ${draft.triggerValue}"
+            "weekdays" -> com.denggl2.mason.automation.AutomationScheduler.describeWeekdays(draft.triggerValue)
+            "charging" -> "接上充电器时"
+            "wifi" -> "连接 WiFi：${draft.triggerValue}"
+            "bluetooth" -> "连接蓝牙：${draft.triggerValue}"
+            "notification" -> "收到通知：${draft.triggerValue}"
+            "location" -> "进入指定位置（约每 15 分钟检查）"
+            else -> draft.triggerValue
+        }
+    }
+    val conditionLabel = remember(draft.constraints) {
+        buildList {
+            when (draft.constraints.network) {
+                "connected" -> add("需要联网")
+                "unmetered" -> add("仅非计费网络")
+            }
+            if (draft.constraints.requiresCharging) add("充电时")
+            if (draft.constraints.requiresBatteryNotLow) add("电量充足")
+        }.ifEmpty { listOf("无额外条件") }.joinToString(" · ")
+    }
+    val readsCalendar = draft.arguments["context_tool"] == "calendar"
+    val actionLabel = remember(draft.summary, readsCalendar) {
+        val base = draft.summary.substringAfter('；', draft.summary)
+        if (readsCalendar) "读取今日日历 -> $base" else base
+    }
+    val safetyLabel = if (readsCalendar) {
+        "运行时读取今日日历，需要日历读取权限；确认前不会创建或运行"
+    } else {
+        "确认前不会创建或运行；后台运行受设置总开关控制"
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 5.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Outlined.Timer,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                operationTitle,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (applied) "已创建" else "待确认",
+                color = if (applied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(draft.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        if (applied && !detailsExpanded) {
+            Spacer(Modifier.height(5.dp))
+            Text(
+                "查看自动化详情",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.sp,
+                modifier = Modifier.clickable { detailsExpanded = true },
+            )
+            return@Column
+        }
+        Spacer(Modifier.height(8.dp))
+        AutomationDraftField("运行时间", triggerLabel)
+        AutomationDraftField("执行内容", actionLabel)
+        AutomationDraftField("执行条件", conditionLabel)
+        AutomationDraftField("安全说明", safetyLabel)
+        if (draft.warnings.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            draft.warnings.forEach { warning ->
+                Text(
+                    warning,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                )
+            }
+            Text(
+                "去授权",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .clickable(onClick = onOpenPermissions)
+                    .padding(top = 4.dp),
+            )
+        }
+        if (draft.actions.size > 1) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "执行步骤",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            draft.actions.forEachIndexed { index, action ->
+                Text(
+                    "${index + 1}. ${action.title.ifBlank { action.type }}",
+                    modifier = Modifier.padding(top = 3.dp),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+        if (!applied) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                if (draft.operation == AutomationDraftService.OPERATION_CREATE ||
+                    draft.operation == AutomationDraftService.OPERATION_UPDATE
+                ) {
+                    TextButton(onClick = { onApply(draft, false) }) {
+                        Text(if (draft.operation == AutomationDraftService.OPERATION_CREATE) "仅创建" else "确认更新")
+                    }
+                    TextButton(onClick = { onApply(draft, true) }) {
+                        Text(if (draft.operation == AutomationDraftService.OPERATION_CREATE) "创建并测试" else "更新并测试")
+                    }
+                } else {
+                    TextButton(onClick = { onApply(draft, false) }) {
+                        Text("确认$operationTitle")
+                    }
+                }
+            }
+        } else {
+            Text(
+                "收起详情",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .clickable { detailsExpanded = false }
+                    .padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AutomationDraftField(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            label,
+            modifier = Modifier.width(68.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+        )
+        Text(
+            value,
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+        )
+    }
+}
+
+@Composable
+private fun AutomationApplyResultCard(result: AutomationApplyResult) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 5.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                if (result.status == "success") Icons.Outlined.CheckCircle else Icons.Outlined.Warning,
+                contentDescription = null,
+                tint = if (result.status == "success") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (result.status == "success") "自动化已保存" else "自动化测试未通过",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(result.message, fontSize = 12.sp, lineHeight = 17.sp)
+        if (result.scheduleActive) {
+            Spacer(Modifier.height(4.dp))
+            Text("定时调度已生效", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+        }
+    }
+}
+
 private fun parseAnswerSections(content: String, isStreaming: Boolean): List<AnswerSection> {
     if (content.isBlank()) {
         return listOf(
@@ -1700,10 +2048,26 @@ private fun MessageBubble(
     isStreaming: Boolean = false,
     processingMs: Long? = null,
     onRetry: () -> Unit = {},
+    automationApplied: Boolean = false,
+    onApplyAutomationDraft: (AutomationDraft, Boolean) -> Unit = { _, _ -> },
+    onOpenAutomationPermissions: () -> Unit = {},
 ) {
     val isUser = message.role == "user"
     val isTool = message.role == "tool"
     if (isTool) {
+        AutomationDraftService.extractAutomationDraftMarker(message.content.orEmpty())?.let { draft ->
+            AutomationDraftCard(
+                draft,
+                automationApplied,
+                onApplyAutomationDraft,
+                onOpenAutomationPermissions,
+            )
+            return
+        }
+        AutomationDraftService.extractAutomationApplyMarker(message.content.orEmpty())?.let { result ->
+            AutomationApplyResultCard(result)
+            return
+        }
         ToolResultWorkCard(message)
         return
     }
@@ -3403,6 +3767,11 @@ private fun buildOutgoingMessage(
             append("<mason-skill-instructions>\n")
             append(skill.instructions.trim())
             append("\n</mason-skill-instructions>\n")
+            if (skill.parameterValues.isNotEmpty()) {
+                append("<mason-skill-parameters>\n")
+                skill.parameterValues.forEach { (key, value) -> append("$key=$value\n") }
+                append("</mason-skill-parameters>\n")
+            }
         }
         attachments.forEach { attachment ->
             append("- ")

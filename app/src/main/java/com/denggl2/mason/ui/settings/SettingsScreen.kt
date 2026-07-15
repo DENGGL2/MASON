@@ -166,6 +166,8 @@ fun SettingsScreen(
     val localModelDownloadStates by viewModel.localModelDownloadStates.collectAsState()
     val memoryItems by viewModel.memoryItems.collectAsState()
     val officialChannels by viewModel.officialChannels.collectAsState()
+    val automationPreferences by viewModel.automationPreferences.collectAsState()
+    val alwaysAllowedTools by viewModel.alwaysAllowedTools.collectAsState()
     val context = LocalContext.current
 
     var page by remember { mutableStateOf(SettingsPage.Overview) }
@@ -477,6 +479,13 @@ fun SettingsScreen(
                 )
                 GroupDivider()
                 SwitchSettingRow(
+                    title = "允许自动化后台运行",
+                    description = "开启后，定时自动化可在 Mason 退出后由系统拉起执行；关闭不会删除任务和日志。",
+                    checked = automationPreferences.backgroundExecutionEnabled,
+                    onCheckedChange = viewModel::setBackgroundAutomationEnabled,
+                )
+                GroupDivider()
+                SwitchSettingRow(
                     title = "网络失败时尝试本地模型",
                     description = "远程模型失败后改用已安装的本地模型继续文字问答；手机工具和附件仍需远程模型。",
                     checked = offlineFallbackEnabled,
@@ -490,6 +499,21 @@ fun SettingsScreen(
                         )
                     },
                 )
+            }
+
+            if (alwaysAllowedTools.isNotEmpty()) {
+                SectionHeader("已记住的工具授权")
+                SettingGroup {
+                    alwaysAllowedTools.forEachIndexed { index, toolName ->
+                        if (index > 0) GroupDivider()
+                        ActionSettingRow(
+                            icon = Icons.Outlined.Lock,
+                            title = toolName,
+                            description = "已设为总是允许；点击撤销",
+                            onClick = { viewModel.revokeToolGrant(toolName) },
+                        )
+                    }
+                }
             }
 
             SectionHeader("本地模型")

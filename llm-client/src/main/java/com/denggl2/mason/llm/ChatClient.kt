@@ -37,6 +37,12 @@ sealed class ChatResponse {
         val calls: List<ToolCall>,
     ) : ChatResponse()
     data class Error(val message: String) : ChatResponse()
+    data class ImageGenerated(
+        val data: String,
+        val mimeType: String = "image/png",
+        val revisedPrompt: String? = null,
+        val isBase64: Boolean = false,
+    ) : ChatResponse()
 }
 
 data class TokenUsage(
@@ -78,11 +84,16 @@ class ChatClient @Inject constructor(
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
-    fun chat(messages: List<ChatMessage>): Flow<ChatResponse> = flow {
+    fun chat(
+        messages: List<ChatMessage>,
+        toolsEnabled: Boolean? = null,
+        modelOverride: String? = null,
+        attachments: List<ModelAttachment> = emptyList(),
+    ): Flow<ChatResponse> = flow {
         val apiUrl = configProvider.getApiUrl()
         val apiKey = configProvider.getApiKey()
-        val model = configProvider.getModel()
-        val toolsEnabled = configProvider.getToolsEnabled()
+        val model = modelOverride?.takeIf(String::isNotBlank) ?: configProvider.getModel()
+        val resolvedToolsEnabled = toolsEnabled ?: configProvider.getToolsEnabled()
         val requiresApiKey = configProvider.requiresApiKey()
 
         if (apiKey.isBlank() && requiresApiKey) {
@@ -90,11 +101,11 @@ class ChatClient @Inject constructor(
             return@flow
         }
 
-        val toolDefinitions = if (toolsEnabled) toolRegistry.getDefinitions() else emptyList()
+        val toolDefinitions = if (resolvedToolsEnabled) toolRegistry.getDefinitions() else emptyList()
 
         val request = ChatRequest(
             model = model,
-            messages = buildApiMessages(listOf(systemPrompt()) + messages),
+            messages = buildApiMessages(listOf(systemPrompt()) + messages, attachments),
             stream = false,
             tools = toolDefinitions.ifEmpty { null },
         )
@@ -155,6 +166,50 @@ class ChatClient @Inject constructor(
                 usage?.let { emit(ChatResponse.UsageReceived(it)) }
             } else {
                 emit(ChatResponse.Error("模型没有返回可显示内容"))
+            }
+        }
+    }
+
+    fun generateImage(prompt: String, modelOverride: String): Flow<ChatResponse> = flow {
+        val apiUrl = configProvider.getApiUrl()
+        val apiKey = configProvider.getApiKey()
+        if (prompt.isBlank()) {
+            emit(ChatResponse.Error("生图提示词不能为空"))
+            return@flow
+        }
+        if (modelOverride.isBlank()) {
+            emit(ChatResponse.Error("没有配置生图模型"))
+            return@flow
+        }
+        if (apiKey.isBlank() && configProvider.requiresApiKey()) {
+            emit(ChatResponse.Error("请先在设置中配置 API Key"))
+            return@flow
+        }
+        val endpoint = normalizeImagesUrl(apiUrl)
+        val payload = kotlinx.serialization.json.buildJsonObject {
+            put("model", kotlinx.serialization.json.JsonPrimitive(modelOverride))
+            put("prompt", kotlinx.serialization.json.JsonPrimitive(prompt))
+            put("size", kotlinx.serialization.json.JsonPrimitive("1024x1024"))
+            put("response_format", kotlinx.serialization.json.JsonPrimitive("b64_json"))
+        }
+        val request = buildAuthorizedRequest(endpoint, apiKey, json.encodeToString(JsonObject.serializer(), payload))
+        val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
+        response.use {
+            val body = it.body?.string().orEmpty()
+            if (!it.isSuccessful) {
+                emit(ChatResponse.Error("生图 API 错误 ${it.code}: $body"))
+                return@flow
+            }
+            val item = runCatching {
+                json.parseToJsonElement(body).jsonObject["data"]!!.jsonArray.first().jsonObject
+            }.getOrNull()
+            val base64 = item?.get("b64_json")?.jsonPrimitive?.contentOrNull
+            val url = item?.get("url")?.jsonPrimitive?.contentOrNull
+            val revisedPrompt = item?.get("revised_prompt")?.jsonPrimitive?.contentOrNull
+            when {
+                !base64.isNullOrBlank() -> emit(ChatResponse.ImageGenerated(base64, revisedPrompt = revisedPrompt, isBase64 = true))
+                !url.isNullOrBlank() -> emit(ChatResponse.ImageGenerated(url, revisedPrompt = revisedPrompt))
+                else -> emit(ChatResponse.Error("生图模型没有返回图片"))
             }
         }
     }
@@ -241,7 +296,7 @@ class ChatClient @Inject constructor(
             messages = listOf(
                 ApiChatMessage(
                     role = "user",
-                    content = "Reply with OK.",
+                    content = kotlinx.serialization.json.JsonPrimitive("Reply with OK."),
                 ),
             ),
             stream = false,
@@ -303,15 +358,18 @@ class ChatClient @Inject constructor(
         },
     )
 
-    private fun buildApiMessages(messages: List<ChatMessage>) =
+    private fun buildApiMessages(
+        messages: List<ChatMessage>,
+        attachments: List<ModelAttachment> = emptyList(),
+    ) =
         buildList {
             val pendingToolIds = mutableSetOf<String>()
 
-            messages.forEach { message ->
+            messages.forEachIndexed { index, message ->
                 when (message.role) {
                     "assistant" -> {
                         if (message.content.isNullOrBlank() && message.tool_calls.isNullOrEmpty()) {
-                            return@forEach
+                            return@forEachIndexed
                         }
                         add(message.toApiChatMessage())
                         pendingToolIds.clear()
@@ -321,14 +379,19 @@ class ChatClient @Inject constructor(
                     "tool" -> {
                         val toolCallId = message.tool_call_id
                         if (toolCallId.isNullOrBlank() || toolCallId !in pendingToolIds) {
-                            return@forEach
+                            return@forEachIndexed
                         }
                         add(message.toApiChatMessage())
                         pendingToolIds.remove(toolCallId)
                     }
 
                     else -> {
-                        add(message.toApiChatMessage())
+                        val isLastUser = index == messages.lastIndex && message.role == "user"
+                        add(if (isLastUser && attachments.isNotEmpty()) {
+                            message.toApiChatMessage(attachments)
+                        } else {
+                            message.toApiChatMessage()
+                        })
                         pendingToolIds.clear()
                     }
                 }
@@ -404,6 +467,35 @@ class ChatClient @Inject constructor(
             trimmed.endsWith("/chat/completions") -> trimmed
             else -> "$trimmed/chat/completions"
         }
+    }
+
+    private fun normalizeImagesUrl(apiUrl: String): String {
+        val normalized = apiUrl.trim().trimEnd('/')
+        return when {
+            normalized.endsWith("/chat/completions", ignoreCase = true) ->
+                normalized.removeSuffix("/chat/completions") + "/images/generations"
+            normalized.endsWith("/v1", ignoreCase = true) -> "$normalized/images/generations"
+            else -> "$normalized/v1/images/generations"
+        }
+    }
+
+    private fun buildAuthorizedRequest(url: String, apiKey: String, body: String): Request {
+        val lowerUrl = url.lowercase()
+        return Request.Builder()
+            .url(url)
+            .apply {
+                if (apiKey.isNotBlank()) {
+                    if ("xiaomimimo.com" in lowerUrl) addHeader("api-key", apiKey)
+                    else addHeader("Authorization", "Bearer $apiKey")
+                }
+                if ("openrouter.ai" in lowerUrl) {
+                    addHeader("HTTP-Referer", "https://github.com/DENGGL2/MASON")
+                    addHeader("X-Title", "Mason")
+                }
+            }
+            .addHeader("Content-Type", "application/json")
+            .post(body.toRequestBody("application/json".toMediaType()))
+            .build()
     }
 
 }

@@ -2,17 +2,25 @@ package com.denggl2.mason.ui.collection
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.denggl2.mason.automation.AutomationRunner
+import com.denggl2.mason.automation.AutomationScheduler
+import com.denggl2.mason.automation.AutomationCapabilityInspector
+import com.denggl2.mason.data.AutomationPreferences
+import com.denggl2.mason.data.AutomationPreferencesDataStore
 import com.denggl2.mason.data.SkillAutomationStore
 import com.denggl2.mason.data.MasonAutomationAction
+import com.denggl2.mason.data.MasonAutomationConstraints
 import com.denggl2.mason.data.MasonAutomationRunLog
 import com.denggl2.mason.data.MasonAutomationSpec
 import com.denggl2.mason.data.MasonAutomationTrigger
-import com.denggl2.mason.tool.ToolExecutor
+import com.denggl2.mason.automation.AutomationWorkflowLogic
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -33,12 +41,29 @@ data class AutomationManagementUiState(
 @HiltViewModel
 class CollectionListViewModel @Inject constructor(
     private val skillStore: SkillAutomationStore,
-    private val toolExecutor: ToolExecutor,
+    private val automationRunner: AutomationRunner,
+    private val automationScheduler: AutomationScheduler,
+    private val capabilityInspector: AutomationCapabilityInspector,
+    automationPreferencesStore: AutomationPreferencesDataStore,
 ) : ViewModel() {
     private val _skillState = MutableStateFlow(SkillManagementUiState())
     val skillState: StateFlow<SkillManagementUiState> = _skillState.asStateFlow()
     private val _automationState = MutableStateFlow(AutomationManagementUiState())
     val automationState: StateFlow<AutomationManagementUiState> = _automationState.asStateFlow()
+    private val _automationCapabilityIssues = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    val automationCapabilityIssues: StateFlow<Map<String, List<String>>> =
+        _automationCapabilityIssues.asStateFlow()
+    val automationPreferences: StateFlow<AutomationPreferences> = automationPreferencesStore.preferences
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AutomationPreferences())
+
+    fun refreshAutomationCapabilities() {
+        viewModelScope.launch {
+            _automationCapabilityIssues.value = skillStore.listAutomations().associate { spec ->
+                spec.id to capabilityInspector.inspect(spec.trigger.type, spec.actions)
+                    .map { it.message }
+            }
+        }
+    }
 
     fun installSkillFromGitHub(url: String) {
         if (_skillState.value.working) return
@@ -86,6 +111,46 @@ class CollectionListViewModel @Inject constructor(
         }
     }
 
+    fun updateSkill(skillId: String) {
+        if (_skillState.value.working) return
+        viewModelScope.launch {
+            _skillState.value = _skillState.value.copy(working = true, message = null)
+            runCatching { skillStore.updateFromGitHub(skillId) }
+                .onSuccess { skill ->
+                    _skillState.value = SkillManagementUiState(
+                        revision = _skillState.value.revision + 1,
+                        message = "已更新 ${skill.manifest.name} ${skill.manifest.version}",
+                    )
+                }
+                .onFailure { error ->
+                    _skillState.value = _skillState.value.copy(
+                        working = false,
+                        message = error.message ?: "Skill 更新失败",
+                    )
+                }
+        }
+    }
+
+    fun archiveSkill(skillId: String) {
+        if (_skillState.value.working) return
+        viewModelScope.launch {
+            _skillState.value = _skillState.value.copy(working = true, message = null)
+            runCatching { skillStore.archiveSkill(skillId) }
+                .onSuccess {
+                    _skillState.value = SkillManagementUiState(
+                        revision = _skillState.value.revision + 1,
+                        message = "Skill 已卸载，可通过重新安装恢复",
+                    )
+                }
+                .onFailure { error ->
+                    _skillState.value = _skillState.value.copy(
+                        working = false,
+                        message = error.message ?: "Skill 卸载失败",
+                    )
+                }
+        }
+    }
+
     fun consumeMessage() {
         _skillState.value = _skillState.value.copy(message = null)
     }
@@ -94,6 +159,9 @@ class CollectionListViewModel @Inject constructor(
         name: String,
         actionType: String,
         arguments: Map<String, String>,
+        triggerType: String,
+        triggerValue: String,
+        constraints: MasonAutomationConstraints,
     ) {
         if (_automationState.value.working) return
         viewModelScope.launch {
@@ -101,13 +169,19 @@ class CollectionListViewModel @Inject constructor(
             val spec = MasonAutomationSpec(
                 id = "automation-${UUID.randomUUID().toString().take(8)}",
                 name = name.trim(),
-                description = automationDescription(actionType, arguments),
+                description = automationDescription(actionType, arguments, triggerType, triggerValue, constraints),
                 enabled = true,
-                trigger = MasonAutomationTrigger(type = "manual"),
+                trigger = MasonAutomationTrigger(
+                    type = triggerType,
+                    value = triggerValue,
+                ),
                 actions = listOf(MasonAutomationAction(type = actionType, arguments = arguments)),
+                constraints = constraints,
             )
             runCatching { skillStore.saveAutomation(spec) }
                 .onSuccess { saved ->
+                    automationScheduler.sync(saved)
+                    refreshAutomationCapabilities()
                     _automationState.value = AutomationManagementUiState(
                         revision = _automationState.value.revision + 1,
                         message = "已创建 ${saved.name}",
@@ -122,12 +196,106 @@ class CollectionListViewModel @Inject constructor(
         }
     }
 
+    fun updateAutomation(
+        automationId: String,
+        name: String,
+        actionType: String,
+        arguments: Map<String, String>,
+        triggerType: String,
+        triggerValue: String,
+        constraints: MasonAutomationConstraints,
+    ) {
+        if (_automationState.value.working) return
+        viewModelScope.launch {
+            _automationState.value = _automationState.value.copy(working = true, message = null)
+            runCatching {
+                val current = checkNotNull(skillStore.automation(automationId)) { "没有找到自动化" }
+                val updated = current.copy(
+                    name = name.trim(),
+                    description = automationDescription(actionType, arguments, triggerType, triggerValue, constraints),
+                    trigger = MasonAutomationTrigger(type = triggerType, value = triggerValue),
+                    actions = listOf(MasonAutomationAction(type = actionType, arguments = arguments)),
+                    constraints = constraints,
+                )
+                skillStore.saveAutomation(updated).also { automationScheduler.sync(it) }
+            }.onSuccess { saved ->
+                refreshAutomationCapabilities()
+                _automationState.value = AutomationManagementUiState(
+                    revision = _automationState.value.revision + 1,
+                    message = "已更新 ${saved.name}",
+                )
+            }.onFailure { error ->
+                _automationState.value = _automationState.value.copy(
+                    working = false,
+                    message = error.message ?: "自动化更新失败",
+                )
+            }
+        }
+    }
+
+    fun updateAutomationWorkflow(
+        automationId: String,
+        name: String,
+        trigger: MasonAutomationTrigger,
+        actions: List<MasonAutomationAction>,
+    ) {
+        if (_automationState.value.working) return
+        viewModelScope.launch {
+            _automationState.value = _automationState.value.copy(working = true, message = null)
+            runCatching {
+                require(actions.isNotEmpty()) { "自动化至少需要一个步骤" }
+                val current = checkNotNull(skillStore.automation(automationId)) { "没有找到自动化" }
+                val normalized = AutomationWorkflowLogic.normalizedActions(actions)
+                val updated = current.copy(
+                    name = name.trim(),
+                    description = "${normalized.size} 个步骤 · ${trigger.type}",
+                    trigger = trigger,
+                    actions = normalized,
+                )
+                skillStore.saveAutomation(updated).also { automationScheduler.sync(it) }
+            }.onSuccess { saved ->
+                refreshAutomationCapabilities()
+                _automationState.value = AutomationManagementUiState(
+                    revision = _automationState.value.revision + 1,
+                    message = "已更新 ${saved.name} 的 ${saved.actions.size} 个步骤",
+                )
+            }.onFailure { error ->
+                _automationState.value = _automationState.value.copy(
+                    working = false,
+                    message = error.message ?: "自动化更新失败",
+                )
+            }
+        }
+    }
+
+    fun testAutomationThroughStep(automationId: String, actionId: String) {
+        if (_automationState.value.working) return
+        viewModelScope.launch {
+            _automationState.value = _automationState.value.copy(working = true, message = null)
+            runCatching { automationRunner.runThroughStep(automationId, actionId) }
+                .onSuccess { (_, log) ->
+                    _automationState.value = AutomationManagementUiState(
+                        revision = _automationState.value.revision + 1,
+                        message = log.message,
+                    )
+                }
+                .onFailure { error ->
+                    _automationState.value = _automationState.value.copy(
+                        working = false,
+                        message = error.message ?: "步骤测试失败",
+                    )
+                }
+        }
+    }
+
     fun setAutomationEnabled(automationId: String, enabled: Boolean) {
         if (_automationState.value.working) return
         viewModelScope.launch {
             _automationState.value = _automationState.value.copy(working = true, message = null)
             runCatching { skillStore.setAutomationEnabled(automationId, enabled) }
                 .onSuccess { spec ->
+                    if (spec != null) automationScheduler.sync(spec)
+                    refreshAutomationCapabilities()
                     _automationState.value = AutomationManagementUiState(
                         revision = _automationState.value.revision + 1,
                         message = when {
@@ -150,30 +318,9 @@ class CollectionListViewModel @Inject constructor(
         if (_automationState.value.working) return
         viewModelScope.launch {
             _automationState.value = _automationState.value.copy(working = true, message = null)
-            val outcome = runCatching {
-                val spec = checkNotNull(skillStore.automation(automationId)) { "没有找到自动化" }
-                var failure: String? = null
-                for (action in spec.actions) {
-                    val toolName = when (action.type) {
-                        "notification" -> "notification"
-                        "launch_app" -> "launch_app"
-                        else -> error("不支持的自动化动作：${action.type}")
-                    }
-                    val result = toolExecutor.execute(toolName, action.arguments)
-                    if (!result.success) {
-                        failure = result.error ?: "$toolName 执行失败"
-                        break
-                    }
-                }
-                val log = MasonAutomationRunLog(
-                    automationId = automationId,
-                    status = if (failure == null) "success" else "failed",
-                    message = failure ?: "${spec.actions.size} 个动作执行完成",
-                )
-                skillStore.appendAutomationLog(log)
-                spec to log
-            }
-            outcome.onSuccess { (spec, log) ->
+            runCatching {
+                automationRunner.run(automationId, AutomationRunner.SOURCE_MANUAL)
+            }.onSuccess { (spec, log) ->
                 _automationState.value = AutomationManagementUiState(
                     revision = _automationState.value.revision + 1,
                     message = if (log.status == "success") {
@@ -184,15 +331,6 @@ class CollectionListViewModel @Inject constructor(
                 )
             }.onFailure { error ->
                 val message = error.message ?: "自动化运行失败"
-                runCatching {
-                    skillStore.appendAutomationLog(
-                        MasonAutomationRunLog(
-                            automationId = automationId,
-                            status = "failed",
-                            message = message,
-                        ),
-                    )
-                }
                 _automationState.value = _automationState.value.copy(
                     working = false,
                     revision = _automationState.value.revision + 1,
@@ -217,9 +355,38 @@ class CollectionListViewModel @Inject constructor(
         _automationState.value = _automationState.value.copy(message = null)
     }
 
-    private fun automationDescription(type: String, arguments: Map<String, String>): String = when (type) {
-        "notification" -> "发送通知：${arguments["title"].orEmpty()}"
-        "launch_app" -> "打开 App：${arguments["package_name"].orEmpty()}"
-        else -> "手动自动化"
+    private fun automationDescription(
+        type: String,
+        arguments: Map<String, String>,
+        triggerType: String,
+        triggerValue: String,
+        constraints: MasonAutomationConstraints,
+    ): String {
+        val action = when (type) {
+            "notification" -> "发送通知：${arguments["title"].orEmpty()}"
+            AutomationRunner.ACTION_MODEL_ARTIFACT -> "AI 产出：${arguments["file_name"].orEmpty()}"
+            "launch_app" -> "打开 App：${arguments["package_name"].orEmpty()}"
+            else -> "自动化"
+        }
+        val trigger = when (triggerType) {
+            AutomationScheduler.TRIGGER_INTERVAL -> "每 ${triggerValue.ifBlank { AutomationScheduler.MIN_INTERVAL_MINUTES }} 分钟"
+            AutomationScheduler.TRIGGER_DAILY -> "每天 $triggerValue"
+            AutomationScheduler.TRIGGER_WEEKDAYS -> AutomationScheduler.describeWeekdays(triggerValue)
+            AutomationScheduler.TRIGGER_CHARGING -> "接上充电器时"
+            AutomationScheduler.TRIGGER_WIFI -> "连接 WiFi：$triggerValue"
+            AutomationScheduler.TRIGGER_BLUETOOTH -> "连接蓝牙：$triggerValue"
+            AutomationScheduler.TRIGGER_NOTIFICATION -> "收到通知：$triggerValue"
+            AutomationScheduler.TRIGGER_LOCATION -> "进入指定位置"
+            else -> "手动"
+        }
+        val conditions = buildList {
+            when (constraints.network) {
+                AutomationScheduler.NETWORK_CONNECTED -> add("需要联网")
+                AutomationScheduler.NETWORK_UNMETERED -> add("非计费网络")
+            }
+            if (constraints.requiresCharging) add("充电时")
+            if (constraints.requiresBatteryNotLow) add("电量充足")
+        }
+        return (listOf(action, trigger) + conditions).joinToString(" · ")
     }
 }

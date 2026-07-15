@@ -7,8 +7,11 @@ import android.os.Environment
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.denggl2.mason.crashguard.data.CrashDao
+import com.denggl2.mason.automation.AutomationScheduler
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
+import com.denggl2.mason.data.AutomationPreferences
+import com.denggl2.mason.data.AutomationPreferencesDataStore
 import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.AiModelRepository
@@ -30,6 +33,7 @@ import com.denggl2.mason.llm.LiteRtModelEngine
 import com.denggl2.mason.llm.ModelInvocation
 import com.denggl2.mason.llm.ModelModality
 import com.denggl2.mason.llm.model.ChatMessage
+import com.denggl2.mason.agent.ToolGrantStore
 import com.denggl2.mason.sync.SyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -92,6 +96,9 @@ class SettingsViewModel @Inject constructor(
     private val localModelStore: LocalModelStore,
     private val localModelDownloadCoordinator: LocalModelDownloadCoordinator,
     private val liteRtModelEngine: LiteRtModelEngine,
+    private val automationPreferencesStore: AutomationPreferencesDataStore,
+    private val automationScheduler: AutomationScheduler,
+    private val toolGrantStore: ToolGrantStore,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -103,6 +110,12 @@ class SettingsViewModel @Inject constructor(
 
     val officialChannels: StateFlow<OfficialChannelPreferences> = officialChannelStore.preferences
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), OfficialChannelPreferences())
+
+    val automationPreferences: StateFlow<AutomationPreferences> = automationPreferencesStore.preferences
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AutomationPreferences())
+
+    private val _alwaysAllowedTools = MutableStateFlow(toolGrantStore.listAlwaysAllowed())
+    val alwaysAllowedTools = _alwaysAllowedTools.asStateFlow()
 
     private val _toastEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val toastEvent = _toastEvent.asSharedFlow()
@@ -136,6 +149,25 @@ class SettingsViewModel @Inject constructor(
     fun save(config: ApiConfig) {
         viewModelScope.launch {
             configDataStore.updateConfig(config)
+        }
+    }
+
+    fun revokeToolGrant(toolName: String) {
+        toolGrantStore.revoke(toolName)
+        _alwaysAllowedTools.value = toolGrantStore.listAlwaysAllowed()
+        _toastEvent.tryEmit("已撤销 $toolName 的永久授权")
+    }
+
+    fun setBackgroundAutomationEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching {
+                automationPreferencesStore.updateBackgroundExecutionEnabled(enabled)
+                automationScheduler.syncAll(enabled)
+            }.onSuccess {
+                _toastEvent.emit(if (enabled) "后台自动化已开启" else "后台自动化已关闭")
+            }.onFailure { error ->
+                _toastEvent.emit("后台自动化设置失败：${error.message ?: error.javaClass.simpleName}")
+            }
         }
     }
 

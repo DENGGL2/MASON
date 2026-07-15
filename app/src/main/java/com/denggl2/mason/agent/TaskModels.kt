@@ -21,6 +21,7 @@ enum class TaskStepKind {
     Understand,
     PrepareInputs,
     Model,
+    Skill,
     Tool,
     Review,
     Deliver,
@@ -58,7 +59,13 @@ data class TaskRun(
     val steps: List<TaskStep>,
     val createdAt: Long,
     val finishedAt: Long? = null,
-    val schemaVersion: Int = 1,
+    val conversationId: Long? = null,
+    val updatedAt: Long = createdAt,
+    val activeAgent: MasonAgentRole = MasonAgentRole.Planner,
+    val summary: String? = null,
+    val artifactPaths: List<String> = emptyList(),
+    val lastError: String? = null,
+    val schemaVersion: Int = 2,
 )
 
 enum class ToolRiskLevel {
@@ -128,6 +135,17 @@ object TaskStepFactory {
                 startedAt = now,
             ),
         )
+        if (goal.contains("<mason-skill-instructions>")) {
+            add(
+                TaskStep(
+                    id = "skill",
+                    title = "运行 Skill",
+                    detail = "按已启用 Skill 的受控说明处理任务",
+                    status = TaskStepStatus.Pending,
+                    kind = TaskStepKind.Skill,
+                ),
+            )
+        }
         if (goal.needsInputPreparation()) {
             add(
                 TaskStep(
@@ -256,6 +274,16 @@ fun TaskRun.withSteps(nextSteps: List<TaskStep>): TaskRun {
         status = nextStatus,
         steps = nextSteps,
         finishedAt = if (nextStatus in terminalRunStatuses) System.currentTimeMillis() else null,
+        updatedAt = System.currentTimeMillis(),
+        activeAgent = when {
+            nextSteps.any { it.status == TaskStepStatus.WaitingForUser } -> MasonAgentRole.Executor
+            nextSteps.any { it.kind == TaskStepKind.Review && it.status == TaskStepStatus.Running } -> MasonAgentRole.Reviewer
+            nextSteps.any { it.kind == TaskStepKind.Deliver && it.status == TaskStepStatus.Running } -> MasonAgentRole.Summarizer
+            nextSteps.any {
+                it.kind == TaskStepKind.Tool || it.kind == TaskStepKind.Model || it.kind == TaskStepKind.Skill
+            } -> MasonAgentRole.Executor
+            else -> MasonAgentRole.Planner
+        },
     )
 }
 

@@ -12,6 +12,13 @@ enum class UserMemoryType(val label: String) {
 }
 
 @Serializable
+enum class UserMemoryScope {
+    GLOBAL,
+    PROJECT,
+    CONVERSATION,
+}
+
+@Serializable
 data class UserMemoryItem(
     val id: String,
     val label: String,
@@ -19,4 +26,11 @@ data class UserMemoryItem(
     val type: UserMemoryType = UserMemoryType.OTHER,
     val sensitive: Boolean = true,
     val updatedAtMillis: Long = System.currentTimeMillis(),
+    val createdAtMillis: Long = updatedAtMillis,
+    val enabled: Boolean = true,
+    val autoUse: Boolean = !sensitive,
+    val scope: UserMemoryScope = UserMemoryScope.GLOBAL,
+    val scopeId: String? = null,
+    val keywords: List<String> = emptyList(),
+    val lastUsedAtMillis: Long? = null,
 )

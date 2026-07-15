@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.security.KeyStore
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -47,6 +48,67 @@ class UserMemoryStore @Inject constructor(
             writeItems(nextItems)
             _items.value = nextItems
         }
+    }
+
+    suspend fun relevant(
+        query: String,
+        scopeId: String? = null,
+        allowSensitive: Boolean = false,
+        limit: Int = 6,
+    ): List<UserMemoryItem> = withContext(Dispatchers.Default) {
+        val normalized = query.lowercase()
+        _items.value.asSequence()
+            .filter(UserMemoryItem::enabled)
+            .filter { item ->
+                item.scope == UserMemoryScope.GLOBAL || item.scopeId == scopeId
+            }
+            .filter { item ->
+                !item.sensitive || allowSensitive || normalized.contains(item.label.lowercase())
+            }
+            .map { item -> item to relevanceScore(item, normalized) }
+            .filter { (_, score) -> score > 0 }
+            .sortedByDescending { (_, score) -> score }
+            .take(limit.coerceIn(1, 12))
+            .map(Pair<UserMemoryItem, Int>::first)
+            .toList()
+    }
+
+    suspend fun rememberExplicitStatement(text: String): UserMemoryItem? {
+        val candidate = explicitCandidate(text) ?: return null
+        upsert(candidate)
+        return candidate
+    }
+
+    fun explicitCandidate(text: String): UserMemoryItem? {
+        val match = Regex("(?:请)?记住(?:我的)?(.+?)(?:是|为|：|:)(.+)").find(text.trim()) ?: return null
+        val label = match.groupValues[1].trim('，', ',', '。', ' ')
+        val value = match.groupValues[2].trim('，', ',', '。', ' ')
+        if (label.isBlank() || value.isBlank() || label.length > 40 || value.length > 500) return null
+        val type = when {
+            label.contains("车牌") -> UserMemoryType.LICENSE_PLATE
+            label.contains("地址") || label.contains("公司") || label.contains("家") -> UserMemoryType.ADDRESS
+            label.contains("身份") || label.contains("姓名") -> UserMemoryType.IDENTITY
+            label.contains("支付") || label.contains("账号") -> UserMemoryType.PAYMENT
+            else -> UserMemoryType.OTHER
+        }
+        return UserMemoryItem(
+            id = UUID.randomUUID().toString(),
+            label = label,
+            value = value,
+            type = type,
+            sensitive = type in setOf(UserMemoryType.IDENTITY, UserMemoryType.PAYMENT, UserMemoryType.ADDRESS),
+            autoUse = type !in setOf(UserMemoryType.IDENTITY, UserMemoryType.PAYMENT, UserMemoryType.ADDRESS),
+            keywords = listOf(label, type.label).distinct(),
+        )
+    }
+
+    private fun relevanceScore(item: UserMemoryItem, query: String): Int {
+        var score = 0
+        if (query.contains(item.label.lowercase())) score += 8
+        if (query.contains(item.type.label.lowercase())) score += 4
+        item.keywords.forEach { keyword -> if (keyword.isNotBlank() && query.contains(keyword.lowercase())) score += 3 }
+        if (item.autoUse && query.contains("我")) score += 1
+        return score
     }
 
     private fun readItems(): List<UserMemoryItem> {

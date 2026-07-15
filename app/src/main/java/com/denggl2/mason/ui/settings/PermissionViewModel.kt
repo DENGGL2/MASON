@@ -9,6 +9,7 @@ import android.os.Build
 import android.provider.Settings
 import android.app.NotificationManager
 import androidx.core.content.ContextCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -87,6 +88,11 @@ class PermissionViewModel @Inject constructor(
                     "读取短信",
                     PermissionGroup.COMMUNICATION,
                 ),
+                permissionItem(
+                    Manifest.permission.READ_CALENDAR,
+                    "读取日历",
+                    PermissionGroup.COMMUNICATION,
+                ),
 
                 // ── 系统 ──
                 PermissionItem(
@@ -101,6 +107,14 @@ class PermissionViewModel @Inject constructor(
                             PackageManager.PERMISSION_GRANTED
                     },
                     settingsIntent = appSettingsIntent(),
+                ),
+                PermissionItem(
+                    permission = "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
+                    label = "通知使用权（用于自动化触发）",
+                    group = PermissionGroup.SYSTEM,
+                    isGranted = context.packageName in
+                        NotificationManagerCompat.getEnabledListenerPackages(context),
+                    settingsIntent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS),
                 ),
                 PermissionItem(
                     permission = "android.settings.MANAGE_OVERLAY_PERMISSION",

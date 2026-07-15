@@ -14,12 +14,25 @@ data class ModelInvocation(
     val messages: List<ChatMessage>,
     val modelId: String,
     val attachments: List<ModelAttachment> = emptyList(),
+    val toolsEnabled: Boolean = false,
+    val timeoutMillis: Long = 120_000L,
+    val maxOutputTokens: Int? = null,
 )
 
 data class ModelAttachment(
     val name: String,
     val uri: String,
     val mimeType: String? = null,
+    val inlineText: String? = null,
+)
+
+data class ModelEngineStatus(
+    val engineId: String,
+    val available: Boolean,
+    val modelId: String,
+    val modality: ModelModality,
+    val message: String,
+    val checkedAt: Long = System.currentTimeMillis(),
 )
 
 interface ModelEngine {

@@ -86,6 +86,26 @@
             android:name="com.denggl2.mason.tool.AlarmReceiver"
             android:exported="false" />
 
+        <receiver
+            android:name=".automation.AutomationEventReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".automation.MasonNotificationListenerService"
+            android:exported="true"
+            android:label="Mason 自动化"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <service
             android:name=".data.LocalModelDownloadService"
             android:exported="false"
