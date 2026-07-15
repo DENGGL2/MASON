@@ -152,6 +152,10 @@ import com.denggl2.mason.automation.AutomationDraftService
 import com.denggl2.mason.agent.ToolRiskLevel
 import com.denggl2.mason.llm.TokenUsage
 import com.denggl2.mason.llm.model.ChatMessage
+import com.denggl2.mason.integration.CapabilityRequirement
+import com.denggl2.mason.integration.CapabilityRequirementStatus
+import com.denggl2.mason.integration.extractCapabilityRequirementMarker
+import com.denggl2.mason.integration.stripCapabilityRequirementMarkers
 import com.denggl2.mason.ui.conversation.ConversationListItem
 import com.denggl2.mason.ui.conversation.ConversationListViewModel
 import kotlinx.coroutines.launch
@@ -264,6 +268,11 @@ fun ChatScreen(
             AutomationDraftService.extractAutomationApplyMarker(message.content.orEmpty())?.draftId
         }.toSet()
     }
+    val pendingCapabilityRequirement = remember(visibleMessages, uiState.taskRun?.id) {
+        visibleMessages.asReversed()
+            .firstNotNullOfOrNull { message -> extractCapabilityRequirementMarker(message.content.orEmpty()) }
+            ?.takeIf { requirement -> requirement.taskRunId == uiState.taskRun?.id }
+    }
     val hasMessages = visibleMessages.isNotEmpty() ||
         uiState.streamingContent.isNotEmpty() ||
         uiState.toolCallStatus != null ||
@@ -299,6 +308,7 @@ fun ChatScreen(
     val modelSummary = remember(modelStatuses) { summarizeModelAvailability(modelStatuses) }
 
     LaunchedEffect(uiState.messages.size, uiState.streamingContent, uiState.toolCallStatus) {
+        viewModel.recheckPendingCapability()
         val lastIndex = listState.layoutInfo.totalItemsCount - 1
         if (lastIndex >= 0) listState.animateScrollToItem(lastIndex)
     }
@@ -430,6 +440,7 @@ fun ChatScreen(
                                         ?.draftId in appliedAutomationDraftIds,
                                     onApplyAutomationDraft = viewModel::applyAutomationDraft,
                                     onOpenAutomationPermissions = onNavigateToPermission,
+                                    onOpenCapabilityConnections = onNavigateToIntegrations,
                                 )
                             }
                         }
@@ -438,6 +449,7 @@ fun ChatScreen(
                             item {
                                 MasonProcessPanel(
                                     steps = uiState.taskSteps,
+                                    capabilityRequirement = pendingCapabilityRequirement,
                                     toolCallStatus = uiState.toolCallStatus,
                                     hasDraft = uiState.streamingContent.isNotBlank(),
                                     onRetryStep = viewModel::retryTaskStep,
@@ -1273,6 +1285,7 @@ private fun ToolCallStatusCard(toolName: String) {
 @Composable
 private fun MasonProcessPanel(
     steps: List<TaskStep>,
+    capabilityRequirement: CapabilityRequirement?,
     toolCallStatus: String?,
     hasDraft: Boolean,
     onRetryStep: (String) -> Unit,
@@ -1284,7 +1297,9 @@ private fun MasonProcessPanel(
                 it.status == TaskStepStatus.Pending ||
                 it.status == TaskStepStatus.WaitingForUser
         }
-        var detailsExpanded by remember(steps.map { it.status }) { mutableStateOf(!finished) }
+        var detailsExpanded by remember(steps.map { it.status }, capabilityRequirement?.id) {
+            mutableStateOf(!finished && capabilityRequirement == null)
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1304,7 +1319,7 @@ private fun MasonProcessPanel(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        processSummaryText(steps),
+                        capabilityRequirement?.let { "等待连接 ${it.displayName}" } ?: processSummaryText(steps),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 10.sp,
                         maxLines = 1,
@@ -1320,9 +1335,12 @@ private fun MasonProcessPanel(
                         )
                     }
                 }
-                ProcessStatusPill(processStatusText(steps), steps.any { it.status == TaskStepStatus.WaitingForUser })
+                ProcessStatusPill(
+                    capabilityRequirement?.let { "待连接" } ?: processStatusText(steps),
+                    steps.any { it.status == TaskStepStatus.WaitingForUser },
+                )
             }
-            if (finished && !detailsExpanded) {
+            if (!detailsExpanded) {
                 Text(
                     "查看执行详情",
                     color = MaterialTheme.colorScheme.primary,
@@ -1334,9 +1352,13 @@ private fun MasonProcessPanel(
             } else {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
                 steps.forEach { step ->
-                    TaskProcessLine(step, onRetry = { onRetryStep(step.id) })
+                    TaskProcessLine(
+                        step = step,
+                        allowWaitingResume = capabilityRequirement == null,
+                        onRetry = { onRetryStep(step.id) },
+                    )
                 }
-                if (finished) {
+                if (finished || capabilityRequirement != null) {
                     Text(
                         "收起详情",
                         color = MaterialTheme.colorScheme.primary,
@@ -1386,7 +1408,11 @@ private fun MasonProcessPanel(
 }
 
 @Composable
-private fun TaskProcessLine(step: TaskStep, onRetry: () -> Unit) {
+private fun TaskProcessLine(
+    step: TaskStep,
+    allowWaitingResume: Boolean,
+    onRetry: () -> Unit,
+) {
     val active = step.status == TaskStepStatus.Running || step.status == TaskStepStatus.WaitingForUser
     val dotColor = when (step.status) {
         TaskStepStatus.Completed -> MaterialTheme.colorScheme.primary
@@ -1424,7 +1450,7 @@ private fun TaskProcessLine(step: TaskStep, onRetry: () -> Unit) {
                     modifier = Modifier.weight(1f),
                 )
                 if ((step.status == TaskStepStatus.Failed && step.retryable) ||
-                    step.status == TaskStepStatus.WaitingForUser
+                    (step.status == TaskStepStatus.WaitingForUser && allowWaitingResume)
                 ) {
                     IconButton(
                         onClick = onRetry,
@@ -1606,10 +1632,14 @@ private fun AssistantAnswerCard(
     isStreaming: Boolean = false,
     processingMs: Long? = null,
     onRetry: () -> Unit = {},
+    onOpenCapabilityConnections: () -> Unit = {},
 ) {
     val rawContent = message.content.orEmpty()
     val artifacts = remember(rawContent) { extractArtifactMetadata(rawContent) }
-    val content = remember(rawContent) { stripTaskRunMarkers(stripArtifactMarkers(rawContent)) }
+    val capabilityRequirement = remember(rawContent) { extractCapabilityRequirementMarker(rawContent) }
+    val content = remember(rawContent) {
+        stripTaskRunMarkers(stripArtifactMarkers(stripCapabilityRequirementMarkers(rawContent)))
+    }
     val isStopped = remember(content) { content.contains("已停止生成") }
     val sections = remember(content, isStreaming) { parseAnswerSections(content, isStreaming) }
     val references = remember(content) { extractReferenceUrls(content) }
@@ -1651,6 +1681,7 @@ private fun AssistantAnswerCard(
                 when {
                     isStreaming -> "进行中"
                     isStopped -> "已停止"
+                    capabilityRequirement != null -> "待连接"
                     else -> "完成"
                 },
                 color = if (isStopped) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
@@ -1689,6 +1720,11 @@ private fun AssistantAnswerCard(
             ReferenceStrip(references)
         }
 
+        capabilityRequirement?.let { requirement ->
+            Spacer(Modifier.height(10.dp))
+            CapabilityRequirementBlock(requirement, onOpenCapabilityConnections)
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -1725,6 +1761,59 @@ private fun AnswerSectionBlock(
             contentColor = MaterialTheme.colorScheme.onSurface,
             actionColor = MaterialTheme.colorScheme.primary,
         )
+    }
+}
+
+@Composable
+private fun CapabilityRequirementBlock(
+    requirement: CapabilityRequirement,
+    onOpenConnections: () -> Unit,
+) {
+    val status = when (requirement.status) {
+        CapabilityRequirementStatus.NotInstalled -> "未安装"
+        CapabilityRequirementStatus.NeedsAuthorization -> "待授权"
+        CapabilityRequirementStatus.WaitingForOfficialAccess -> "等待官方接入"
+        CapabilityRequirementStatus.NeedsConnection -> "需要连接"
+        CapabilityRequirementStatus.Unavailable -> "当前不可用"
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f))
+    Spacer(Modifier.height(10.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.Extension,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                requirement.displayName,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "$status · ${requirement.capabilities.joinToString("、")}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        TextButton(onClick = onOpenConnections) {
+            Text(if (requirement.status == CapabilityRequirementStatus.NeedsAuthorization) "去授权" else "查看")
+        }
     }
 }
 
@@ -2081,6 +2170,7 @@ private fun MessageBubble(
     automationApplied: Boolean = false,
     onApplyAutomationDraft: (AutomationDraft, Boolean) -> Unit = { _, _ -> },
     onOpenAutomationPermissions: () -> Unit = {},
+    onOpenCapabilityConnections: () -> Unit = {},
 ) {
     val isUser = message.role == "user"
     val isTool = message.role == "tool"
@@ -2107,6 +2197,7 @@ private fun MessageBubble(
             isStreaming = isStreaming,
             processingMs = processingMs,
             onRetry = onRetry,
+            onOpenCapabilityConnections = onOpenCapabilityConnections,
         )
         return
     }

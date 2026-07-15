@@ -38,6 +38,10 @@ import com.denggl2.mason.llm.model.ToolCall
 import com.denggl2.mason.sync.SyncManager
 import com.denggl2.mason.data.UiPreferencesDataStore
 import com.denggl2.mason.data.UserMemoryStore
+import com.denggl2.mason.integration.CapabilityRequirement
+import com.denggl2.mason.integration.CapabilityRequirementResolver
+import com.denggl2.mason.integration.extractCapabilityRequirementMarker
+import com.denggl2.mason.integration.toMarker
 import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.tool.ToolResult
 import com.denggl2.mason.tool.ToolRegistry
@@ -105,6 +109,7 @@ class ChatViewModel @Inject constructor(
     private val agentRuntime: AgentRuntime,
     private val toolGrantStore: ToolGrantStore,
     private val toolRegistry: ToolRegistry,
+    private val capabilityRequirementResolver: CapabilityRequirementResolver,
     private val userMemoryStore: UserMemoryStore,
 ) : ViewModel() {
 
@@ -248,6 +253,11 @@ class ChatViewModel @Inject constructor(
                         "已按明确指令保存本机记忆：${memory.label}",
                     ),
                 )
+            }
+
+            capabilityRequirementResolver.resolve(content, activeTaskRun?.id.orEmpty())?.let { requirement ->
+                presentCapabilityRequirement(requirement, startedAt)
+                return@launchGeneration
             }
 
             if (AutomationDraftService.looksLikeAutomationRequest(content)) {
@@ -724,6 +734,19 @@ class ChatViewModel @Inject constructor(
             ?.takeIf { it.isNotBlank() }
             ?: return
         sendMessage(content)
+    }
+
+    fun recheckPendingCapability() {
+        if (_uiState.value.isStreaming) return
+        val requirement = _uiState.value.messages.asReversed()
+            .firstNotNullOfOrNull { message -> extractCapabilityRequirementMarker(message.content.orEmpty()) }
+            ?: return
+        val run = activeTaskRun ?: return
+        if (run.id != requirement.taskRunId ||
+            run.status != com.denggl2.mason.agent.TaskRunStatus.WaitingForUser ||
+            !capabilityRequirementResolver.isSatisfied(requirement)
+        ) return
+        resumeCurrentTask()
     }
 
     fun retryTaskStep(stepId: String) {
@@ -1361,6 +1384,40 @@ class ChatViewModel @Inject constructor(
             lastError = persisted.lastError ?: current.lastError,
         ).withSteps(localSteps)
         _uiState.value = _uiState.value.copy(taskSteps = localSteps, taskRun = activeTaskRun)
+    }
+
+    private suspend fun presentCapabilityRequirement(
+        requirement: CapabilityRequirement,
+        startedAt: Long,
+    ) {
+        val finalSteps = _uiState.value.taskSteps
+            .updateStep("plan", TaskStepStatus.Completed, "已识别需要 ${requirement.displayName} 协作")
+            .updateStep("prepare-inputs", TaskStepStatus.Completed, "已保留原任务和输入材料")
+            .updateStep("execute", TaskStepStatus.WaitingForUser, requirement.detail)
+            .updateStep("summary", TaskStepStatus.Completed, "已给出能力连接入口")
+        val summary = "最终总结：需要先连接 ${requirement.displayName} 才能继续。"
+        val content = annotateCurrentTaskRun(
+            summary + "\n\n" + requirement.toMarker(),
+            finalSteps,
+        )
+        activeTaskRun?.let { agentRuntime.persist(it) }
+        val message = ChatMessage(
+            role = "assistant",
+            content = content,
+            timestamp = System.currentTimeMillis(),
+        )
+        _uiState.value = _uiState.value.copy(
+            messages = _uiState.value.messages + message,
+            isStreaming = false,
+            streamingContent = "",
+            requestStartedAt = null,
+            lastProcessingMs = System.currentTimeMillis() - startedAt,
+            taskSteps = finalSteps,
+            taskRun = activeTaskRun,
+        )
+        currentConversationId?.let { conversationId ->
+            syncManager.saveMessage(conversationId, role = "assistant", content = content)
+        }
     }
 
     private suspend fun notifyTaskCompletedIfNeeded() {

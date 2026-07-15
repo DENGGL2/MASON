@@ -63,13 +63,16 @@ private data class PendingRemoval(val type: IntegrationEditorType, val id: Strin
 @Composable
 fun ManualIntegrationsScreen(
     onBack: () -> Unit,
+    openMcpEditorOnStart: Boolean = false,
     viewModel: IntegrationsViewModel = hiltViewModel(),
 ) {
     val snapshot by viewModel.snapshot.collectAsState()
     val mcpStates by viewModel.mcpStates.collectAsState()
     val a2aStates by viewModel.a2aStates.collectAsState()
     val context = LocalContext.current
-    var editorType by remember { mutableStateOf<IntegrationEditorType?>(null) }
+    var editorType by remember(openMcpEditorOnStart) {
+        mutableStateOf(if (openMcpEditorOnStart) IntegrationEditorType.Mcp else null)
+    }
     var editingMcp by remember { mutableStateOf<McpServerConfig?>(null) }
     var editingA2a by remember { mutableStateOf<A2aAgentConfig?>(null) }
     var pendingRemoval by remember { mutableStateOf<PendingRemoval?>(null) }

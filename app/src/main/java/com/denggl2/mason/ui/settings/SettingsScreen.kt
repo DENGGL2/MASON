@@ -352,7 +352,6 @@ fun SettingsScreen(
                     onOpenAi = { page = SettingsPage.AiService },
                     onOpenIsland = { page = SettingsPage.NotificationIsland },
                     onOpenMemory = { page = SettingsPage.Memory },
-                    onOpenOfficialChannels = { page = SettingsPage.OfficialChannels },
                     onOpenIntegrations = onNavigateToIntegrations,
                     onOpenPermission = onNavigateToPermission,
                     onOpenAbout = { page = SettingsPage.About },
@@ -960,7 +959,6 @@ private fun SettingsOverviewContent(
     onOpenAi: () -> Unit,
     onOpenIsland: () -> Unit,
     onOpenMemory: () -> Unit,
-    onOpenOfficialChannels: () -> Unit,
     onOpenIntegrations: () -> Unit,
     onOpenPermission: () -> Unit,
     onOpenAbout: () -> Unit,
@@ -1000,13 +998,6 @@ private fun SettingsOverviewContent(
             title = "扩展能力",
             description = "应用协作（A2A）和工具扩展（MCP）",
             onClick = onOpenIntegrations,
-        )
-        GroupDivider()
-        OverviewSettingRow(
-            icon = Icons.Outlined.Hub,
-            title = "官方通道",
-            description = "区分 A2A、已发布 MCP 和待发布 MCP",
-            onClick = onOpenOfficialChannels,
         )
         GroupDivider()
         OverviewSettingRow(

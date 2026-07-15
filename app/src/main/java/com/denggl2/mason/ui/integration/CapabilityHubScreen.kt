@@ -65,10 +65,18 @@ fun IntegrationsScreen(
     viewModel: IntegrationsViewModel = hiltViewModel(),
 ) {
     var showManualConfiguration by remember { mutableStateOf(false) }
+    var openMcpEditorOnStart by remember { mutableStateOf(false) }
     if (showManualConfiguration) {
-        BackHandler { showManualConfiguration = false }
+        BackHandler {
+            showManualConfiguration = false
+            openMcpEditorOnStart = false
+        }
         ManualIntegrationsScreen(
-            onBack = { showManualConfiguration = false },
+            onBack = {
+                showManualConfiguration = false
+                openMcpEditorOnStart = false
+            },
+            openMcpEditorOnStart = openMcpEditorOnStart,
             viewModel = viewModel,
         )
         return
@@ -154,7 +162,10 @@ fun IntegrationsScreen(
             }
             if (snapshot.mcpServers.isEmpty()) {
                 item {
-                    EmptyToolServices(onConnect = { showManualConfiguration = true })
+                    EmptyToolServices(onConnect = {
+                        openMcpEditorOnStart = true
+                        showManualConfiguration = true
+                    })
                 }
             } else {
                 items(snapshot.mcpServers, key = McpServerConfig::id) { server ->
@@ -178,7 +189,10 @@ fun IntegrationsScreen(
 
             item {
                 TextButton(
-                    onClick = { showManualConfiguration = true },
+                    onClick = {
+                        openMcpEditorOnStart = false
+                        showManualConfiguration = true
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("手动配置 MCP / A2A")
@@ -210,6 +224,11 @@ private fun AppCollaborationRow(state: CapabilityProviderState, onConnect: () ->
         CapabilityConnectionStatus.WaitingForOfficialAccess -> "等待官方接入"
         CapabilityConnectionStatus.Unavailable -> "当前不可用"
     }
+    val supportingDetail = when (state.status) {
+        CapabilityConnectionStatus.NotInstalled -> state.detail.substringAfter('；', "")
+        CapabilityConnectionStatus.WaitingForOfficialAccess -> "已安装"
+        else -> state.detail.takeUnless { it == statusLabel }.orEmpty()
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.small,
@@ -228,17 +247,23 @@ private fun AppCollaborationRow(state: CapabilityProviderState, onConnect: () ->
                 }
                 Text(statusLabel, style = MaterialTheme.typography.labelMedium, color = statusColor(state.status))
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    state.detail,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (state.status == CapabilityConnectionStatus.NeedsAuthorization) {
-                    Button(onClick = onConnect) {
-                        Text("连接${state.provider.displayName}")
-                        Icon(Icons.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.padding(start = 4.dp))
+            if (supportingDetail.isNotBlank() || state.status == CapabilityConnectionStatus.NeedsAuthorization) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        supportingDetail,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (state.status == CapabilityConnectionStatus.NeedsAuthorization) {
+                        Button(onClick = onConnect) {
+                            Text("连接${state.provider.displayName}")
+                            Icon(
+                                Icons.Outlined.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.padding(start = 4.dp),
+                            )
+                        }
                     }
                 }
             }
