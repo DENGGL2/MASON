@@ -147,6 +147,7 @@ private enum class OfficialChannelDetail(
 fun SettingsScreen(
     onBack: () -> Unit,
     onNavigateToPermission: () -> Unit = {},
+    onNavigateToIntegrations: () -> Unit = {},
     uiPreferences: UiPreferences = UiPreferences(),
     onThemeModeChange: (ThemeMode) -> Unit = {},
     onAccentColorChange: (Long) -> Unit = {},
@@ -352,6 +353,7 @@ fun SettingsScreen(
                     onOpenIsland = { page = SettingsPage.NotificationIsland },
                     onOpenMemory = { page = SettingsPage.Memory },
                     onOpenOfficialChannels = { page = SettingsPage.OfficialChannels },
+                    onOpenIntegrations = onNavigateToIntegrations,
                     onOpenPermission = onNavigateToPermission,
                     onOpenAbout = { page = SettingsPage.About },
                 )
@@ -959,6 +961,7 @@ private fun SettingsOverviewContent(
     onOpenIsland: () -> Unit,
     onOpenMemory: () -> Unit,
     onOpenOfficialChannels: () -> Unit,
+    onOpenIntegrations: () -> Unit,
     onOpenPermission: () -> Unit,
     onOpenAbout: () -> Unit,
 ) {
@@ -990,6 +993,13 @@ private fun SettingsOverviewContent(
             title = "记忆",
             description = "车牌、地址、身份信息等本机加密记忆",
             onClick = onOpenMemory,
+        )
+        GroupDivider()
+        OverviewSettingRow(
+            icon = Icons.Outlined.Hub,
+            title = "扩展能力",
+            description = "应用协作（A2A）和工具扩展（MCP）",
+            onClick = onOpenIntegrations,
         )
         GroupDivider()
         OverviewSettingRow(

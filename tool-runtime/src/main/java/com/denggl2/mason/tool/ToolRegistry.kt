@@ -8,10 +8,11 @@ import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.put
 import javax.inject.Inject
 import javax.inject.Singleton
+import java.util.concurrent.ConcurrentHashMap
 
 @Singleton
 class ToolRegistry @Inject constructor() {
-    private val tools = mutableMapOf<String, Tool>()
+    private val tools = ConcurrentHashMap<String, Tool>()
 
     fun register(tool: Tool) {
         tools[tool.name] = tool
@@ -19,6 +20,12 @@ class ToolRegistry @Inject constructor() {
 
     fun registerAll(toolList: Set<@JvmSuppressWildcards Tool>) {
         toolList.forEach { register(it) }
+    }
+
+    @Synchronized
+    fun replaceNamespace(prefix: String, toolList: Collection<Tool>) {
+        tools.keys.filter { it.startsWith(prefix) }.forEach(tools::remove)
+        toolList.forEach(::register)
     }
 
     fun get(name: String): Tool? = tools[name]
@@ -30,7 +37,7 @@ class ToolRegistry @Inject constructor() {
             function = FunctionDef(
                 name = tool.name,
                 description = tool.description,
-                parameters = buildJsonObject {
+                parameters = tool.inputSchema ?: buildJsonObject {
                     put("type", JsonPrimitive("object"))
                     putJsonObject("properties") {
                         tool.parameters.forEach { (key, param) ->

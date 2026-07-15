@@ -3,6 +3,7 @@ package com.denggl2.mason.agent
 import android.content.Context
 import com.denggl2.mason.tool.ToolExecutor
 import com.denggl2.mason.tool.ToolResult
+import com.denggl2.mason.integration.A2aToolManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.UUID
@@ -123,16 +124,25 @@ class GovernedToolExecutor @Inject constructor(
     ): ToolResult {
         val startedAt = System.currentTimeMillis()
         val profile = profile(name)
-        val allowed = profile.risk == ToolRiskLevel.Low ||
-            context.userConfirmed ||
-            grants.isAlwaysAllowed(name) ||
-            context.source in trustedSources
+        val allowed = if (ToolPolicy.requiresMandatoryApproval(name)) {
+            context.userConfirmed
+        } else {
+            profile.risk == ToolRiskLevel.Low ||
+                context.userConfirmed ||
+                grants.isAlwaysAllowed(name) ||
+                context.source in trustedSources
+        }
         val result = if (!allowed) {
             ToolResult(success = false, error = "工具需要用户确认：$name")
         } else if (context.background && !profile.backgroundAllowed) {
             ToolResult(success = false, error = "工具不允许后台自动执行：$name")
         } else {
-            executor.execute(name, args)
+            val executionArgs = if (name.startsWith("a2a__") && context.taskRunId != null) {
+                args + (A2aToolManager.MASON_TASK_RUN_ID to context.taskRunId)
+            } else {
+                args
+            }
+            executor.execute(name, executionArgs)
         }
         auditStore.append(
             ToolAuditRecord(

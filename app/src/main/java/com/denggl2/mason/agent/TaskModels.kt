@@ -76,6 +76,10 @@ enum class ToolRiskLevel {
 
 data class ToolApprovalRequest(
     val toolName: String,
+    val displayName: String = toolName,
+    val actionSummary: String = "",
+    val integrationProtocol: String? = null,
+    val allowPersistentGrant: Boolean = true,
     val riskLevel: ToolRiskLevel,
     val reason: String,
     val call: ToolCall,
@@ -106,14 +110,19 @@ object ToolPolicy {
         "http_request",
     )
 
-    fun riskFor(toolName: String): ToolRiskLevel = when (toolName) {
-        in highRiskTools -> ToolRiskLevel.High
-        in mediumRiskTools -> ToolRiskLevel.Medium
+    fun riskFor(toolName: String): ToolRiskLevel = when {
+        toolName.startsWith("mcp__") || toolName.startsWith("a2a__") -> ToolRiskLevel.High
+        toolName in highRiskTools -> ToolRiskLevel.High
+        toolName in mediumRiskTools -> ToolRiskLevel.Medium
         else -> ToolRiskLevel.Low
     }
 
     fun requiresUserApproval(toolName: String): Boolean =
         riskFor(toolName) != ToolRiskLevel.Low
+
+    fun requiresMandatoryApproval(toolName: String): Boolean = toolName.startsWith("a2a__")
+
+    fun canRememberApproval(toolName: String): Boolean = !requiresMandatoryApproval(toolName)
 
     fun approvalReason(toolName: String): String = when (riskFor(toolName)) {
         ToolRiskLevel.High -> "这个操作可能修改手机状态、写入数据、发送消息、打开应用，或捕获敏感信息。"

@@ -21,6 +21,7 @@ import com.denggl2.mason.ui.chat.ChatScreen
 import com.denggl2.mason.ui.collection.CollectionKind
 import com.denggl2.mason.ui.collection.CollectionListScreen
 import com.denggl2.mason.ui.conversation.ConversationListScreen
+import com.denggl2.mason.ui.integration.IntegrationsScreen
 import com.denggl2.mason.ui.settings.PermissionScreen
 import com.denggl2.mason.ui.settings.SettingsScreen
 
@@ -30,6 +31,7 @@ object Routes {
     const val CHAT = "chat/{conversationId}"
     const val SETTINGS = "settings"
     const val PERMISSION = "permission"
+    const val INTEGRATIONS = "integrations"
     const val COLLECTION = "collection/{kind}"
 
     fun chat(conversationId: Long) = "chat/$conversationId"
@@ -92,6 +94,7 @@ fun MasonNavGraph(
         composable(Routes.CHAT_NEW) {
             ChatScreen(
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToIntegrations = { navController.navigate(Routes.INTEGRATIONS) },
                 onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
                 onConversationSelected = { id ->
                     navController.navigate(Routes.chat(id)) {
@@ -137,6 +140,7 @@ fun MasonNavGraph(
         ) {
             ChatScreen(
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToIntegrations = { navController.navigate(Routes.INTEGRATIONS) },
                 onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
                 onConversationSelected = { id ->
                     navController.navigate(Routes.chat(id)) {
@@ -161,6 +165,9 @@ fun MasonNavGraph(
                 onNavigateToPermission = {
                     navController.navigate(Routes.PERMISSION)
                 },
+                onNavigateToIntegrations = {
+                    navController.navigate(Routes.INTEGRATIONS)
+                },
                 uiPreferences = uiPreferences,
                 onThemeModeChange = onThemeModeChange,
                 onAccentColorChange = onAccentColorChange,
@@ -176,6 +183,10 @@ fun MasonNavGraph(
             PermissionScreen(
                 onBack = { navController.popBackStack() },
             )
+        }
+
+        composable(Routes.INTEGRATIONS) {
+            IntegrationsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

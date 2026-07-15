@@ -40,6 +40,7 @@ import com.denggl2.mason.data.UiPreferencesDataStore
 import com.denggl2.mason.data.UserMemoryStore
 import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.tool.ToolResult
+import com.denggl2.mason.tool.ToolRegistry
 import com.denggl2.mason.model.MasonModelRouter
 import com.denggl2.mason.agent.GovernedToolExecutor
 import com.denggl2.mason.agent.ToolExecutionContext
@@ -103,6 +104,7 @@ class ChatViewModel @Inject constructor(
     private val modelRouter: MasonModelRouter,
     private val agentRuntime: AgentRuntime,
     private val toolGrantStore: ToolGrantStore,
+    private val toolRegistry: ToolRegistry,
     private val userMemoryStore: UserMemoryStore,
 ) : ViewModel() {
 
@@ -286,18 +288,31 @@ class ChatViewModel @Inject constructor(
                         val approval = response.calls
                             .firstOrNull {
                                 ToolPolicy.requiresUserApproval(it.function.name) &&
-                                    !toolGrantStore.isAlwaysAllowed(it.function.name)
+                                    (!ToolPolicy.canRememberApproval(it.function.name) ||
+                                        !toolGrantStore.isAlwaysAllowed(it.function.name))
                             }
                             ?.let { call ->
+                                val tool = toolRegistry.get(call.function.name)
                                 ToolApprovalRequest(
                                     toolName = call.function.name,
+                                    displayName = tool?.displayName ?: call.function.name,
+                                    actionSummary = tool?.approvalDescription.orEmpty(),
+                                    integrationProtocol = when {
+                                        call.function.name.startsWith("a2a__") -> "A2A"
+                                        call.function.name.startsWith("mcp__") -> "MCP"
+                                        else -> null
+                                    },
+                                    allowPersistentGrant = ToolPolicy.canRememberApproval(call.function.name),
                                     riskLevel = ToolPolicy.riskFor(call.function.name),
                                     reason = ToolPolicy.approvalReason(call.function.name),
                                     call = call,
                                 )
                             }
 
-                        if (approval != null && apiConfig.value.requireToolConfirmation) {
+                        if (approval != null &&
+                            (apiConfig.value.requireToolConfirmation ||
+                                ToolPolicy.requiresMandatoryApproval(approval.toolName))
+                        ) {
                             pendingToolBatch = PendingToolBatch(
                                 assistantMessage = response.assistantMessage,
                                 calls = response.calls,
@@ -342,6 +357,7 @@ class ChatViewModel @Inject constructor(
                                     userConfirmed = true,
                                 ),
                             )
+                            mergeExternalTaskState()
                             _uiState.value = _uiState.value.copy(
                                 taskSteps = _uiState.value.taskSteps.updateStep(
                                     call.taskStepId(),
@@ -352,6 +368,8 @@ class ChatViewModel @Inject constructor(
                             if (call.function.name == "file_write" && result.success) {
                                 artifactStore.metadataForExistingFile(result.artifactPath())?.let(producedArtifacts::add)
                             }
+                            result.artifactPaths().mapNotNull(artifactStore::metadataForExistingFile)
+                                .forEach(producedArtifacts::add)
                             val resultStr = if (result.success) {
                                 result.data.entries.joinToString("\n") { "${it.key}: ${it.value}" }
                             } else {
@@ -716,11 +734,22 @@ class ChatViewModel @Inject constructor(
         }
         val step = _uiState.value.taskSteps.firstOrNull { it.id == stepId && it.retryable } ?: return
         val call = step.toolCall ?: return
-        if (apiConfig.value.requireToolConfirmation && ToolPolicy.requiresUserApproval(call.function.name)) {
+        if ((apiConfig.value.requireToolConfirmation || ToolPolicy.requiresMandatoryApproval(call.function.name)) &&
+            ToolPolicy.requiresUserApproval(call.function.name)
+        ) {
+            val tool = toolRegistry.get(call.function.name)
             pendingRetryStepId = stepId
             _uiState.value = _uiState.value.copy(
                 pendingToolApproval = ToolApprovalRequest(
                     toolName = call.function.name,
+                    displayName = tool?.displayName ?: call.function.name,
+                    actionSummary = tool?.approvalDescription.orEmpty(),
+                    integrationProtocol = when {
+                        call.function.name.startsWith("a2a__") -> "A2A"
+                        call.function.name.startsWith("mcp__") -> "MCP"
+                        else -> null
+                    },
+                    allowPersistentGrant = ToolPolicy.canRememberApproval(call.function.name),
                     riskLevel = ToolPolicy.riskFor(call.function.name),
                     reason = "这是失败步骤的重试。${ToolPolicy.approvalReason(call.function.name)}",
                     call = call,
@@ -783,7 +812,9 @@ class ChatViewModel @Inject constructor(
 
     fun approvePendingToolCall(alwaysAllow: Boolean = false) {
         val approval = _uiState.value.pendingToolApproval
-        if (alwaysAllow) approval?.toolName?.let(toolGrantStore::allowAlways)
+        if (alwaysAllow && approval?.allowPersistentGrant == true) {
+            toolGrantStore.allowAlways(approval.toolName)
+        }
         val retryStepId = pendingRetryStepId
         if (retryStepId != null) {
             val call = _uiState.value.pendingToolApproval?.call ?: return
@@ -936,6 +967,7 @@ class ChatViewModel @Inject constructor(
                     userConfirmed = true,
                 ),
             )
+            mergeExternalTaskState()
             val retriedSteps = _uiState.value.taskSteps.updateStep(
                 stepId,
                 if (result.success) TaskStepStatus.Completed else TaskStepStatus.Failed,
@@ -946,11 +978,12 @@ class ChatViewModel @Inject constructor(
             } else {
                 "执行失败：${result.error ?: "未知错误"}"
             }
-            val artifacts = if (call.function.name == "file_write" && result.success) {
-                listOfNotNull(artifactStore.metadataForExistingFile(result.artifactPath()))
-            } else {
-                emptyList()
-            }
+            val artifacts = buildList {
+                if (call.function.name == "file_write" && result.success) {
+                    artifactStore.metadataForExistingFile(result.artifactPath())?.let(::add)
+                }
+                result.artifactPaths().mapNotNull(artifactStore::metadataForExistingFile).forEach(::add)
+            }.distinctBy { it.path }
             val responseText = if (result.success) {
                 "进行中：已单独重试 ${call.function.name}。\n最终总结：$resultText"
             } else {
@@ -1020,6 +1053,7 @@ class ChatViewModel @Inject constructor(
                     userConfirmed = true,
                 ),
             )
+            mergeExternalTaskState()
             _uiState.value = _uiState.value.copy(
                 taskSteps = _uiState.value.taskSteps.updateStep(
                     call.taskStepId(),
@@ -1030,6 +1064,8 @@ class ChatViewModel @Inject constructor(
             if (call.function.name == "file_write" && result.success) {
                 artifactStore.metadataForExistingFile(result.artifactPath())?.let(toolArtifacts::add)
             }
+            result.artifactPaths().mapNotNull(artifactStore::metadataForExistingFile)
+                .forEach(toolArtifacts::add)
             val resultStr = if (result.success) {
                 result.data.entries.joinToString("\n") { "${it.key}: ${it.value}" }
             } else {
@@ -1300,6 +1336,32 @@ class ChatViewModel @Inject constructor(
 
     private fun ToolResult.artifactPath(): String? =
         data["path"] ?: data["file"] ?: data["absolute_path"] ?: data["target_path"]
+
+    private fun ToolResult.artifactPaths(): List<String> = data["artifactPaths"]
+        ?.lineSequence()
+        ?.map(String::trim)
+        ?.filter(String::isNotBlank)
+        ?.toList()
+        .orEmpty()
+
+    private suspend fun mergeExternalTaskState() {
+        val current = activeTaskRun ?: return
+        val persisted = agentRuntime.get(current.id) ?: return
+        val externalSteps = persisted.steps.filter { it.id.startsWith("a2a:") }
+        if (externalSteps.isEmpty()) return
+        val externalIds = externalSteps.map(TaskStep::id).toSet()
+        val localSteps = _uiState.value.taskSteps.filterNot { it.id in externalIds }.toMutableList()
+        val insertionIndex = localSteps.indexOfFirst { it.kind == com.denggl2.mason.agent.TaskStepKind.Review }
+            .takeIf { it >= 0 }
+            ?: localSteps.size
+        localSteps.addAll(insertionIndex, externalSteps)
+        activeTaskRun = current.copy(
+            artifactPaths = (current.artifactPaths + persisted.artifactPaths).distinct(),
+            summary = persisted.summary ?: current.summary,
+            lastError = persisted.lastError ?: current.lastError,
+        ).withSteps(localSteps)
+        _uiState.value = _uiState.value.copy(taskSteps = localSteps, taskRun = activeTaskRun)
+    }
 
     private suspend fun notifyTaskCompletedIfNeeded() {
         val preferences = uiPreferencesDataStore.preferences.first()

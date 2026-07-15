@@ -7,6 +7,7 @@ import android.os.Build
 import com.denggl2.mason.automation.AutomationScheduler
 import com.denggl2.mason.automation.AutomationEventMonitor
 import com.denggl2.mason.crashguard.CrashGuard
+import com.denggl2.mason.integration.IntegrationManager
 import com.denggl2.mason.tool.NotificationTool
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -27,6 +28,9 @@ class MasonApp : Application() {
     @Inject
     lateinit var automationEventMonitor: AutomationEventMonitor
 
+    @Inject
+    lateinit var integrationManager: IntegrationManager
+
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
@@ -36,6 +40,9 @@ class MasonApp : Application() {
         automationEventMonitor.start(this)
         applicationScope.launch {
             automationScheduler.reconcileAtStartup()
+        }
+        applicationScope.launch {
+            integrationManager.refreshAll()
         }
     }
 

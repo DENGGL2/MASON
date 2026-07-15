@@ -202,6 +202,7 @@ private data class ModelStatusItem(
 @Composable
 fun ChatScreen(
     onNavigateToSettings: () -> Unit,
+    onNavigateToIntegrations: () -> Unit = {},
     onNavigateToPermission: () -> Unit = {},
     onConversationSelected: (Long) -> Unit,
     onNewChat: (() -> Unit)? = null,
@@ -550,6 +551,7 @@ fun ChatScreen(
             onApprove = { viewModel.approvePendingToolCall() },
             onAlwaysApprove = { viewModel.approvePendingToolCall(alwaysAllow = true) },
             onReject = viewModel::rejectPendingToolCall,
+            onOpenConnections = onNavigateToIntegrations,
         )
     }
 
@@ -586,6 +588,7 @@ private fun ToolApprovalDialog(
     onApprove: () -> Unit,
     onAlwaysApprove: () -> Unit,
     onReject: () -> Unit,
+    onOpenConnections: () -> Unit,
 ) {
     val riskLabel = when (approval.riskLevel) {
         ToolRiskLevel.Low -> "低风险"
@@ -597,24 +600,51 @@ private fun ToolApprovalDialog(
         containerColor = MaterialTheme.colorScheme.surface,
         titleContentColor = MaterialTheme.colorScheme.onSurface,
         textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        title = { Text("Mason 准备执行") },
+        title = {
+            Text(
+                if (approval.integrationProtocol == "A2A") "允许应用协作？" else "Mason 准备执行",
+            )
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = approval.toolName,
+                    text = approval.displayName,
                     color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.SemiBold,
                 )
+                if (approval.actionSummary.isNotBlank()) {
+                    Text(approval.actionSummary)
+                }
+                approval.integrationProtocol?.let { protocol ->
+                    Text(
+                        text = "协作方式：$protocol",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 12.sp,
+                    )
+                }
                 Text("级别：$riskLabel")
                 Text("影响范围：${approval.reason}")
                 Text(
-                    text = "允许一次只继续本轮任务；总是允许会记住该工具，之后可在设置中撤销。",
+                    text = if (approval.integrationProtocol == "A2A") {
+                        "这次只允许当前任务。以后再次委派敏感操作时，Mason 仍会询问。"
+                    } else {
+                        "允许一次只继续本轮任务；总是允许会记住该工具，之后可在设置中撤销。"
+                    },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
                     lineHeight = 17.sp,
                 )
-                TextButton(onClick = onAlwaysApprove) {
-                    Text("总是允许")
+                Row {
+                    if (approval.integrationProtocol != null) {
+                        TextButton(onClick = onOpenConnections) {
+                            Text("查看连接")
+                        }
+                    }
+                    if (approval.allowPersistentGrant) {
+                        TextButton(onClick = onAlwaysApprove) {
+                            Text("总是允许")
+                        }
+                    }
                 }
             }
         },

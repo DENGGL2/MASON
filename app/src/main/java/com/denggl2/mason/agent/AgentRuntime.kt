@@ -26,6 +26,8 @@ class AgentRuntime @Inject constructor(
 
     suspend fun recover(conversationId: Long?): TaskRun? = store.recoverLatest(conversationId)
 
+    suspend fun get(id: String): TaskRun? = store.get(id)
+
     fun resume(run: TaskRun): TaskRun {
         val steps = run.steps.map { step ->
             if (step.status == TaskStepStatus.WaitingForUser) {
