@@ -1,6 +1,7 @@
 package com.denggl2.mason.agent
 
 import com.denggl2.mason.llm.model.ToolCall
+import com.denggl2.mason.llm.model.ChatMessage
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -65,7 +66,20 @@ data class TaskRun(
     val summary: String? = null,
     val artifactPaths: List<String> = emptyList(),
     val lastError: String? = null,
-    val schemaVersion: Int = 2,
+    val agentExecution: AgentExecutionCheckpoint? = null,
+    val schemaVersion: Int = 3,
+)
+
+@Serializable
+data class AgentExecutionCheckpoint(
+    val messages: List<ChatMessage>,
+    val round: Int = 0,
+    val callFingerprints: List<String> = emptyList(),
+    val pendingAssistantMessage: ChatMessage? = null,
+    val pendingCalls: List<ToolCall> = emptyList(),
+    val pendingApprovalCallId: String? = null,
+    val approvedCallIds: List<String> = emptyList(),
+    val waitingForInput: Boolean = false,
 )
 
 enum class ToolRiskLevel {
@@ -199,10 +213,14 @@ object TaskStepFactory {
         TaskStep(
             id = call.taskStepId(),
             title = toolTitle(call.function.name),
-            detail = "准备调用 ${call.function.name}",
+            detail = if (call.function.name == "skill__activate") {
+                "正在从已启用能力中选择"
+            } else {
+                "准备调用 ${call.function.name}"
+            },
             status = TaskStepStatus.Pending,
-            kind = TaskStepKind.Tool,
-            retryable = true,
+            kind = if (call.function.name == "skill__activate") TaskStepKind.Skill else TaskStepKind.Tool,
+            retryable = call.function.name != "skill__activate",
             toolCall = call,
         )
     }
@@ -217,6 +235,7 @@ object TaskStepFactory {
     }
 
     private fun toolTitle(toolName: String): String = when (toolName) {
+        "skill__activate" -> "选择 Skill"
         "file_write" -> "生成文件"
         "file_delete" -> "删除文件"
         "http_request" -> "访问网络"
@@ -261,14 +280,27 @@ fun List<TaskStep>.updateStep(
 }
 
 fun List<TaskStep>.withToolSteps(calls: List<ToolCall>): List<TaskStep> {
-    val withoutOldTools = filterNot { it.kind == TaskStepKind.Tool }
-    val reviewIndex = withoutOldTools.indexOfFirst { it.kind == TaskStepKind.Review }
+    val existingIds = map(TaskStep::id).toSet()
+    val newSteps = TaskStepFactory.toolSteps(calls).filterNot { it.id in existingIds }
+    if (newSteps.isEmpty()) return this
+    val reviewIndex = indexOfFirst { it.kind == TaskStepKind.Review }
         .takeIf { it >= 0 }
-        ?: withoutOldTools.size
-    return withoutOldTools.toMutableList().apply {
-        addAll(reviewIndex, TaskStepFactory.toolSteps(calls))
+        ?: size
+    return toMutableList().apply {
+        addAll(reviewIndex, newSteps)
     }
 }
+
+fun ToolCall.fingerprint(): String = "${function.name}:${function.arguments.trim()}"
+
+fun AgentExecutionCheckpoint.canExecute(calls: List<ToolCall>): Boolean {
+    if (round >= MAX_AGENT_TOOL_ROUNDS) return false
+    val previous = callFingerprints.groupingBy { it }.eachCount()
+    return calls.none { (previous[it.fingerprint()] ?: 0) >= MAX_IDENTICAL_TOOL_CALLS }
+}
+
+const val MAX_AGENT_TOOL_ROUNDS = 8
+const val MAX_IDENTICAL_TOOL_CALLS = 2
 
 fun TaskRun.withSteps(nextSteps: List<TaskStep>): TaskRun {
     val nextStatus = when {

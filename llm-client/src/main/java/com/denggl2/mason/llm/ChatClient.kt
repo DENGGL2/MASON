@@ -6,6 +6,8 @@ import com.denggl2.mason.llm.model.FunctionCall
 import com.denggl2.mason.llm.model.StreamOptions
 import com.denggl2.mason.llm.model.ToolCall
 import com.denggl2.mason.llm.model.ApiChatMessage
+import com.denggl2.mason.tool.FunctionDef
+import com.denggl2.mason.tool.ToolDefinition
 import com.denggl2.mason.llm.model.toApiChatMessage
 import com.denggl2.mason.tool.ToolRegistry
 import kotlinx.coroutines.Dispatchers
@@ -82,6 +84,7 @@ data class TokenUsage(
 data class ApiTestResult(
     val success: Boolean,
     val message: String,
+    val capabilityWarning: String? = null,
 )
 
 @Singleton
@@ -126,15 +129,17 @@ class ChatClient @Inject constructor(
             messages = buildApiMessages(listOf(systemPrompt()) + messages, attachments),
             stream = false,
             tools = toolDefinitions.ifEmpty { null },
+            tool_choice = "auto".takeIf { toolDefinitions.isNotEmpty() },
         )
 
-        val body = json.encodeToString(ChatRequest.serializer(), request)
-            .toRequestBody("application/json".toMediaType())
-
-        val httpRequest = buildRequest(apiUrl, apiKey, body)
-
-        val response = withContext(Dispatchers.IO) {
-            client.newCall(httpRequest).execute()
+        var response = withContext(Dispatchers.IO) {
+            executeTestRequest(apiUrl, apiKey, request)
+        }
+        if (response.code == 400 && request.tool_choice != null) {
+            response.close()
+            response = withContext(Dispatchers.IO) {
+                executeTestRequest(apiUrl, apiKey, request.copy(tool_choice = null))
+            }
         }
 
         if (!response.isSuccessful) {
@@ -306,6 +311,7 @@ class ChatClient @Inject constructor(
         apiKey: String,
         model: String,
         requiresApiKey: Boolean = true,
+        testTools: Boolean = true,
     ): ApiTestResult {
         if (apiUrl.isBlank()) return ApiTestResult(false, "请填写 API 地址")
         if (model.isBlank()) return ApiTestResult(false, "请填写模型名称")
@@ -313,7 +319,7 @@ class ChatClient @Inject constructor(
             return ApiTestResult(false, "请填写 API Key")
         }
 
-        val request = ChatRequest(
+        val textRequest = ChatRequest(
             model = model,
             messages = listOf(
                 ApiChatMessage(
@@ -324,13 +330,9 @@ class ChatClient @Inject constructor(
             stream = false,
         )
 
-        val body = json.encodeToString(ChatRequest.serializer(), request)
-            .toRequestBody("application/json".toMediaType())
-        val httpRequest = buildRequest(apiUrl, apiKey, body)
-
         return withContext(Dispatchers.IO) {
             runCatching {
-                client.newCall(httpRequest).execute().use { response ->
+                executeTestRequest(apiUrl, apiKey, textRequest).use { response ->
                     val responseBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
                         return@use ApiTestResult(
@@ -352,9 +354,14 @@ class ChatClient @Inject constructor(
                             ?.contentOrNull
                     }.getOrNull()
 
+                    val textMessage = if (content.isNullOrBlank()) "连接成功" else "连接成功：${content.take(80)}"
+                    if (!testTools) return@use ApiTestResult(true, textMessage)
+
+                    val probe = probeToolCalling(apiUrl, apiKey, model)
                     ApiTestResult(
                         success = true,
-                        message = if (content.isNullOrBlank()) "连接成功" else "连接成功：${content.take(80)}",
+                        message = if (probe.available) "$textMessage；工具调用可用" else textMessage,
+                        capabilityWarning = probe.warning,
                     )
                 }
             }.getOrElse { error ->
@@ -362,6 +369,90 @@ class ChatClient @Inject constructor(
             }
         }
     }
+
+    private fun executeTestRequest(
+        apiUrl: String,
+        apiKey: String,
+        request: ChatRequest,
+    ) = client.newCall(
+        buildRequest(
+            apiUrl,
+            apiKey,
+            json.encodeToString(ChatRequest.serializer(), request)
+                .toRequestBody("application/json".toMediaType()),
+        ),
+    ).execute()
+
+    private fun probeToolCalling(apiUrl: String, apiKey: String, model: String): ToolProbeResult {
+        val baseRequest = ChatRequest(
+            model = model,
+            messages = listOf(
+                ApiChatMessage(
+                    role = "user",
+                    content = kotlinx.serialization.json.JsonPrimitive(
+                        "Call the mason_connection_probe tool now. Do not answer with text.",
+                    ),
+                ),
+            ),
+            stream = false,
+            tools = listOf(connectionProbeTool()),
+        )
+        var lastFailure = "中转站或模型未返回 function calling"
+        for (toolChoice in listOf("auto", null)) {
+            executeTestRequest(apiUrl, apiKey, baseRequest.copy(tool_choice = toolChoice)).use { response ->
+                val body = response.body?.string().orEmpty()
+                if (response.isSuccessful && CONNECTION_PROBE_TOOL in responseToolNames(body)) {
+                    return ToolProbeResult(available = true)
+                }
+                lastFailure = if (response.isSuccessful) {
+                    "中转站或模型未返回 function calling"
+                } else {
+                    "检测请求返回 ${response.code}${responseErrorSummary(body)?.let { "：$it" }.orEmpty()}"
+                }
+            }
+        }
+        return ToolProbeResult(available = false, warning = "工具调用不可用：$lastFailure")
+    }
+
+    private fun responseErrorSummary(body: String): String? {
+        val structured = runCatching {
+            val root = json.parseToJsonElement(body).jsonObject
+            val error = root["error"]
+            when (error) {
+                is JsonObject -> error["message"]?.jsonPrimitive?.contentOrNull
+                is JsonPrimitive -> error.contentOrNull
+                else -> null
+            }
+        }.getOrNull()
+        return (structured ?: body)
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .takeIf(String::isNotBlank)
+            ?.take(160)
+    }
+
+    private fun responseToolNames(responseBody: String): List<String> = runCatching {
+        val message = json.parseToJsonElement(responseBody).jsonObject["choices"]
+            ?.jsonArray
+            ?.firstOrNull()
+            ?.jsonObject
+            ?.get("message")
+            ?.jsonObject
+            ?: return@runCatching emptyList()
+        parseToolCalls(message).map { it.function.name }
+    }.getOrDefault(emptyList())
+
+    private fun connectionProbeTool(): ToolDefinition = ToolDefinition(
+        type = "function",
+        function = FunctionDef(
+            name = CONNECTION_PROBE_TOOL,
+            description = "Return a successful function call to verify tool calling compatibility.",
+            parameters = kotlinx.serialization.json.buildJsonObject {
+                put("type", kotlinx.serialization.json.JsonPrimitive("object"))
+                put("properties", kotlinx.serialization.json.buildJsonObject {})
+            },
+        ),
+    )
 
     private fun systemPrompt(): ChatMessage = ChatMessage(
         role = "system",
@@ -374,10 +465,21 @@ class ChatClient @Inject constructor(
             append("可以使用“思考：”“进行中：”“引导：”“最终总结：”这些可见小节。")
             append("“思考”只写一句可见判断或计划，不输出隐藏推理过程。")
             append("需要用户选择、授权或确认风险时，用“引导”给出 2 到 3 个清晰选项。")
+            append("如果工具列表中存在 skill__activate，且用户任务明确匹配某个 Skill，先调用它获取受控任务方法；普通问答不要调用。")
+            append("Skill 返回 needs_input 时，只询问 missing_parameters，不要猜测；返回 activated 后按 instructions 完成任务，且不能绕过工具确认。")
             append("任务完成后用“最终总结”收束，优先说明结果、文件、下一步。")
             append("当用户要求生成文档、代码、报告、配置或其他文件时，必须输出一个带 filename=\"相对路径/文件名.扩展名\" 的 fenced code block，便于 Mason 自动保存为产出。")
             append("文件代码块示例：```markdown filename=\"notes/summary.md\"。不要把普通解释性回答伪装成文件。")
         },
+    )
+
+    private companion object {
+        const val CONNECTION_PROBE_TOOL = "mason_connection_probe"
+    }
+
+    private data class ToolProbeResult(
+        val available: Boolean,
+        val warning: String? = null,
     )
 
     private fun buildApiMessages(

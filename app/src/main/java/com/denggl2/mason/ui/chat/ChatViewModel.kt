@@ -17,6 +17,9 @@ import com.denggl2.mason.agent.updateStep
 import com.denggl2.mason.agent.withSteps
 import com.denggl2.mason.agent.withToolSteps
 import com.denggl2.mason.agent.AgentRuntime
+import com.denggl2.mason.agent.AgentExecutionCheckpoint
+import com.denggl2.mason.agent.canExecute
+import com.denggl2.mason.agent.fingerprint
 import com.denggl2.mason.automation.AutomationDraft
 import com.denggl2.mason.automation.AutomationDraftService
 import com.denggl2.mason.automation.AutomationDraftService.Companion.toMarker
@@ -42,6 +45,8 @@ import com.denggl2.mason.integration.CapabilityRequirement
 import com.denggl2.mason.integration.CapabilityRequirementResolver
 import com.denggl2.mason.integration.extractCapabilityRequirementMarker
 import com.denggl2.mason.integration.toMarker
+import com.denggl2.mason.skill.SkillActivationTool
+import com.denggl2.mason.skill.SkillRuntime
 import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.tool.ToolResult
 import com.denggl2.mason.tool.ToolRegistry
@@ -91,6 +96,13 @@ private data class PendingToolBatch(
     val assistantMessage: ChatMessage,
     val calls: List<ToolCall>,
     val startedAt: Long,
+    val checkpoint: AgentExecutionCheckpoint,
+)
+
+private data class AgentLoopResult(
+    val usageSeen: Boolean = false,
+    val modelAnswered: Boolean = false,
+    val paused: Boolean = false,
 )
 
 @HiltViewModel
@@ -111,6 +123,8 @@ class ChatViewModel @Inject constructor(
     private val toolRegistry: ToolRegistry,
     private val capabilityRequirementResolver: CapabilityRequirementResolver,
     private val userMemoryStore: UserMemoryStore,
+    private val skillRuntime: SkillRuntime,
+    private val skillActivationTool: SkillActivationTool,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -149,7 +163,9 @@ class ChatViewModel @Inject constructor(
 
     fun refreshInstalledSkills() {
         viewModelScope.launch {
-            _installedSkills.value = skillStore.listInstalledSkills(enabledOnly = true)
+            runCatching { skillStore.listInstalledSkills(enabledOnly = true) }
+                .onSuccess { _installedSkills.value = it }
+            runCatching { skillRuntime.refresh() }
         }
     }
 
@@ -179,10 +195,23 @@ class ChatViewModel @Inject constructor(
                     _uiState.value.pendingToolApproval != null
                 val taskRun = if (taskInFlight) activeTaskRun else recoverableTaskRun ?: restoredTaskRun
                 activeTaskRun = taskRun
+                val checkpoint = taskRun?.agentExecution
+                val restoredApproval = checkpoint?.pendingApprovalCallId
+                    ?.let { callId -> checkpoint.pendingCalls.firstOrNull { it.id == callId } }
+                    ?.let { call -> createApprovalRequest(call, checkpoint.approvedCallIds) }
+                if (restoredApproval != null && checkpoint.pendingAssistantMessage != null) {
+                    pendingToolBatch = PendingToolBatch(
+                        assistantMessage = checkpoint.pendingAssistantMessage,
+                        calls = checkpoint.pendingCalls,
+                        startedAt = taskRun.updatedAt,
+                        checkpoint = checkpoint,
+                    )
+                }
                 _uiState.value = _uiState.value.copy(
                     messages = chatMessages,
                     taskRun = taskRun,
                     taskSteps = taskRun?.steps.orEmpty(),
+                    pendingToolApproval = restoredApproval ?: _uiState.value.pendingToolApproval,
                 )
             }
         }
@@ -199,6 +228,10 @@ class ChatViewModel @Inject constructor(
 
     fun sendMessage(content: String) {
         if (content.isBlank() || generationJob?.isActive == true) return
+        if (activeTaskRun?.agentExecution?.waitingForInput == true) {
+            continueAgentWithUserInput(content)
+            return
+        }
 
         val startedAt = System.currentTimeMillis()
         val taskRun = resumedTaskRun?.also { resumedTaskRun = null }
@@ -266,6 +299,7 @@ class ChatViewModel @Inject constructor(
             }
 
             val producedArtifacts = mutableListOf<ArtifactMetadata>()
+            refreshAutomaticSkillTool(content)
             _uiState.value = _uiState.value.copy(
                 taskSteps = _uiState.value.taskSteps
                     .updateStep("plan", TaskStepStatus.Completed, "已识别目标和所需能力")
@@ -287,155 +321,15 @@ class ChatViewModel @Inject constructor(
             responseFlow.collect { response ->
                 when (response) {
                     is ChatResponse.ToolCallsRequested -> {
-                        _uiState.value = _uiState.value.copy(
-                            taskSteps = _uiState.value.taskSteps
-                                .updateStep("plan", TaskStepStatus.Completed, "已判断需要调用手机能力")
-                                .updateStep("prepare-inputs", TaskStepStatus.Completed, "已整理本轮输入材料")
-                                .updateStep("execute", TaskStepStatus.Completed, "模型已生成 ${response.calls.size} 个工具调用")
-                                .withToolSteps(response.calls),
+                        val loop = runAgentToolLoop(
+                            firstResponse = response,
+                            checkpoint = AgentExecutionCheckpoint(messages = _uiState.value.messages),
+                            startedAt = startedAt,
+                            producedArtifacts = producedArtifacts,
                         )
-
-                        val approval = response.calls
-                            .firstOrNull {
-                                ToolPolicy.requiresUserApproval(it.function.name) &&
-                                    (!ToolPolicy.canRememberApproval(it.function.name) ||
-                                        !toolGrantStore.isAlwaysAllowed(it.function.name))
-                            }
-                            ?.let { call ->
-                                val tool = toolRegistry.get(call.function.name)
-                                ToolApprovalRequest(
-                                    toolName = call.function.name,
-                                    displayName = tool?.displayName ?: call.function.name,
-                                    actionSummary = tool?.approvalDescription.orEmpty(),
-                                    integrationProtocol = when {
-                                        call.function.name.startsWith("a2a__") -> "A2A"
-                                        call.function.name.startsWith("mcp__") -> "MCP"
-                                        else -> null
-                                    },
-                                    allowPersistentGrant = ToolPolicy.canRememberApproval(call.function.name),
-                                    riskLevel = ToolPolicy.riskFor(call.function.name),
-                                    reason = ToolPolicy.approvalReason(call.function.name),
-                                    call = call,
-                                )
-                            }
-
-                        if (approval != null &&
-                            (apiConfig.value.requireToolConfirmation ||
-                                ToolPolicy.requiresMandatoryApproval(approval.toolName))
-                        ) {
-                            pendingToolBatch = PendingToolBatch(
-                                assistantMessage = response.assistantMessage,
-                                calls = response.calls,
-                                startedAt = startedAt,
-                            )
-                            _uiState.value = _uiState.value.copy(
-                                isStreaming = false,
-                                requestStartedAt = null,
-                                toolCallStatus = null,
-                                pendingToolApproval = approval,
-                                taskSteps = _uiState.value.taskSteps
-                                    .updateStep(approval.call.taskStepId(), TaskStepStatus.WaitingForUser, "等待用户确认 ${approval.toolName}")
-                                    .updateStep("summary", TaskStepStatus.Pending, "确认后继续生成结果"),
-                            )
-                            return@collect
-                        }
-
-                        val toolMessages = mutableListOf<ChatMessage>()
-                        for (call in response.calls) {
-                            _uiState.value = _uiState.value.copy(
-                                toolCallStatus = "正在执行 ${call.function.name} 工具...",
-                                taskSteps = _uiState.value.taskSteps.updateStep(
-                                    call.taskStepId(),
-                                    TaskStepStatus.Running,
-                                    "正在执行 ${call.function.name}",
-                                ),
-                            )
-
-                            val args = try {
-                                Json.parseToJsonElement(call.function.arguments)
-                                    .jsonObject
-                                    .mapValues { it.value.jsonPrimitive.content }
-                            } catch (_: Exception) {
-                                emptyMap()
-                            }
-                            val result = toolExecutor.execute(
-                                call.function.name,
-                                args,
-                                ToolExecutionContext(
-                                    source = ToolExecutionSource.Chat,
-                                    taskRunId = activeTaskRun?.id,
-                                    userConfirmed = true,
-                                ),
-                            )
-                            mergeExternalTaskState()
-                            _uiState.value = _uiState.value.copy(
-                                taskSteps = _uiState.value.taskSteps.updateStep(
-                                    call.taskStepId(),
-                                    if (result.success) TaskStepStatus.Completed else TaskStepStatus.Failed,
-                                    if (result.success) "${call.function.name} 执行完成" else result.error ?: "工具执行失败",
-                                ),
-                            )
-                            if (call.function.name == "file_write" && result.success) {
-                                artifactStore.metadataForExistingFile(result.artifactPath())?.let(producedArtifacts::add)
-                            }
-                            result.artifactPaths().mapNotNull(artifactStore::metadataForExistingFile)
-                                .forEach(producedArtifacts::add)
-                            val resultStr = if (result.success) {
-                                result.data.entries.joinToString("\n") { "${it.key}: ${it.value}" }
-                            } else {
-                                "执行失败: ${result.error}"
-                            }
-                            toolMessages.add(ChatMessage(
-                                role = "tool",
-                                content = resultStr,
-                                tool_call_id = call.id,
-                                name = call.function.name,
-                                timestamp = System.currentTimeMillis(),
-                            ))
-                        }
-                        val nextMessages = _uiState.value.messages + response.assistantMessage + toolMessages
-                        _uiState.value = _uiState.value.copy(
-                            messages = nextMessages,
-                            toolCallStatus = null,
-                        )
-
-                        // Save tool messages
-                        currentConversationId?.let { convId ->
-                            toolMessages.forEach { msg ->
-                                syncManager.saveMessage(
-                                    convId,
-                                    role = msg.role,
-                                    content = msg.content,
-                                    toolCallId = msg.tool_call_id,
-                                    toolCallName = msg.name,
-                                )
-                            }
-                        }
-
-                        modelRouter.route(nextMessages, toolsEnabled = true).responses.collect { streamResponse ->
-                            when (streamResponse) {
-                                is ChatResponse.TextChunk -> {
-                            modelAnswered = true
-                            _uiState.value = _uiState.value.copy(
-                                streamingContent = _uiState.value.streamingContent + streamResponse.text,
-                                taskSteps = _uiState.value.taskSteps
-                                    .updateStep("review", TaskStepStatus.Completed, "已检查工具返回结果")
-                                    .updateStep("summary", TaskStepStatus.Running, "正在生成最终回复"),
-                            )
-                        }
-                                is ChatResponse.UsageReceived -> {
-                                    usageSeen = true
-                                    recordUsage(streamResponse.usage)
-                                }
-                                is ChatResponse.Error -> {
-                                    _uiState.value = _uiState.value.copy(
-                                        streamingContent = _uiState.value.streamingContent +
-                                            "\n\n${formatGuidedError(streamResponse.message)}",
-                                    )
-                                }
-                                else -> {}
-                            }
-                        }
+                        usageSeen = usageSeen || loop.usageSeen
+                        modelAnswered = modelAnswered || loop.modelAnswered
+                        if (loop.paused) return@collect
                     }
 
                     is ChatResponse.TextChunk -> {
@@ -554,6 +448,9 @@ class ChatViewModel @Inject constructor(
                 )
                 currentConversationId?.let { convId ->
                     syncManager.saveMessage(convId, role = "assistant", content = finalContent)
+                }
+                if (finalSteps.none { it.status == TaskStepStatus.WaitingForUser }) {
+                    updateAgentCheckpoint(null)
                 }
             } else {
                 _uiState.value = _uiState.value.copy(
@@ -814,6 +711,10 @@ class ChatViewModel @Inject constructor(
         if (_uiState.value.isStreaming) return
         val run = activeTaskRun ?: return
         if (run.status != com.denggl2.mason.agent.TaskRunStatus.WaitingForUser) return
+        if (run.agentExecution != null) {
+            if (!run.agentExecution.waitingForInput) continueAgentCheckpoint(null)
+            return
+        }
         val resumed = agentRuntime.resume(run).copy(
             steps = TaskStepFactory.initial(run.goal),
             finishedAt = null,
@@ -821,6 +722,96 @@ class ChatViewModel @Inject constructor(
         activeTaskRun = resumed
         resumedTaskRun = resumed
         sendMessage(run.goal)
+    }
+
+    private fun continueAgentWithUserInput(content: String) = continueAgentCheckpoint(content)
+
+    private fun continueAgentCheckpoint(userContent: String?) {
+        val run = activeTaskRun ?: return
+        val checkpoint = run.agentExecution ?: return
+        val startedAt = System.currentTimeMillis()
+        val userMessage = userContent?.let {
+            ChatMessage(role = "user", content = it, timestamp = startedAt)
+        }
+        val nextMessages = checkpoint.messages + listOfNotNull(userMessage)
+        val resumedBase = if (userContent != null && checkpoint.waitingForInput) {
+            run.withSteps(run.steps.map { step ->
+                if (step.status == TaskStepStatus.WaitingForUser) {
+                    step.copy(
+                        status = TaskStepStatus.Completed,
+                        detail = "已收到用户补充信息",
+                        finishedAt = startedAt,
+                    )
+                } else step
+            })
+        } else {
+            agentRuntime.resume(run)
+        }
+        val resumed = resumedBase.copy(
+            agentExecution = checkpoint.copy(
+                messages = nextMessages,
+                waitingForInput = false,
+                pendingAssistantMessage = null,
+                pendingCalls = emptyList(),
+                pendingApprovalCallId = null,
+            ),
+            finishedAt = null,
+        )
+        activeTaskRun = resumed
+        _uiState.value = _uiState.value.copy(
+            messages = _uiState.value.messages + listOfNotNull(userMessage),
+            isStreaming = true,
+            streamingContent = "",
+            requestStartedAt = startedAt,
+            taskSteps = resumed.steps,
+            taskRun = resumed,
+        )
+        launchGeneration {
+            userMessage?.let { message ->
+                currentConversationId?.let { convId ->
+                    syncManager.saveMessage(convId, role = "user", content = message.content)
+                }
+            }
+            refreshAutomaticSkillTool(userContent.orEmpty())
+            var usageSeen = false
+            var modelAnswered = false
+            var toolResponse: ChatResponse.ToolCallsRequested? = null
+            modelRouter.route(nextMessages, toolsEnabled = true, includeMemory = false).responses.collect { response ->
+                when (response) {
+                    is ChatResponse.ToolCallsRequested -> toolResponse = response
+                    is ChatResponse.TextChunk -> {
+                        modelAnswered = true
+                        _uiState.value = _uiState.value.copy(
+                            streamingContent = _uiState.value.streamingContent + response.text,
+                        )
+                    }
+                    is ChatResponse.UsageReceived -> {
+                        usageSeen = true
+                        recordUsage(response.usage)
+                    }
+                    is ChatResponse.Error -> {
+                        modelAnswered = true
+                        _uiState.value = _uiState.value.copy(
+                            streamingContent = _uiState.value.streamingContent + formatGuidedError(response.message),
+                        )
+                    }
+                    else -> Unit
+                }
+            }
+            val artifacts = mutableListOf<ArtifactMetadata>()
+            toolResponse?.let { response ->
+                val loop = runAgentToolLoop(
+                    firstResponse = response,
+                    checkpoint = resumed.agentExecution ?: checkpoint,
+                    startedAt = startedAt,
+                    producedArtifacts = artifacts,
+                )
+                usageSeen = usageSeen || loop.usageSeen
+                modelAnswered = modelAnswered || loop.modelAnswered
+                if (loop.paused) return@launchGeneration
+            }
+            finalizeAgentResponse(startedAt, artifacts, usageSeen, modelAnswered)
+        }
     }
 
     fun stopGeneration() {
@@ -981,13 +972,7 @@ class ChatViewModel @Inject constructor(
             ),
         )
         launchGeneration {
-            val args = try {
-                Json.parseToJsonElement(call.function.arguments)
-                    .jsonObject
-                    .mapValues { it.value.jsonPrimitive.content }
-            } catch (_: Exception) {
-                emptyMap()
-            }
+            val args = parseToolArguments(call.function.arguments)
             val result = toolExecutor.execute(
                 call.function.name,
                 args,
@@ -1055,148 +1040,299 @@ class ChatViewModel @Inject constructor(
     }
 
     private suspend fun executeApprovedToolBatch(batch: PendingToolBatch) {
+        val toolArtifacts = mutableListOf<ArtifactMetadata>()
+        val approvedCheckpoint = batch.checkpoint.copy(
+            pendingApprovalCallId = null,
+            approvedCallIds = (batch.checkpoint.approvedCallIds +
+                batch.checkpoint.pendingApprovalCallId.orEmpty()).filter(String::isNotBlank).distinct(),
+        )
+        val result = runAgentToolLoop(
+            firstResponse = ChatResponse.ToolCallsRequested(batch.assistantMessage, batch.calls),
+            checkpoint = approvedCheckpoint,
+            startedAt = batch.startedAt,
+            producedArtifacts = toolArtifacts,
+        )
+        if (result.paused) return
+        finalizeAgentResponse(
+            startedAt = batch.startedAt,
+            artifacts = toolArtifacts,
+            usageSeen = result.usageSeen,
+            modelAnswered = result.modelAnswered,
+        )
+    }
+
+    private suspend fun runAgentToolLoop(
+        firstResponse: ChatResponse.ToolCallsRequested,
+        checkpoint: AgentExecutionCheckpoint,
+        startedAt: Long,
+        producedArtifacts: MutableList<ArtifactMetadata>,
+    ): AgentLoopResult {
+        var state = checkpoint
+        var pending = firstResponse
         var usageSeen = false
         var modelAnswered = false
-        val toolMessages = mutableListOf<ChatMessage>()
-        val toolArtifacts = mutableListOf<ArtifactMetadata>()
 
-        for (call in batch.calls) {
+        while (true) {
+            if (!state.canExecute(pending.calls)) {
+                val reason = if (state.round >= com.denggl2.mason.agent.MAX_AGENT_TOOL_ROUNDS) {
+                    "工具执行已达到最大轮数，已停止以避免任务失控。"
+                } else {
+                    "模型重复请求同一个工具，已停止以避免循环执行。"
+                }
+                _uiState.value = _uiState.value.copy(
+                    streamingContent = "引导：$reason\n最终总结：已保留当前执行记录，可调整要求后重试。",
+                    taskSteps = failOpenTaskSteps(_uiState.value.taskSteps, reason),
+                )
+                updateAgentCheckpoint(null)
+                return AgentLoopResult(usageSeen, true)
+            }
+
             _uiState.value = _uiState.value.copy(
-                toolCallStatus = "正在执行 ${call.function.name} 工具...",
                 taskSteps = _uiState.value.taskSteps
-                    .updateStep(call.taskStepId(), TaskStepStatus.Running, "正在执行 ${call.function.name}"),
+                    .updateStep("plan", TaskStepStatus.Completed, "已判断需要调用外部能力")
+                    .updateStep("prepare-inputs", TaskStepStatus.Completed, "已整理本轮输入材料")
+                    .updateStep("execute", TaskStepStatus.Running, "正在执行第 ${state.round + 1} 轮任务")
+                    .withToolSteps(pending.calls),
             )
 
-            val args = try {
-                Json.parseToJsonElement(call.function.arguments)
-                    .jsonObject
-                    .mapValues { it.value.jsonPrimitive.content }
-            } catch (_: Exception) {
-                emptyMap()
+            val approval = pending.calls.firstNotNullOfOrNull { call ->
+                createApprovalRequest(call, state.approvedCallIds)
             }
-            val result = toolExecutor.execute(
-                call.function.name,
-                args,
-                ToolExecutionContext(
-                    source = ToolExecutionSource.Chat,
-                    taskRunId = activeTaskRun?.id,
-                    userConfirmed = true,
-                ),
-            )
-            mergeExternalTaskState()
-            _uiState.value = _uiState.value.copy(
-                taskSteps = _uiState.value.taskSteps.updateStep(
-                    call.taskStepId(),
-                    if (result.success) TaskStepStatus.Completed else TaskStepStatus.Failed,
-                    if (result.success) "${call.function.name} 执行完成" else result.error ?: "工具执行失败",
-                ),
-            )
-            if (call.function.name == "file_write" && result.success) {
-                artifactStore.metadataForExistingFile(result.artifactPath())?.let(toolArtifacts::add)
+            if (approval != null) {
+                state = state.copy(
+                    pendingAssistantMessage = pending.assistantMessage,
+                    pendingCalls = pending.calls,
+                    pendingApprovalCallId = approval.call.id,
+                )
+                pendingToolBatch = PendingToolBatch(
+                    assistantMessage = pending.assistantMessage,
+                    calls = pending.calls,
+                    startedAt = startedAt,
+                    checkpoint = state,
+                )
+                _uiState.value = _uiState.value.copy(
+                    isStreaming = false,
+                    requestStartedAt = null,
+                    toolCallStatus = null,
+                    pendingToolApproval = approval,
+                    taskSteps = _uiState.value.taskSteps
+                        .updateStep(approval.call.taskStepId(), TaskStepStatus.WaitingForUser, "等待用户确认 ${approval.displayName}")
+                        .updateStep("summary", TaskStepStatus.Pending, "确认后继续生成结果"),
+                )
+                updateAgentCheckpoint(state)
+                return AgentLoopResult(usageSeen, modelAnswered, paused = true)
             }
-            result.artifactPaths().mapNotNull(artifactStore::metadataForExistingFile)
-                .forEach(toolArtifacts::add)
-            val resultStr = if (result.success) {
-                result.data.entries.joinToString("\n") { "${it.key}: ${it.value}" }
-            } else {
-                "执行失败: ${result.error}"
-            }
-            toolMessages.add(
-                ChatMessage(
+
+            val toolMessages = mutableListOf<ChatMessage>()
+            var waitingForInput = false
+            for (call in pending.calls) {
+                val isSkillActivation = call.function.name == SkillActivationTool.NAME
+                _uiState.value = _uiState.value.copy(
+                    toolCallStatus = if (isSkillActivation) "正在选择合适的 Skill..." else "正在执行 ${call.function.name} 工具...",
+                    taskSteps = _uiState.value.taskSteps.updateStep(
+                        call.taskStepId(),
+                        TaskStepStatus.Running,
+                        if (isSkillActivation) "正在匹配任务与 Skill" else "正在执行 ${call.function.name}",
+                    ),
+                )
+                val result = toolExecutor.execute(
+                    call.function.name,
+                    parseToolArguments(call.function.arguments),
+                    ToolExecutionContext(
+                        source = ToolExecutionSource.Chat,
+                        taskRunId = activeTaskRun?.id,
+                        userConfirmed = call.id in state.approvedCallIds,
+                    ),
+                )
+                mergeExternalTaskState()
+                val needsInput = result.success && result.data["status"] == "needs_input"
+                waitingForInput = waitingForInput || needsInput
+                _uiState.value = _uiState.value.copy(
+                    taskSteps = _uiState.value.taskSteps.updateStep(
+                        call.taskStepId(),
+                        when {
+                            needsInput -> TaskStepStatus.WaitingForUser
+                            result.success -> TaskStepStatus.Completed
+                            else -> TaskStepStatus.Failed
+                        },
+                        when {
+                            needsInput -> "等待补充 ${result.data["missing_parameters"].orEmpty()}"
+                            isSkillActivation && result.success -> "已选择 ${result.data["skill_name"].orEmpty()}"
+                            result.success -> "${call.function.name} 执行完成"
+                            else -> result.error ?: "工具执行失败"
+                        },
+                    ),
+                )
+                if (call.function.name == "file_write" && result.success) {
+                    artifactStore.metadataForExistingFile(result.artifactPath())?.let(producedArtifacts::add)
+                }
+                result.artifactPaths().mapNotNull(artifactStore::metadataForExistingFile)
+                    .forEach(producedArtifacts::add)
+                toolMessages += ChatMessage(
                     role = "tool",
-                    content = resultStr,
+                    content = if (result.success) {
+                        result.data.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+                    } else {
+                        "执行失败: ${result.error}"
+                    },
                     tool_call_id = call.id,
                     name = call.function.name,
                     timestamp = System.currentTimeMillis(),
-                ),
+                )
+            }
+
+            val nextMessages = state.messages + pending.assistantMessage + toolMessages
+            state = state.copy(
+                messages = nextMessages,
+                round = state.round + 1,
+                callFingerprints = state.callFingerprints + pending.calls.map(ToolCall::fingerprint),
+                pendingAssistantMessage = null,
+                pendingCalls = emptyList(),
+                pendingApprovalCallId = null,
+                waitingForInput = waitingForInput,
             )
+            _uiState.value = _uiState.value.copy(messages = nextMessages, toolCallStatus = null)
+            persistToolMessages(toolMessages)
+            updateAgentCheckpoint(state)
+
+            var nextToolResponse: ChatResponse.ToolCallsRequested? = null
+            modelRouter.route(nextMessages, toolsEnabled = true, includeMemory = false).responses.collect { response ->
+                when (response) {
+                    is ChatResponse.ToolCallsRequested -> nextToolResponse = response
+                    is ChatResponse.TextChunk -> {
+                        modelAnswered = true
+                        _uiState.value = _uiState.value.copy(
+                            streamingContent = _uiState.value.streamingContent + response.text,
+                            taskSteps = _uiState.value.taskSteps
+                                .updateStep("review", TaskStepStatus.Completed, "已检查工具返回结果")
+                                .updateStep("summary", TaskStepStatus.Running, "正在整理回复"),
+                        )
+                    }
+                    is ChatResponse.UsageReceived -> {
+                        usageSeen = true
+                        recordUsage(response.usage)
+                    }
+                    is ChatResponse.Error -> {
+                        modelAnswered = true
+                        _uiState.value = _uiState.value.copy(
+                            streamingContent = _uiState.value.streamingContent + "\n\n${formatGuidedError(response.message)}",
+                            taskSteps = _uiState.value.taskSteps.updateStep("summary", TaskStepStatus.Failed, response.message),
+                        )
+                    }
+                    else -> Unit
+                }
+            }
+            if (waitingForInput) {
+                if (_uiState.value.streamingContent.isBlank()) {
+                    _uiState.value = _uiState.value.copy(
+                        streamingContent = "引导：请补充 Skill 要求的参数后，我会从当前任务继续。",
+                    )
+                }
+                updateAgentCheckpoint(state.copy(waitingForInput = true))
+                return AgentLoopResult(usageSeen, modelAnswered = true)
+            }
+            nextToolResponse?.let {
+                pending = it
+                continue
+            }
+            updateAgentCheckpoint(state.takeIf { waitingForInput })
+            return AgentLoopResult(usageSeen, modelAnswered)
         }
+    }
 
-        val nextMessages = _uiState.value.messages + batch.assistantMessage + toolMessages
-        _uiState.value = _uiState.value.copy(
-            messages = nextMessages,
-            toolCallStatus = null,
-            taskSteps = _uiState.value.taskSteps
-                .updateStep("review", TaskStepStatus.Running, "正在检查工具返回结果")
-                .updateStep("summary", TaskStepStatus.Running, "正在生成最终回复"),
+    private fun createApprovalRequest(call: ToolCall, approvedCallIds: List<String>): ToolApprovalRequest? {
+        if (call.id in approvedCallIds || !ToolPolicy.requiresUserApproval(call.function.name)) return null
+        if (!apiConfig.value.requireToolConfirmation && !ToolPolicy.requiresMandatoryApproval(call.function.name)) return null
+        if (ToolPolicy.canRememberApproval(call.function.name) && toolGrantStore.isAlwaysAllowed(call.function.name)) return null
+        val tool = toolRegistry.get(call.function.name)
+        return ToolApprovalRequest(
+            toolName = call.function.name,
+            displayName = tool?.displayName ?: call.function.name,
+            actionSummary = tool?.approvalDescription.orEmpty(),
+            integrationProtocol = when {
+                call.function.name.startsWith("a2a__") -> "A2A"
+                call.function.name.startsWith("mcp__") -> "MCP"
+                else -> null
+            },
+            allowPersistentGrant = ToolPolicy.canRememberApproval(call.function.name),
+            riskLevel = ToolPolicy.riskFor(call.function.name),
+            reason = ToolPolicy.approvalReason(call.function.name),
+            call = call,
         )
+    }
 
+    private suspend fun persistToolMessages(messages: List<ChatMessage>) {
         currentConversationId?.let { convId ->
-            toolMessages.forEach { msg ->
+            messages.forEach { message ->
                 syncManager.saveMessage(
                     convId,
-                    role = msg.role,
-                    content = msg.content,
-                    toolCallId = msg.tool_call_id,
-                    toolCallName = msg.name,
+                    role = message.role,
+                    content = message.content,
+                    toolCallId = message.tool_call_id,
+                    toolCallName = message.name,
                 )
             }
         }
+    }
 
-        modelRouter.route(nextMessages, toolsEnabled = true).responses.collect { streamResponse ->
-            when (streamResponse) {
-                is ChatResponse.TextChunk -> {
-                    modelAnswered = true
-                    _uiState.value = _uiState.value.copy(
-                        streamingContent = _uiState.value.streamingContent + streamResponse.text,
-                    )
-                }
-                is ChatResponse.UsageReceived -> {
-                    usageSeen = true
-                    recordUsage(streamResponse.usage)
-                }
-                is ChatResponse.Error -> {
-                    _uiState.value = _uiState.value.copy(
-                        streamingContent = _uiState.value.streamingContent +
-                            "\n\n${formatGuidedError(streamResponse.message)}",
-                        taskSteps = _uiState.value.taskSteps
-                            .updateStep("summary", TaskStepStatus.Failed, streamResponse.message),
-                    )
-                }
-                else -> {}
-            }
+    private suspend fun updateAgentCheckpoint(checkpoint: AgentExecutionCheckpoint?) {
+        val run = activeTaskRun ?: return
+        val snapshot = run.copy(agentExecution = checkpoint).withSteps(_uiState.value.taskSteps)
+        activeTaskRun = snapshot
+        agentRuntime.persist(snapshot)
+        _uiState.value = _uiState.value.copy(taskRun = snapshot)
+    }
+
+    private suspend fun finalizeAgentResponse(
+        startedAt: Long,
+        artifacts: List<ArtifactMetadata>,
+        usageSeen: Boolean,
+        modelAnswered: Boolean,
+    ) {
+        val content = _uiState.value.streamingContent
+        if (content.isBlank()) {
+            _uiState.value = _uiState.value.copy(
+                isStreaming = false,
+                toolCallStatus = null,
+                requestStartedAt = null,
+                lastProcessingMs = System.currentTimeMillis() - startedAt,
+            )
+            return
         }
-
-        if (_uiState.value.streamingContent.isNotEmpty()) {
-            val finalSteps = completeOpenTaskSteps(
+        val waiting = _uiState.value.taskSteps.any { it.status == TaskStepStatus.WaitingForUser }
+        val finalSteps = if (waiting) {
+            _uiState.value.taskSteps.updateStep("summary", TaskStepStatus.Completed, "已说明需要补充的信息")
+        } else {
+            completeOpenTaskSteps(
                 completeTaskStepUnlessFailed(
                     _uiState.value.taskSteps.updateStep("review", TaskStepStatus.Completed, "已检查执行结果"),
                     "summary",
                     "已生成最终回复",
                 ),
             )
-            val finalContent = prepareAssistantContent(
-                _uiState.value.streamingContent,
-                toolArtifacts,
-                finalSteps,
-            )
-            val assistantMessage = ChatMessage(
-                role = "assistant",
-                content = finalContent,
-                timestamp = System.currentTimeMillis(),
-            )
-            _uiState.value = _uiState.value.copy(
-                messages = _uiState.value.messages + assistantMessage,
-                isStreaming = false,
-                streamingContent = "",
-                requestStartedAt = null,
-                lastProcessingMs = System.currentTimeMillis() - batch.startedAt,
-                lastUsageMissing = modelAnswered && !usageSeen,
-                taskSteps = finalSteps,
-                taskRun = activeTaskRun,
-            )
-            currentConversationId?.let { convId ->
-                syncManager.saveMessage(convId, role = "assistant", content = finalContent)
-            }
-        } else {
-            _uiState.value = _uiState.value.copy(
-                isStreaming = false,
-                toolCallStatus = null,
-                requestStartedAt = null,
-                lastProcessingMs = System.currentTimeMillis() - batch.startedAt,
-                lastUsageMissing = modelAnswered && !usageSeen,
-            )
         }
+        val finalContent = prepareAssistantContent(content, artifacts, finalSteps)
+        val assistantMessage = ChatMessage(
+            role = "assistant",
+            content = finalContent,
+            timestamp = System.currentTimeMillis(),
+        )
+        _uiState.value = _uiState.value.copy(
+            messages = _uiState.value.messages + assistantMessage,
+            isStreaming = false,
+            streamingContent = "",
+            toolCallStatus = null,
+            requestStartedAt = null,
+            lastProcessingMs = System.currentTimeMillis() - startedAt,
+            lastUsageMissing = modelAnswered && !usageSeen,
+            taskSteps = finalSteps,
+            taskRun = activeTaskRun,
+        )
+        currentConversationId?.let { convId ->
+            syncManager.saveMessage(convId, role = "assistant", content = finalContent)
+        }
+        if (!waiting) updateAgentCheckpoint(null)
+        notifyTaskCompletedIfNeeded()
     }
 
     private fun formatGuidedError(message: String): String {
@@ -1445,6 +1581,7 @@ class ChatViewModel @Inject constructor(
     }
 
     private suspend fun notifyTaskCompletedIfNeeded() {
+        if (_uiState.value.taskSteps.any { it.status == TaskStepStatus.WaitingForUser }) return
         val preferences = uiPreferencesDataStore.preferences.first()
         if (!preferences.notificationIslandEnabled || !preferences.notifyOnTaskComplete) return
 
@@ -1455,4 +1592,21 @@ class ChatViewModel @Inject constructor(
             ),
         )
     }
+
+    private suspend fun refreshAutomaticSkillTool(content: String) {
+        val refreshed = runCatching { skillRuntime.refresh() }.isSuccess
+        val manuallySelected = content.contains("<mason-skill-instructions>")
+        val tools = if (refreshed && !manuallySelected && skillRuntime.hasAvailableSkills()) {
+            listOf(skillActivationTool)
+        } else {
+            emptyList()
+        }
+        toolRegistry.replaceNamespace(SkillActivationTool.TOOL_PREFIX, tools)
+    }
+
+    private fun parseToolArguments(raw: String): Map<String, String> = runCatching {
+        Json.parseToJsonElement(raw).jsonObject.mapValues { (_, value) ->
+            runCatching { value.jsonPrimitive.content }.getOrElse { value.toString() }
+        }
+    }.getOrDefault(emptyMap())
 }

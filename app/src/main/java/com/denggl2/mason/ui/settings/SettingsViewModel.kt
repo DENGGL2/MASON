@@ -55,6 +55,7 @@ data class ApiTestUiState(
     val isTesting: Boolean = false,
     val message: String? = null,
     val success: Boolean? = null,
+    val capabilityWarning: String? = null,
 )
 
 data class ModelRefreshUiState(
@@ -417,6 +418,7 @@ class SettingsViewModel @Inject constructor(
                 apiKey = config.apiKey,
                 model = config.model,
                 requiresApiKey = AiProviderCatalog.requiresApiKey(config),
+                testTools = config.toolsEnabled,
             )
             if (result.success) {
                 configDataStore.updateConfig(
@@ -429,6 +431,7 @@ class SettingsViewModel @Inject constructor(
                 isTesting = false,
                 message = result.message,
                 success = result.success,
+                capabilityWarning = result.capabilityWarning,
             )
         }
     }

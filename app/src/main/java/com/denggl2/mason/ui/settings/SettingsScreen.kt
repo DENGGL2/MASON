@@ -751,11 +751,6 @@ fun SettingsScreen(
                 }
             }
 
-            StatusText(
-                message = apiTestState.message,
-                success = apiTestState.success,
-            )
-
             OutlinedButton(
                 onClick = {
                     viewModel.testApi(
@@ -791,6 +786,14 @@ fun SettingsScreen(
                     Text("测试连接", color = MaterialTheme.colorScheme.primary)
                 }
             }
+            StatusText(
+                message = apiTestState.message,
+                success = apiTestState.success,
+            )
+            StatusText(
+                message = apiTestState.capabilityWarning,
+                success = false,
+            )
             }
 
             if (page == SettingsPage.NotificationIsland) {

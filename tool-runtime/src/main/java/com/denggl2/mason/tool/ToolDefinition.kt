@@ -5,7 +5,7 @@ import kotlinx.serialization.json.JsonObject
 
 @Serializable
 data class ToolDefinition(
-    val type: String = "function",
+    val type: String,
     val function: FunctionDef,
 )
 

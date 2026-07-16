@@ -34,6 +34,7 @@ class ToolRegistry @Inject constructor() {
 
     fun getDefinitions(): List<ToolDefinition> = getAll().map { tool ->
         ToolDefinition(
+            type = "function",
             function = FunctionDef(
                 name = tool.name,
                 description = tool.description,
