@@ -25,7 +25,11 @@ import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -57,6 +61,11 @@ import com.denggl2.mason.integration.CapabilityProviderState
 import com.denggl2.mason.integration.IntegrationConnectionPhase
 import com.denggl2.mason.integration.IntegrationConnectionState
 import com.denggl2.mason.integration.McpServerConfig
+import com.denggl2.mason.integration.McpAuthType
+import com.denggl2.mason.integration.McpOAuthEvent
+import com.denggl2.mason.integration.McpServiceCatalog
+import com.denggl2.mason.integration.McpServiceCatalogEntry
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,7 +96,9 @@ fun IntegrationsScreen(
     val snapshot by viewModel.snapshot.collectAsState()
     val mcpStates by viewModel.mcpStates.collectAsState()
     val a2aStates by viewModel.a2aStates.collectAsState()
+    val customMcpServers = snapshot.mcpServers.filter { it.catalogId == null }
     var pendingProviderId by remember { mutableStateOf<String?>(null) }
+    var catalogSetup by remember { mutableStateOf<McpServiceCatalogEntry?>(null) }
     val authorizationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
@@ -100,6 +111,15 @@ fun IntegrationsScreen(
     LaunchedEffect(Unit) {
         viewModel.refreshAppProviders()
         viewModel.messages.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+    LaunchedEffect(Unit) {
+        viewModel.oauthEvents.collect { event ->
+            when (event) {
+                is McpOAuthEvent.OpenBrowser -> context.startActivity(event.intent)
+                is McpOAuthEvent.Completed -> Toast.makeText(context, "登录成功，工具已刷新", Toast.LENGTH_SHORT).show()
+                is McpOAuthEvent.Failed -> Toast.makeText(context, event.message, Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     Scaffold(
@@ -160,30 +180,26 @@ fun IntegrationsScreen(
                     description = "给 Mason 增加搜索、文件、地图、GitHub 和办公系统等工具。连接后，实际调用仍受工具确认和审计保护。",
                 )
             }
-            if (snapshot.mcpServers.isEmpty()) {
-                item {
-                    EmptyToolServices(onConnect = {
-                        openMcpEditorOnStart = true
-                        showManualConfiguration = true
-                    })
-                }
-            } else {
-                items(snapshot.mcpServers, key = McpServerConfig::id) { server ->
+            item { Text("可连接服务", style = MaterialTheme.typography.titleSmall) }
+            items(McpServiceCatalog.entries, key = { "catalog-${it.id}" }) { entry ->
+                val connected = snapshot.mcpServers.firstOrNull { it.catalogId == entry.id }
+                CatalogServiceRow(
+                    entry = entry,
+                    connected = connected,
+                    state = connected?.let { mcpStates[it.id] },
+                    onConnect = { catalogSetup = entry },
+                    onLogin = { connected?.let { viewModel.startMcpOAuth(it.id) } },
+                )
+            }
+            if (customMcpServers.isNotEmpty()) {
+                item { Text("其他已连接服务", style = MaterialTheme.typography.titleSmall) }
+                items(customMcpServers, key = McpServerConfig::id) { server ->
                     ConnectedServiceRow(
                         name = server.name,
                         purpose = inferMcpPurpose(server.name),
                         enabled = server.enabled,
                         state = mcpStates[server.id],
                     )
-                }
-                item {
-                    OutlinedButton(
-                        onClick = { showManualConfiguration = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Outlined.Build, contentDescription = null)
-                        Text("管理工具服务", modifier = Modifier.padding(start = 8.dp))
-                    }
                 }
             }
 
@@ -201,6 +217,124 @@ fun IntegrationsScreen(
             }
         }
     }
+
+    catalogSetup?.let { entry ->
+        CatalogConnectionDialog(
+            entry = entry,
+            onDismiss = { catalogSetup = null },
+            onConnect = { authType, token, clientId ->
+                viewModel.connectCatalogService(entry, authType, token, clientId)
+                catalogSetup = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun CatalogServiceRow(
+    entry: McpServiceCatalogEntry,
+    connected: McpServerConfig?,
+    state: IntegrationConnectionState?,
+    onConnect: () -> Unit,
+    onLogin: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Code, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(Modifier.weight(1f).padding(horizontal = 10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(entry.name, fontWeight = FontWeight.SemiBold)
+                Text(entry.purpose, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (connected != null) {
+                    Text(
+                        state?.detail ?: "已保存，等待检查",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (state?.phase == IntegrationConnectionPhase.Error) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+            when {
+                connected == null -> Button(onClick = onConnect) { Text("连接") }
+                state?.phase == IntegrationConnectionPhase.AuthorizationRequired && connected.authType == McpAuthType.OAUTH -> {
+                    Button(onClick = onLogin) { Text("登录") }
+                }
+                state?.phase == IntegrationConnectionPhase.Online -> Text("在线", color = MaterialTheme.colorScheme.primary)
+                else -> TextButton(onClick = onConnect) { Text("配置") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CatalogConnectionDialog(
+    entry: McpServiceCatalogEntry,
+    onDismiss: () -> Unit,
+    onConnect: (McpAuthType, String, String) -> Unit,
+) {
+    var authType by remember { mutableStateOf(McpAuthType.BEARER_TOKEN) }
+    var token by remember { mutableStateOf("") }
+    var clientId by remember { mutableStateOf("") }
+    val valid = when (authType) {
+        McpAuthType.BEARER_TOKEN -> token.isNotBlank()
+        McpAuthType.OAUTH -> clientId.isNotBlank()
+        McpAuthType.NONE -> true
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("连接 ${entry.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(entry.purpose, style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = authType == McpAuthType.BEARER_TOKEN,
+                        onClick = { authType = McpAuthType.BEARER_TOKEN },
+                        label = { Text("访问令牌") },
+                    )
+                    FilterChip(
+                        selected = authType == McpAuthType.OAUTH,
+                        onClick = { authType = McpAuthType.OAUTH },
+                        label = { Text("网页登录") },
+                    )
+                }
+                if (authType == McpAuthType.BEARER_TOKEN) {
+                    Text("令牌只保存在本机加密存储中。", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = token,
+                        onValueChange = { token = it },
+                        label = { Text("GitHub Personal Access Token") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                    )
+                } else {
+                    Text(
+                        "GitHub 不允许客户端自动注册。请输入你创建的 OAuth App Client ID，Mason 将使用 PKCE 完成登录。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = clientId,
+                        onValueChange = { clientId = it },
+                        label = { Text("OAuth Client ID") },
+                        singleLine = true,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConnect(authType, token.trim(), clientId.trim()) },
+                enabled = valid,
+            ) { Text(if (authType == McpAuthType.OAUTH) "打开登录" else "连接") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -293,6 +427,7 @@ private fun ConnectedServiceRow(
                     color = when (state?.phase) {
                         IntegrationConnectionPhase.Online -> MaterialTheme.colorScheme.primary
                         IntegrationConnectionPhase.Error -> MaterialTheme.colorScheme.error
+                        IntegrationConnectionPhase.AuthorizationRequired -> MaterialTheme.colorScheme.tertiary
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
@@ -301,6 +436,7 @@ private fun ConnectedServiceRow(
                 when (state?.phase) {
                     IntegrationConnectionPhase.Online -> "在线"
                     IntegrationConnectionPhase.Connecting -> "连接中"
+                    IntegrationConnectionPhase.AuthorizationRequired -> "待登录"
                     IntegrationConnectionPhase.Error -> "异常"
                     else -> if (enabled) "待检查" else "已停用"
                 },

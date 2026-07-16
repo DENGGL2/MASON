@@ -9,15 +9,30 @@ data class McpServerConfig(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val endpoint: String,
+    val catalogId: String? = null,
+    val authType: McpAuthType = McpAuthType.NONE,
+    val clientId: String = "",
+    val scopes: List<String> = emptyList(),
+    val credentialRef: String? = null,
+    // Kept only to migrate schema v1 configurations into encrypted storage.
     val bearerToken: String = "",
     val enabled: Boolean = true,
 )
+
+@Serializable
+enum class McpAuthType {
+    NONE,
+    BEARER_TOKEN,
+    OAUTH,
+}
 
 @Serializable
 data class A2aAgentConfig(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val cardUrl: String,
+    val credentialRef: String? = null,
+    // Kept only to migrate schema v1 configurations into encrypted storage.
     val bearerToken: String = "",
     val enabled: Boolean = true,
 )
@@ -26,12 +41,13 @@ data class A2aAgentConfig(
 data class IntegrationConfigSnapshot(
     val mcpServers: List<McpServerConfig> = emptyList(),
     val a2aAgents: List<A2aAgentConfig> = emptyList(),
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = 2,
 )
 
 enum class IntegrationConnectionPhase {
     Disabled,
     Connecting,
+    AuthorizationRequired,
     Online,
     Error,
 }

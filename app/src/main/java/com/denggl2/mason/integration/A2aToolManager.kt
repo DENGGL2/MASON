@@ -32,7 +32,7 @@ class A2aToolManager @Inject constructor(
             )
         }
         val tools = agents.filter(A2aAgentConfig::enabled).map { config ->
-            async { discover(config) }
+            async { discover(store.resolve(config)) }
         }.awaitAll().mapNotNull { it }
         toolRegistry.replaceNamespace(A2A_TOOL_PREFIX, tools)
     }
@@ -40,7 +40,7 @@ class A2aToolManager @Inject constructor(
     suspend fun refresh(agentId: String): IntegrationConnectionState {
         val config = store.snapshot.value.a2aAgents.firstOrNull { it.id == agentId }
             ?: return IntegrationConnectionState(IntegrationConnectionPhase.Error, detail = "A2A 配置不存在")
-        val tool = config.takeIf(A2aAgentConfig::enabled)?.let { discover(it) }
+        val tool = config.takeIf(A2aAgentConfig::enabled)?.let { discover(store.resolve(it)) }
         val ownPrefix = A2A_TOOL_PREFIX + config.id.integrationNamespace()
         val retained = toolRegistry.getAll().filter { it.name.startsWith(A2A_TOOL_PREFIX) && !it.name.startsWith(ownPrefix) }
         toolRegistry.replaceNamespace(A2A_TOOL_PREFIX, retained + listOfNotNull(tool))

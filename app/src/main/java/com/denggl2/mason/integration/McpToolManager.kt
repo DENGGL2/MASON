@@ -35,7 +35,7 @@ class McpToolManager @Inject constructor(
             server.id to if (server.enabled) connecting(server.name) else disabled(server.name)
         }
         val discovered = servers.filter(McpServerConfig::enabled).map { server ->
-            async { discover(server) }
+            async { discover(store.resolve(server)) }
         }.awaitAll().flatten()
         toolRegistry.replaceNamespace(MCP_TOOL_PREFIX, discovered)
     }
@@ -43,7 +43,7 @@ class McpToolManager @Inject constructor(
     suspend fun refresh(serverId: String): IntegrationConnectionState {
         val server = store.snapshot.value.mcpServers.firstOrNull { it.id == serverId }
             ?: return IntegrationConnectionState(IntegrationConnectionPhase.Error, detail = "MCP 配置不存在")
-        val tools = if (server.enabled) discover(server) else emptyList()
+        val tools = if (server.enabled) discover(store.resolve(server)) else emptyList()
         val otherTools = toolRegistry.getAll().filterNot { it.name.startsWith(MCP_TOOL_PREFIX + server.id.integrationNamespace()) }
         toolRegistry.replaceNamespace(MCP_TOOL_PREFIX, otherTools.filter { it.name.startsWith(MCP_TOOL_PREFIX) } + tools)
         return _states.value[server.id] ?: disabled(server.name)
@@ -66,12 +66,17 @@ class McpToolManager @Inject constructor(
             )
             tools
         }.getOrElse { error ->
+            val authorizationRequired = error is RemoteProtocolException && error.statusCode == 401
             updateState(
                 server.id,
                 IntegrationConnectionState(
-                    phase = IntegrationConnectionPhase.Error,
+                    phase = if (authorizationRequired) {
+                        IntegrationConnectionPhase.AuthorizationRequired
+                    } else {
+                        IntegrationConnectionPhase.Error
+                    },
                     displayName = server.name,
-                    detail = error.message ?: error.javaClass.simpleName,
+                    detail = if (authorizationRequired) "需要登录授权" else error.message ?: error.javaClass.simpleName,
                     checkedAt = System.currentTimeMillis(),
                 ),
             )

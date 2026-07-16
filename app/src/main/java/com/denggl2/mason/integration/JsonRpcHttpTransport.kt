@@ -21,6 +21,7 @@ internal data class JsonRpcHttpResponse(
 internal class RemoteProtocolException(
     message: String,
     val statusCode: Int? = null,
+    val responseHeaders: Map<String, List<String>> = emptyMap(),
 ) : IOException(message)
 
 @Singleton
@@ -56,6 +57,7 @@ internal class JsonRpcHttpTransport @Inject constructor() {
                 throw RemoteProtocolException(
                     "HTTP ${response.code}: ${body.take(500).ifBlank { response.message }}",
                     response.code,
+                    response.headers.toMultimap(),
                 )
             }
             val contentType = response.header("Content-Type").orEmpty()

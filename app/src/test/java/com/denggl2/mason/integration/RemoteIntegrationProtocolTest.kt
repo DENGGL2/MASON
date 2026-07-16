@@ -102,4 +102,83 @@ class RemoteIntegrationProtocolTest {
         assertFalse(validateRemoteEndpoint("ftp://example.com") == null)
         assertEquals("my_server", "My Server!".integrationNamespace())
     }
+
+    @Test
+    fun mcpOAuthDiscoversMetadataAndExchangesCodeWithPkceResource() = runBlocking {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path?.substringBefore('?')) {
+                "/mcp" -> MockResponse()
+                    .setResponseCode(401)
+                    .addHeader(
+                        "WWW-Authenticate",
+                        "Bearer resource_metadata=\"$baseUrl/.well-known/oauth-protected-resource/mcp\"",
+                    )
+                "/.well-known/oauth-protected-resource/mcp" -> MockResponse().setResponseCode(200).setBody(
+                    """{"resource":"$baseUrl/mcp","authorization_servers":["$baseUrl/login/oauth"],"scopes_supported":["repo","read:user"]}""",
+                )
+                "/.well-known/oauth-authorization-server/login/oauth" -> MockResponse().setResponseCode(200).setBody(
+                    """{"issuer":"$baseUrl/login/oauth","authorization_endpoint":"$baseUrl/authorize","token_endpoint":"$baseUrl/token","code_challenge_methods_supported":["S256"]}""",
+                )
+                "/token" -> {
+                    val body = request.body.readUtf8()
+                    assertTrue(body.contains("grant_type=authorization_code"))
+                    assertTrue(body.contains("code_verifier=test-verifier"))
+                    assertTrue(body.contains("resource="))
+                    MockResponse().setResponseCode(200).setBody("""{"access_token":"secure-token","token_type":"bearer"}""")
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        val protocol = McpOAuthProtocol(JsonRpcHttpTransport())
+
+        val metadata = protocol.discover("$baseUrl/mcp")
+        val token = protocol.exchangeCode(
+            tokenEndpoint = metadata.tokenEndpoint,
+            code = "test-code",
+            clientId = "client-id",
+            redirectUri = "mason://oauth/mcp",
+            verifier = "test-verifier",
+            resource = metadata.resource,
+        )
+
+        assertEquals("$baseUrl/authorize", metadata.authorizationEndpoint)
+        assertEquals(listOf("repo", "read:user"), metadata.scopes)
+        assertEquals("secure-token", token)
+    }
+
+    @Test
+    fun mcpOAuthParsesGitHubStyleMetadataLocations() {
+        val protocol = McpOAuthProtocol(JsonRpcHttpTransport())
+
+        assertEquals(
+            "https://github.com/.well-known/oauth-authorization-server/login/oauth",
+            protocol.authorizationMetadataUrl("https://github.com/login/oauth"),
+        )
+        assertEquals(
+            "https://example.com/resource",
+            protocol.parseResourceMetadataUrl(
+                "Bearer realm=\"mcp\", resource_metadata=\"https://example.com/resource\"",
+            ),
+        )
+    }
+
+    @Test
+    fun legacyIntegrationTokensMigrateToCredentialReferences() {
+        val legacy = IntegrationConfigSnapshot(
+            mcpServers = listOf(McpServerConfig(name = "Legacy MCP", endpoint = "https://example.com/mcp", bearerToken = "mcp-secret")),
+            a2aAgents = listOf(A2aAgentConfig(name = "Legacy A2A", cardUrl = "https://example.com/a2a", bearerToken = "a2a-secret")),
+            schemaVersion = 1,
+        )
+        val saved = mutableMapOf<String, String>()
+
+        val migrated = migrateIntegrationSnapshot(legacy) { secret, existingRef ->
+            (existingRef ?: "ref-${saved.size + 1}").also { saved[it] = secret }
+        }
+
+        assertEquals(2, migrated.schemaVersion)
+        assertEquals(McpAuthType.BEARER_TOKEN, migrated.mcpServers.single().authType)
+        assertEquals("", migrated.mcpServers.single().bearerToken)
+        assertEquals("", migrated.a2aAgents.single().bearerToken)
+        assertEquals(setOf("mcp-secret", "a2a-secret"), saved.values.toSet())
+    }
 }

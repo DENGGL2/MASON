@@ -249,6 +249,7 @@ private fun ConnectionRow(
                 color = when (state?.phase) {
                     IntegrationConnectionPhase.Online -> MaterialTheme.colorScheme.primary
                     IntegrationConnectionPhase.Error -> MaterialTheme.colorScheme.error
+                    IntegrationConnectionPhase.AuthorizationRequired -> MaterialTheme.colorScheme.tertiary
                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                 },
                 modifier = Modifier.weight(1f),

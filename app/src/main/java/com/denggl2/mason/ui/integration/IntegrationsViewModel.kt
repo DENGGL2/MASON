@@ -9,6 +9,10 @@ import com.denggl2.mason.integration.CapabilityProviderCatalog
 import com.denggl2.mason.integration.CapabilityProviderState
 import com.denggl2.mason.integration.IntegrationStore
 import com.denggl2.mason.integration.McpServerConfig
+import com.denggl2.mason.integration.McpAuthType
+import com.denggl2.mason.integration.McpOAuthCoordinator
+import com.denggl2.mason.integration.McpOAuthEvent
+import com.denggl2.mason.integration.McpServiceCatalogEntry
 import com.denggl2.mason.integration.McpToolManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -26,6 +30,7 @@ class IntegrationsViewModel @Inject constructor(
     private val mcpToolManager: McpToolManager,
     private val a2aToolManager: A2aToolManager,
     private val appAuthorization: AppCapabilityAuthorization,
+    private val mcpOAuthCoordinator: McpOAuthCoordinator,
 ) : ViewModel() {
     val snapshot = store.snapshot.stateIn(
         viewModelScope,
@@ -39,6 +44,7 @@ class IntegrationsViewModel @Inject constructor(
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val messages = _messages.asSharedFlow()
+    val oauthEvents = mcpOAuthCoordinator.events
 
     init {
         refreshAppProviders()
@@ -77,6 +83,45 @@ class IntegrationsViewModel @Inject constructor(
 
     fun testMcp(id: String) = launchAction("MCP 连接检查完成") {
         mcpToolManager.refresh(id)
+    }
+
+    fun connectCatalogService(
+        entry: McpServiceCatalogEntry,
+        authType: McpAuthType,
+        token: String,
+        clientId: String,
+    ) = viewModelScope.launch {
+        runCatching {
+            val existing = store.snapshot.value.mcpServers.firstOrNull { it.catalogId == entry.id }
+            val config = existing?.copy(
+                name = entry.name,
+                endpoint = entry.endpoint,
+                authType = authType,
+                clientId = clientId,
+                scopes = entry.scopes,
+                bearerToken = token,
+                enabled = true,
+            ) ?: McpServerConfig(
+                name = entry.name,
+                endpoint = entry.endpoint,
+                catalogId = entry.id,
+                authType = authType,
+                clientId = clientId,
+                scopes = entry.scopes,
+                bearerToken = token,
+            )
+            store.upsertMcp(config)
+            if (authType == McpAuthType.OAUTH) {
+                mcpOAuthCoordinator.start(config.id)
+            } else {
+                mcpToolManager.refresh(config.id)
+                _messages.emit("${entry.name} 连接配置已保存")
+            }
+        }.onFailure { error -> _messages.emit(error.message ?: "连接失败") }
+    }
+
+    fun startMcpOAuth(serverId: String) {
+        viewModelScope.launch { mcpOAuthCoordinator.start(serverId) }
     }
 
     fun saveA2a(config: A2aAgentConfig) = launchAction("A2A 配置已保存") {

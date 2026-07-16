@@ -6,6 +6,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -16,6 +17,7 @@ import com.denggl2.mason.data.UiPreferences
 import com.denggl2.mason.data.UiPreferencesDataStore
 import com.denggl2.mason.data.toComposeColor
 import com.denggl2.mason.navigation.MasonNavGraph
+import com.denggl2.mason.integration.McpOAuthCoordinator
 import com.denggl2.mason.tool.BatteryOptimizationTool
 import com.denggl2.mason.tool.ScreenshotTool
 import com.denggl2.mason.ui.theme.MasonTheme
@@ -35,8 +37,12 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var uiPreferencesDataStore: UiPreferencesDataStore
 
+    @Inject
+    lateinit var mcpOAuthCoordinator: McpOAuthCoordinator
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lifecycleScope.launch { mcpOAuthCoordinator.handleCallback(intent?.data) }
         setContent {
             val uiPreferences by uiPreferencesDataStore.preferences.collectAsState(initial = UiPreferences())
             val scope = rememberCoroutineScope()
@@ -98,6 +104,12 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        lifecycleScope.launch { mcpOAuthCoordinator.handleCallback(intent.data) }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
