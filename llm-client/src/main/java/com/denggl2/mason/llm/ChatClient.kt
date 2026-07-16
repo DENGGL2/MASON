@@ -15,7 +15,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonArray
@@ -43,6 +45,22 @@ sealed class ChatResponse {
         val revisedPrompt: String? = null,
         val isBase64: Boolean = false,
     ) : ChatResponse()
+}
+
+fun JsonElement?.displayText(): String? = when (this) {
+    null -> null
+    is JsonPrimitive -> contentOrNull
+    is JsonArray -> mapNotNull { part ->
+        when (part) {
+            is JsonPrimitive -> part.contentOrNull
+            is JsonObject -> when (part["type"]?.jsonPrimitive?.contentOrNull) {
+                "text", "output_text" -> part["text"]?.jsonPrimitive?.contentOrNull
+                else -> part["text"]?.jsonPrimitive?.contentOrNull
+            }
+            else -> null
+        }
+    }.joinToString("\n").takeIf(String::isNotBlank)
+    else -> null
 }
 
 data class TokenUsage(
@@ -150,7 +168,7 @@ class ChatClient @Inject constructor(
                     ChatResponse.ToolCallsRequested(
                         assistantMessage = ChatMessage(
                             role = "assistant",
-                            content = message["content"]?.jsonPrimitive?.contentOrNull,
+                            content = message["content"].displayText(),
                             tool_calls = calls,
                             timestamp = System.currentTimeMillis(),
                         ),
@@ -160,7 +178,7 @@ class ChatClient @Inject constructor(
                 return@flow
             }
 
-            val content = message["content"]?.jsonPrimitive?.contentOrNull
+            val content = message["content"].displayText()
             if (!content.isNullOrBlank()) {
                 emit(ChatResponse.TextChunk(content))
                 usage?.let { emit(ChatResponse.UsageReceived(it)) }
@@ -190,7 +208,6 @@ class ChatClient @Inject constructor(
             put("model", kotlinx.serialization.json.JsonPrimitive(modelOverride))
             put("prompt", kotlinx.serialization.json.JsonPrimitive(prompt))
             put("size", kotlinx.serialization.json.JsonPrimitive("1024x1024"))
-            put("response_format", kotlinx.serialization.json.JsonPrimitive("b64_json"))
         }
         val request = buildAuthorizedRequest(endpoint, apiKey, json.encodeToString(JsonObject.serializer(), payload))
         val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
@@ -208,6 +225,11 @@ class ChatClient @Inject constructor(
             val revisedPrompt = item?.get("revised_prompt")?.jsonPrimitive?.contentOrNull
             when {
                 !base64.isNullOrBlank() -> emit(ChatResponse.ImageGenerated(base64, revisedPrompt = revisedPrompt, isBase64 = true))
+                url?.startsWith("data:image/") == true -> {
+                    val metadata = url.substringBefore(',')
+                    val mimeType = metadata.substringAfter("data:").substringBefore(';').ifBlank { "image/png" }
+                    emit(ChatResponse.ImageGenerated(url.substringAfter(','), mimeType, revisedPrompt, isBase64 = true))
+                }
                 !url.isNullOrBlank() -> emit(ChatResponse.ImageGenerated(url, revisedPrompt = revisedPrompt))
                 else -> emit(ChatResponse.Error("生图模型没有返回图片"))
             }

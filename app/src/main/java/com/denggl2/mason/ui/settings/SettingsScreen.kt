@@ -554,8 +554,9 @@ fun SettingsScreen(
             )
 
             if (!isCustomProvider && modelOptions.isNotEmpty()) {
-                val freeModels = modelOptions.filter { it.isFree || it.id.endsWith(":free", ignoreCase = true) }
-                val paidModels = modelOptions.filterNot { it.isFree || it.id.endsWith(":free", ignoreCase = true) }
+                val chatModels = modelOptions.filter(AiModelPreset::supportsChat)
+                val freeModels = chatModels.filter { it.isFree || it.id.endsWith(":free", ignoreCase = true) }
+                val paidModels = chatModels.filterNot { it.isFree || it.id.endsWith(":free", ignoreCase = true) }
 
                 SectionHeader("能力说明")
                 SettingGroup {
@@ -571,7 +572,7 @@ fun SettingsScreen(
                     GroupDivider()
                     ApiHintRow(
                         title = "能力编排",
-                        description = "后续会支持文字、识图、生图分别选择不同模型；当前先用主模型对话，视觉和生图接口单独接入。",
+                        description = "文字、识图和生图可以分别选择模型；Mason 会根据消息和附件自动路由。",
                     )
                 }
 

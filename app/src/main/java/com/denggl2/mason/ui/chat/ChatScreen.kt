@@ -239,8 +239,9 @@ fun ChatScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
+            persistAttachmentReadPermission(context, it)
             pendingAttachments = pendingAttachments + PendingAttachment(
                 kind = AttachmentKind.Image,
                 name = resolveDisplayName(context, it) ?: "图片",
@@ -250,6 +251,7 @@ fun ChatScreen(
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
+            persistAttachmentReadPermission(context, it)
             pendingAttachments = pendingAttachments + PendingAttachment(
                 kind = AttachmentKind.File,
                 name = resolveDisplayName(context, it) ?: "文件",
@@ -486,7 +488,7 @@ fun ChatScreen(
                     enabled = !uiState.isStreaming,
                     attachments = pendingAttachments,
                     selectedSkill = selectedSkill,
-                    onAddImage = { imagePicker.launch("image/*") },
+                    onAddImage = { imagePicker.launch(arrayOf("image/*")) },
                     onAddFile = { filePicker.launch(arrayOf("*/*")) },
                     onUseSkill = {
                         viewModel.refreshInstalledSkills()
@@ -4086,6 +4088,12 @@ private fun resolveDisplayName(context: Context, uri: Uri): String? {
             }
     }.getOrNull()
     return fromQuery ?: uri.lastPathSegment?.substringAfterLast('/')
+}
+
+private fun persistAttachmentReadPermission(context: Context, uri: Uri) {
+    runCatching {
+        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
 }
 
 private fun loadAttachmentBitmap(context: Context, uri: Uri): Bitmap? =

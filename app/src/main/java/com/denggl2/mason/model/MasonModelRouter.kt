@@ -57,13 +57,14 @@ class MasonModelRouter @Inject constructor(
     ): RoutedModelResponse {
         val config = configStore.config.first()
         val context = ChatContextParser.parse(messages.lastOrNull { it.role == "user" }?.content.orEmpty())
-        val modality = selectModality(context, config)
         val attachmentResult = runCatching { attachmentResolver.resolve(context.attachments) }
         val attachments = attachmentResult.getOrDefault(emptyList())
+        val modality = detectModelModality(context.userText, context.attachments, attachments)
+        val sanitizedMessages = sanitizeAttachmentMetadata(messages, context)
         val preparedMessages = if (includeMemory) {
-            contextManager.prepare(messages, context.userText)
+            contextManager.prepare(sanitizedMessages, context.userText)
         } else {
-            contextManager.compact(messages)
+            contextManager.compact(sanitizedMessages)
         }
         val localModelId = config.localModel.ifBlank { LocalModelCatalog.gemmaModels.firstOrNull()?.id.orEmpty() }
         val localReady = LocalModelCatalog.get(localModelId)?.let(localStore::stateFor)?.state in setOf(
@@ -74,7 +75,7 @@ class MasonModelRouter @Inject constructor(
             config.localModelDirectEnabled && localReady
         val selectedModel = when (modality) {
             ModelModality.Text -> if (useLocal) localModelId else config.model
-            ModelModality.Vision -> config.visionModel.ifBlank { config.model }
+            ModelModality.Vision -> resolveVisionModel(config)
             ModelModality.ImageGeneration -> config.imageModel
         }
         val decision = ModelRouteDecision(
@@ -94,9 +95,18 @@ class MasonModelRouter @Inject constructor(
             attachments = attachments,
             toolsEnabled = toolsEnabled && modality == ModelModality.Text,
         )
-        val responses = attachmentResult.exceptionOrNull()?.let { error ->
-            flowOf(ChatResponse.Error("附件读取失败：${error.message ?: error.javaClass.simpleName}"))
-        } ?: invokeWithFallback(invocation, decision)
+        val responses = when {
+            attachmentResult.isFailure -> {
+                val error = attachmentResult.exceptionOrNull()
+                flowOf(ChatResponse.Error("附件读取失败：${error?.message ?: error?.javaClass?.simpleName}"))
+            }
+            selectedModel.isBlank() -> flowOf(ChatResponse.Error(when (modality) {
+                ModelModality.Vision -> "当前模型不支持识图，请先在设置中选择识图模型"
+                ModelModality.ImageGeneration -> "请先在设置中选择生图模型"
+                ModelModality.Text -> "请先在设置中选择聊天模型"
+            }))
+            else -> invokeWithFallback(invocation, decision)
+        }
         return RoutedModelResponse(decision, responses)
     }
 
@@ -152,17 +162,6 @@ class MasonModelRouter @Inject constructor(
         }
     }
 
-    private fun selectModality(context: ChatRequestContext, config: ApiConfig): ModelModality {
-        val text = context.userText.lowercase()
-        val requestsImage = listOf("生成图片", "画一张", "生图", "create an image", "generate an image")
-            .any(text::contains)
-        return when {
-            requestsImage && config.imageModel.isNotBlank() -> ModelModality.ImageGeneration
-            context.attachments.any(ChatAttachmentReference::image) -> ModelModality.Vision
-            else -> ModelModality.Text
-        }
-    }
-
     private fun routeReason(modality: ModelModality, local: Boolean, hasAttachments: Boolean): String = when {
         local -> "用户选择本地直连，且请求仅包含文字"
         modality == ModelModality.Vision -> "检测到图片附件，使用识图模型"
@@ -179,5 +178,51 @@ class MasonModelRouter @Inject constructor(
             modality = decision.modality,
             message = message,
         ))
+    }
+}
+
+internal fun detectModelModality(
+    userText: String,
+    references: List<ChatAttachmentReference>,
+    attachments: List<com.denggl2.mason.llm.ModelAttachment>,
+): ModelModality {
+    val text = userText.lowercase()
+    val requestsImage = listOf("生成图片", "画一张", "生图", "create an image", "generate an image")
+        .any(text::contains)
+    return when {
+        requestsImage -> ModelModality.ImageGeneration
+        references.any(ChatAttachmentReference::image) ||
+            attachments.any { it.mimeType?.startsWith("image/") == true } -> ModelModality.Vision
+        else -> ModelModality.Text
+    }
+}
+
+internal fun resolveVisionModel(config: ApiConfig): String = config.visionModel.ifBlank {
+    config.model.takeIf {
+        config.providerId == AiProviderCatalog.CUSTOM_PROVIDER_ID ||
+            AiProviderCatalog.getModel(config.providerId, config.model)?.supportsVision == true
+    }.orEmpty()
+}
+
+internal fun sanitizeAttachmentMetadata(
+    messages: List<ChatMessage>,
+    context: ChatRequestContext,
+): List<ChatMessage> {
+    if (context.attachments.isEmpty()) return messages
+    val lastUserIndex = messages.indexOfLast { it.role == "user" }
+    if (lastUserIndex < 0) return messages
+    val original = messages[lastUserIndex]
+    val sanitized = if (context.skillId == null) {
+        context.userText
+    } else {
+        original.content.orEmpty().lineSequence()
+            .filterNot { raw ->
+                val line = raw.trim().removePrefix("-").trim()
+                line.startsWith("图片：") || line.startsWith("文件：")
+            }
+            .joinToString("\n")
+    }
+    return messages.toMutableList().apply {
+        set(lastUserIndex, original.copy(content = sanitized))
     }
 }

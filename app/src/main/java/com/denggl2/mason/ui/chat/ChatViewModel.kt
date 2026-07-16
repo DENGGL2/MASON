@@ -466,12 +466,16 @@ class ChatViewModel @Inject constructor(
 
                     is ChatResponse.ImageGenerated -> {
                         modelAnswered = true
-                        if (response.isBase64) {
-                            val artifact = artifactStore.saveBinaryArtifact(
-                                fileName = "generated-image-${System.currentTimeMillis()}.png",
-                                bytes = Base64.decode(response.data, Base64.DEFAULT),
-                                mimeType = response.mimeType,
-                            )
+                        val artifactResult = runCatching {
+                            if (response.isBase64) {
+                                artifactStore.saveGeneratedImageArtifact(
+                                    bytes = Base64.decode(response.data, Base64.DEFAULT),
+                                )
+                            } else {
+                                artifactStore.saveRemoteImageArtifact(response.data)
+                            }
+                        }
+                        artifactResult.onSuccess { artifact ->
                             producedArtifacts += artifact
                             _uiState.value = _uiState.value.copy(
                                 streamingContent = "最终总结：图片已生成并保存到产出中心。",
@@ -480,9 +484,13 @@ class ChatViewModel @Inject constructor(
                                     .updateStep("review", TaskStepStatus.Completed, "已校验图片产出")
                                     .updateStep("summary", TaskStepStatus.Completed, "已保存图片"),
                             )
-                        } else {
+                        }.onFailure { error ->
                             _uiState.value = _uiState.value.copy(
-                                streamingContent = "最终总结：图片已生成：${response.data}",
+                                streamingContent = "最终总结：图片已生成，但保存失败：${error.message ?: "未知错误"}",
+                                taskSteps = _uiState.value.taskSteps
+                                    .updateStep("execute", TaskStepStatus.Completed, "生图模型已返回图片")
+                                    .updateStep("review", TaskStepStatus.Failed, "图片保存失败")
+                                    .updateStep("summary", TaskStepStatus.Completed, "已返回保存失败原因"),
                             )
                         }
                     }
@@ -493,8 +501,7 @@ class ChatViewModel @Inject constructor(
                         } else {
                             formatGuidedError(response.message)
                         }
-                        val failedSteps = _uiState.value.taskSteps
-                            .updateStep("summary", TaskStepStatus.Failed, response.message)
+                        val failedSteps = failOpenTaskSteps(_uiState.value.taskSteps, response.message)
                         val persistedError = annotateCurrentTaskRun(guidedContent, failedSteps)
                         val errorMessage = ChatMessage(role = "assistant", content = persistedError, timestamp = System.currentTimeMillis())
                         _uiState.value = _uiState.value.copy(
@@ -1341,6 +1348,23 @@ class ChatViewModel @Inject constructor(
             )
         } else {
             step
+        }
+    }
+
+    private fun failOpenTaskSteps(steps: List<TaskStep>, error: String): List<TaskStep> = steps.map { step ->
+        when {
+            step.status !in setOf(TaskStepStatus.Pending, TaskStepStatus.Running) -> step
+            step.id == "execute" || step.id == "summary" -> step.copy(
+                status = TaskStepStatus.Failed,
+                detail = error,
+                error = error,
+                finishedAt = System.currentTimeMillis(),
+            )
+            else -> step.copy(
+                status = TaskStepStatus.Cancelled,
+                detail = "前序步骤失败，未继续执行",
+                finishedAt = System.currentTimeMillis(),
+            )
         }
     }
 

@@ -9,6 +9,7 @@ data class AiModelPreset(
     val supportsStreaming: Boolean = true,
     val supportsVision: Boolean = false,
     val supportsImageGeneration: Boolean = false,
+    val supportsChat: Boolean = true,
     val modeGroup: String? = null,
     val modeLabel: String? = null,
 )
@@ -97,7 +98,7 @@ object AiProviderCatalog {
                 AiModelPreset(
                     id = "gemini-3.5-flash",
                     name = "3.5 Flash",
-                    description = "速度快，模型侧支持图文理解；Mason 视觉输入还需后续接入",
+                    description = "速度快，支持通过兼容接口处理图片和 PDF 页面",
                     isFree = true,
                     supportsVision = true,
                 ),
@@ -161,6 +162,15 @@ object AiProviderCatalog {
                     name = "GPT-5.5",
                     description = "高质量通用模型，适合复杂对话、写作和图文理解",
                     supportsVision = true,
+                ),
+                AiModelPreset(
+                    id = "gpt-image-1",
+                    name = "GPT Image 1",
+                    description = "图片生成模型，生成结果会自动保存到产出中心",
+                    supportsTools = false,
+                    supportsStreaming = false,
+                    supportsImageGeneration = true,
+                    supportsChat = false,
                 ),
             ),
             defaultModel = "gpt-5.5",

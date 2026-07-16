@@ -8,7 +8,12 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.URI
+import java.net.InetAddress
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -34,6 +39,7 @@ class ArtifactStore @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val httpClient = OkHttpClient()
 
     suspend fun saveArtifactsAndAnnotate(
         content: String,
@@ -83,6 +89,55 @@ class ArtifactStore @Inject constructor(
             path = target.absolutePath,
             mimeType = mimeType,
             bytes = target.length(),
+            createdAt = createdAt,
+        )
+    }
+
+    suspend fun saveRemoteImageArtifact(
+        url: String,
+        createdAt: Long = System.currentTimeMillis(),
+    ): ArtifactMetadata = withContext(Dispatchers.IO) {
+        val uri = runCatching { URI(url) }.getOrNull() ?: error("图片地址格式不正确")
+        require(uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()) { "图片地址不受支持" }
+        require(!uri.host.isPrivateArtifactHost()) { "拒绝从本机或内网地址下载图片" }
+        httpClient.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+            require(response.isSuccessful) { "图片下载失败：HTTP ${response.code}" }
+            val body = requireNotNull(response.body) { "图片下载结果为空" }
+            val contentLength = body.contentLength()
+            require(contentLength < 0 || contentLength <= MAX_REMOTE_IMAGE_BYTES) { "生成图片超过 25 MB" }
+            val bytes = body.byteStream().use { input ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var total = 0
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    require(total <= MAX_REMOTE_IMAGE_BYTES) { "生成图片超过 25 MB" }
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
+            val mimeType = detectImageMimeType(bytes, response.header("Content-Type"))
+                ?: error("远程地址返回的不是支持的图片")
+            saveBinaryArtifact(
+                fileName = "generated-image-$createdAt.${mimeType.imageExtension()}",
+                bytes = bytes,
+                mimeType = mimeType,
+                createdAt = createdAt,
+            )
+        }
+    }
+
+    suspend fun saveGeneratedImageArtifact(
+        bytes: ByteArray,
+        createdAt: Long = System.currentTimeMillis(),
+    ): ArtifactMetadata {
+        val mimeType = detectImageMimeType(bytes, null) ?: error("生图模型返回的内容不是支持的图片")
+        return saveBinaryArtifact(
+            fileName = "generated-image-$createdAt.${mimeType.imageExtension()}",
+            bytes = bytes,
+            mimeType = mimeType,
             createdAt = createdAt,
         )
     }
@@ -216,6 +271,43 @@ private fun artifactMarkerRegex(): Regex =
     Regex(
         Regex.escape(ARTIFACT_MARKER_PREFIX) + """\s+([\s\S]*?)\s+""" + Regex.escape(ARTIFACT_MARKER_SUFFIX),
     )
+
+private const val MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024
+
+internal fun String.isPrivateArtifactHost(): Boolean {
+    val host = lowercase().trim('[', ']')
+    if (host == "localhost" || host == "::1" || host.startsWith("127.")) return true
+    if (host.startsWith("10.") || host.startsWith("192.168.")) return true
+    val parts = host.split('.')
+    if (parts.size == 4 && parts[0] == "172" && parts[1].toIntOrNull() in 16..31) return true
+    return runCatching {
+        InetAddress.getAllByName(host).any { address ->
+            address.isAnyLocalAddress || address.isLoopbackAddress || address.isSiteLocalAddress || address.isLinkLocalAddress
+        }
+    }.getOrDefault(true)
+}
+
+internal fun detectImageMimeType(bytes: ByteArray, contentType: String?): String? {
+    val declared = contentType?.substringBefore(';')?.trim()?.lowercase()
+    val detected = when {
+        bytes.size >= 8 && bytes.copyOfRange(0, 8).contentEquals(
+            byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A),
+        ) -> "image/png"
+        bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte() -> "image/jpeg"
+        bytes.size >= 6 && bytes.copyOfRange(0, 3).toString(Charsets.US_ASCII) == "GIF" -> "image/gif"
+        bytes.size >= 12 && bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" &&
+            bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WEBP" -> "image/webp"
+        else -> null
+    }
+    return detected?.takeIf { declared == null || declared == "application/octet-stream" || declared == it }
+}
+
+private fun String.imageExtension(): String = when (lowercase()) {
+    "image/jpeg" -> "jpg"
+    "image/webp" -> "webp"
+    "image/gif" -> "gif"
+    else -> "png"
+}
 
 fun File.mimeType(): String {
     return when (extension.lowercase(Locale.getDefault())) {
