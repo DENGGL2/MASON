@@ -85,6 +85,13 @@ data class ApiTestResult(
     val success: Boolean,
     val message: String,
     val capabilityWarning: String? = null,
+    val capabilities: List<ApiCapabilityCheck> = emptyList(),
+)
+
+data class ApiCapabilityCheck(
+    val label: String,
+    val success: Boolean,
+    val detail: String? = null,
 )
 
 @Singleton
@@ -212,7 +219,7 @@ class ChatClient @Inject constructor(
         val payload = kotlinx.serialization.json.buildJsonObject {
             put("model", kotlinx.serialization.json.JsonPrimitive(modelOverride))
             put("prompt", kotlinx.serialization.json.JsonPrimitive(prompt))
-            put("size", kotlinx.serialization.json.JsonPrimitive("1024x1024"))
+            put("n", kotlinx.serialization.json.JsonPrimitive(1))
         }
         val request = buildAuthorizedRequest(endpoint, apiKey, json.encodeToString(JsonObject.serializer(), payload))
         val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
@@ -310,6 +317,8 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         model: String,
+        visionModel: String = "",
+        imageModel: String = "",
         requiresApiKey: Boolean = true,
         testTools: Boolean = true,
     ): ApiTestResult {
@@ -335,9 +344,11 @@ class ChatClient @Inject constructor(
                 executeTestRequest(apiUrl, apiKey, textRequest).use { response ->
                     val responseBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
+                        val message = "API 错误 ${response.code}: ${responseBody.take(240)}"
                         return@use ApiTestResult(
                             success = false,
-                            message = "API 错误 ${response.code}: ${responseBody.take(240)}",
+                            message = message,
+                            capabilities = listOf(ApiCapabilityCheck("聊天", success = false, detail = message)),
                         )
                     }
 
@@ -355,18 +366,112 @@ class ChatClient @Inject constructor(
                     }.getOrNull()
 
                     val textMessage = if (content.isNullOrBlank()) "连接成功" else "连接成功：${content.take(80)}"
-                    if (!testTools) return@use ApiTestResult(true, textMessage)
+                    val capabilities = mutableListOf(
+                        ApiCapabilityCheck(label = "聊天", success = true),
+                        probeVisionCapability(apiUrl, apiKey, visionModel.ifBlank { model }),
+                        probeImageCapability(apiUrl, apiKey, imageModel),
+                    )
+                    if (!testTools) {
+                        return@use ApiTestResult(
+                            success = true,
+                            message = textMessage,
+                            capabilities = capabilities,
+                        )
+                    }
 
                     val probe = probeToolCalling(apiUrl, apiKey, model)
+                    capabilities += ApiCapabilityCheck(
+                        label = "工具调用",
+                        success = probe.available,
+                        detail = probe.warning,
+                    )
                     ApiTestResult(
                         success = true,
                         message = if (probe.available) "$textMessage；工具调用可用" else textMessage,
                         capabilityWarning = probe.warning,
+                        capabilities = capabilities,
                     )
                 }
             }.getOrElse { error ->
-                ApiTestResult(false, "连接失败: ${error.message ?: error.javaClass.simpleName}")
+                val message = "连接失败: ${error.message ?: error.javaClass.simpleName}"
+                ApiTestResult(
+                    success = false,
+                    message = message,
+                    capabilities = listOf(ApiCapabilityCheck("聊天", success = false, detail = message)),
+                )
             }
+        }
+    }
+
+    private fun probeVisionCapability(
+        apiUrl: String,
+        apiKey: String,
+        model: String,
+    ): ApiCapabilityCheck {
+        val request = ChatRequest(
+            model = model,
+            messages = listOf(
+                ApiChatMessage(
+                    role = "user",
+                    content = kotlinx.serialization.json.buildJsonArray {
+                        add(kotlinx.serialization.json.buildJsonObject {
+                            put("type", kotlinx.serialization.json.JsonPrimitive("text"))
+                            put("text", kotlinx.serialization.json.JsonPrimitive("Reply with OK."))
+                        })
+                        add(kotlinx.serialization.json.buildJsonObject {
+                            put("type", kotlinx.serialization.json.JsonPrimitive("image_url"))
+                            put("image_url", kotlinx.serialization.json.buildJsonObject {
+                                put("url", kotlinx.serialization.json.JsonPrimitive(VISION_PROBE_IMAGE_DATA_URL))
+                            })
+                        })
+                    },
+                ),
+            ),
+            stream = false,
+        )
+        return runCatching {
+            executeTestRequest(apiUrl, apiKey, request).use { response ->
+                val body = response.body?.string().orEmpty()
+                if (response.isSuccessful) {
+                    ApiCapabilityCheck(label = "识图", success = true)
+                } else {
+                    ApiCapabilityCheck(label = "识图", success = false, detail = responseErrorSummary(body))
+                }
+            }
+        }.getOrElse { error ->
+            ApiCapabilityCheck(label = "识图", success = false, detail = error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    private fun probeImageCapability(
+        apiUrl: String,
+        apiKey: String,
+        model: String,
+    ): ApiCapabilityCheck {
+        if (model.isBlank()) return ApiCapabilityCheck(label = "生图", success = false, detail = "未配置模型")
+        val payload = kotlinx.serialization.json.buildJsonObject {
+            put("model", kotlinx.serialization.json.JsonPrimitive(model))
+            put("prompt", kotlinx.serialization.json.JsonPrimitive("A single blue dot on a white background."))
+            put("n", kotlinx.serialization.json.JsonPrimitive(1))
+        }
+        return runCatching {
+            buildAuthorizedRequest(
+                normalizeImagesUrl(apiUrl),
+                apiKey,
+                json.encodeToString(JsonObject.serializer(), payload),
+            ).let(client::newCall).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                val hasImage = runCatching {
+                    json.parseToJsonElement(body).jsonObject["data"]?.jsonArray?.isNotEmpty() == true
+                }.getOrDefault(false)
+                when {
+                    response.isSuccessful && hasImage -> ApiCapabilityCheck(label = "生图", success = true)
+                    response.isSuccessful -> ApiCapabilityCheck(label = "生图", success = false, detail = "未返回图片")
+                    else -> ApiCapabilityCheck(label = "生图", success = false, detail = responseErrorSummary(body))
+                }
+            }
+        }.getOrElse { error ->
+            ApiCapabilityCheck(label = "生图", success = false, detail = error.message ?: error.javaClass.simpleName)
         }
     }
 
@@ -467,6 +572,9 @@ class ChatClient @Inject constructor(
             append("需要用户选择、授权或确认风险时，用“引导”给出 2 到 3 个清晰选项。")
             append("如果工具列表中存在 skill__activate，且用户任务明确匹配某个 Skill，先调用它获取受控任务方法；普通问答不要调用。")
             append("Skill 返回 needs_input 时，只询问 missing_parameters，不要猜测；返回 activated 后按 instructions 完成任务，且不能绕过工具确认。")
+            append("只有用户明确要求记住，或信息明显是可跨任务复用的长期偏好时，才调用 memory_save；当前状态、临时安排、推测和一次性内容不要保存。")
+            append("用户个人偏好使用 GLOBAL 记忆；当前项目的技术栈、约定和项目事实使用 PROJECT 记忆并提供稳定 project_id。")
+            append("姓名、身份、地址、账号、支付或收款信息必须调用 memory_save_sensitive，不能用普通记忆工具绕过确认。工具未成功时不得声称已经记住。")
             append("任务完成后用“最终总结”收束，优先说明结果、文件、下一步。")
             append("当用户要求生成文档、代码、报告、配置或其他文件时，必须输出一个带 filename=\"相对路径/文件名.扩展名\" 的 fenced code block，便于 Mason 自动保存为产出。")
             append("文件代码块示例：```markdown filename=\"notes/summary.md\"。不要把普通解释性回答伪装成文件。")
@@ -475,6 +583,8 @@ class ChatClient @Inject constructor(
 
     private companion object {
         const val CONNECTION_PROBE_TOOL = "mason_connection_probe"
+        const val VISION_PROBE_IMAGE_DATA_URL =
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     }
 
     private data class ToolProbeResult(

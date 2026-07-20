@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -41,6 +42,9 @@ object Routes {
 @Composable
 fun MasonNavGraph(
     uiPreferences: UiPreferences,
+    openConversationId: Long? = null,
+    notificationTaskCommand: String? = null,
+    notificationArtifactPath: String? = null,
     onThemeModeChange: (ThemeMode) -> Unit,
     onAccentColorChange: (Long) -> Unit,
     onNotificationIslandEnabledChange: (Boolean) -> Unit,
@@ -50,6 +54,22 @@ fun MasonNavGraph(
     onIslandVendorModeChange: (IslandVendorMode) -> Unit,
 ) {
     val navController = rememberNavController()
+
+    LaunchedEffect(openConversationId, notificationArtifactPath) {
+        if (notificationArtifactPath != null) {
+            navController.navigate(Routes.collection(CollectionKind.ARTIFACTS)) {
+                popUpTo(Routes.CHAT_NEW) { inclusive = false }
+                launchSingleTop = true
+            }
+        } else {
+            openConversationId?.let { conversationId ->
+            navController.navigate(Routes.chat(conversationId)) {
+                popUpTo(Routes.CHAT_NEW) { inclusive = false }
+                launchSingleTop = true
+            }
+            }
+        }
+    }
 
     NavHost(
         navController = navController,
@@ -109,6 +129,7 @@ fun MasonNavGraph(
                 onOpenArtifacts = { navController.navigate(Routes.collection(CollectionKind.ARTIFACTS)) },
                 onOpenSkills = { navController.navigate(Routes.collection(CollectionKind.SKILLS)) },
                 onOpenAutomations = { navController.navigate(Routes.collection(CollectionKind.AUTOMATIONS)) },
+                notificationTaskCommand = notificationTaskCommand,
             )
         }
 
@@ -156,6 +177,7 @@ fun MasonNavGraph(
                 onOpenArtifacts = { navController.navigate(Routes.collection(CollectionKind.ARTIFACTS)) },
                 onOpenSkills = { navController.navigate(Routes.collection(CollectionKind.SKILLS)) },
                 onOpenAutomations = { navController.navigate(Routes.collection(CollectionKind.AUTOMATIONS)) },
+                notificationTaskCommand = notificationTaskCommand,
             )
         }
 
@@ -203,6 +225,7 @@ fun MasonNavGraph(
             CollectionListScreen(
                 kind = kind,
                 onBack = { navController.popBackStack() },
+                initialPreviewPath = notificationArtifactPath,
             )
         }
     }

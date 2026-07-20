@@ -48,15 +48,25 @@ class MasonApp : Application() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NotificationTool.CHANNEL_ID,
-                NotificationTool.CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_DEFAULT
-            ).apply {
-                description = "Mason Tool 发送的通知"
-            }
             val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    NotificationTool.CHANNEL_ID,
+                    NotificationTool.CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply {
+                    description = "Mason 发送的常规通知"
+                },
+            )
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    NotificationTool.ISLAND_CHANNEL_ID,
+                    NotificationTool.ISLAND_CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "Mason 的高优先级通知岛提醒"
+                },
+            )
         }
     }
 }

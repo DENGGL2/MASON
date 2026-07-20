@@ -22,12 +22,16 @@ import com.denggl2.mason.data.LocalModelDownloadStatus
 import com.denggl2.mason.data.LocalModelFileState
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelStore
+import com.denggl2.mason.data.ModelCapabilityHealth
+import com.denggl2.mason.data.ModelCapabilityHealthStore
 import com.denggl2.mason.data.OfficialChannelPreferences
 import com.denggl2.mason.data.OfficialChannelPreferencesDataStore
 import com.denggl2.mason.data.UserMemoryItem
+import com.denggl2.mason.data.UserMemoryScope
 import com.denggl2.mason.data.UserMemoryStore
 import com.denggl2.mason.data.UserMemoryType
 import com.denggl2.mason.llm.ChatClient
+import com.denggl2.mason.llm.ApiCapabilityCheck
 import com.denggl2.mason.llm.ChatResponse
 import com.denggl2.mason.llm.LiteRtModelEngine
 import com.denggl2.mason.llm.ModelInvocation
@@ -56,6 +60,7 @@ data class ApiTestUiState(
     val message: String? = null,
     val success: Boolean? = null,
     val capabilityWarning: String? = null,
+    val capabilities: List<ApiCapabilityCheck> = emptyList(),
 )
 
 data class ModelRefreshUiState(
@@ -88,6 +93,7 @@ data class LocalModelTestUiState(
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val configDataStore: ApiConfigDataStore,
+    private val modelCapabilityHealthStore: ModelCapabilityHealthStore,
     private val chatClient: ChatClient,
     private val modelRepository: AiModelRepository,
     private val syncManager: SyncManager,
@@ -373,6 +379,9 @@ class SettingsViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            val existing = id?.let { memoryId ->
+                userMemoryStore.items.value.firstOrNull { it.id == memoryId }
+            }
             userMemoryStore.upsert(
                 UserMemoryItem(
                     id = id ?: UUID.randomUUID().toString(),
@@ -380,6 +389,13 @@ class SettingsViewModel @Inject constructor(
                     value = value.trim(),
                     type = type,
                     sensitive = sensitive,
+                    createdAtMillis = existing?.createdAtMillis ?: System.currentTimeMillis(),
+                    enabled = existing?.enabled ?: true,
+                    autoUse = existing?.autoUse ?: !sensitive,
+                    scope = existing?.scope ?: UserMemoryScope.GLOBAL,
+                    scopeId = existing?.scopeId,
+                    keywords = existing?.keywords.orEmpty(),
+                    lastUsedAtMillis = existing?.lastUsedAtMillis,
                 ),
             )
             _toastEvent.emit(if (id == null) "已加入记忆" else "已更新记忆")
@@ -417,6 +433,8 @@ class SettingsViewModel @Inject constructor(
                 apiUrl = config.apiUrl,
                 apiKey = config.apiKey,
                 model = config.model,
+                visionModel = config.visionModel,
+                imageModel = config.imageModel,
                 requiresApiKey = AiProviderCatalog.requiresApiKey(config),
                 testTools = config.toolsEnabled,
             )
@@ -427,11 +445,23 @@ class SettingsViewModel @Inject constructor(
                     ),
                 )
             }
+            if (result.capabilities.isNotEmpty()) {
+                modelCapabilityHealthStore.save(
+                    config = config,
+                    capabilities = result.capabilities.associate { capability ->
+                        capability.label to ModelCapabilityHealth(
+                            available = capability.success,
+                            detail = capability.detail,
+                        )
+                    },
+                )
+            }
             _apiTestState.value = ApiTestUiState(
                 isTesting = false,
                 message = result.message,
                 success = result.success,
                 capabilityWarning = result.capabilityWarning,
+                capabilities = result.capabilities,
             )
         }
     }

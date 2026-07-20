@@ -7,12 +7,12 @@ import com.denggl2.mason.data.LocalModelCatalog
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelStore
 import com.denggl2.mason.data.ConversationContextManager
-import com.denggl2.mason.llm.ChatClient
 import com.denggl2.mason.llm.ChatResponse
 import com.denggl2.mason.llm.LiteRtModelEngine
 import com.denggl2.mason.llm.ModelEngineStatus
 import com.denggl2.mason.llm.ModelInvocation
 import com.denggl2.mason.llm.ModelModality
+import com.denggl2.mason.llm.OpenAiCompatibleModelEngine
 import com.denggl2.mason.llm.model.ChatMessage
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -41,7 +41,7 @@ data class RoutedModelResponse(
 @Singleton
 class MasonModelRouter @Inject constructor(
     private val configStore: ApiConfigDataStore,
-    private val chatClient: ChatClient,
+    private val remoteEngine: OpenAiCompatibleModelEngine,
     private val localStore: LocalModelStore,
     private val localEngine: LiteRtModelEngine,
     private val attachmentResolver: ChatAttachmentResolver,
@@ -54,6 +54,7 @@ class MasonModelRouter @Inject constructor(
         messages: List<ChatMessage>,
         toolsEnabled: Boolean = true,
         includeMemory: Boolean = true,
+        memoryScopeId: String? = null,
     ): RoutedModelResponse {
         val config = configStore.config.first()
         val context = ChatContextParser.parse(messages.lastOrNull { it.role == "user" }?.content.orEmpty())
@@ -61,11 +62,12 @@ class MasonModelRouter @Inject constructor(
         val attachments = attachmentResult.getOrDefault(emptyList())
         val modality = detectModelModality(context.userText, context.attachments, attachments)
         val sanitizedMessages = sanitizeAttachmentMetadata(messages, context)
-        val preparedMessages = if (includeMemory) {
-            contextManager.prepare(sanitizedMessages, context.userText)
-        } else {
-            contextManager.compact(sanitizedMessages)
-        }
+        val preparedMessages = contextManager.prepare(
+            messages = sanitizedMessages,
+            query = context.userText,
+            scopeId = memoryScopeId,
+            includeMemory = includeMemory,
+        )
         val localModelId = config.localModel.ifBlank { LocalModelCatalog.gemmaModels.firstOrNull()?.id.orEmpty() }
         val localReady = LocalModelCatalog.get(localModelId)?.let(localStore::stateFor)?.state in setOf(
             LocalModelInstallState.Installed,
@@ -79,7 +81,7 @@ class MasonModelRouter @Inject constructor(
             ModelModality.ImageGeneration -> config.imageModel
         }
         val decision = ModelRouteDecision(
-            engineId = if (useLocal) localEngine.id else "remote-openai-compatible",
+            engineId = if (useLocal) localEngine.id else remoteEngine.id,
             modelId = selectedModel,
             modality = modality,
             reason = routeReason(modality, useLocal, context.attachments.isNotEmpty()),
@@ -120,17 +122,12 @@ class MasonModelRouter @Inject constructor(
     ): Flow<ChatResponse> = flow {
         var remoteFailed = false
         var remoteError: String? = null
-        val primary = when {
-            decision.engineId == localEngine.id -> localEngine.invoke(invocation)
-            invocation.modality == ModelModality.ImageGeneration ->
-                chatClient.generateImage(invocation.messages.lastOrNull()?.content.orEmpty(), invocation.modelId)
-            else -> chatClient.chat(
-                messages = invocation.messages,
-                toolsEnabled = invocation.toolsEnabled,
-                modelOverride = invocation.modelId,
-                attachments = invocation.attachments,
-            )
+        val engine = if (decision.engineId == localEngine.id) localEngine else remoteEngine
+        if (!engine.canHandle(invocation)) {
+            emit(ChatResponse.Error("所选模型无法处理当前请求"))
+            return@flow
         }
+        val primary = engine.invoke(invocation)
         try {
             withTimeout(invocation.timeoutMillis) {
                 primary.collect { response ->
@@ -138,12 +135,17 @@ class MasonModelRouter @Inject constructor(
                         remoteFailed = true
                         remoteError = response.message
                     } else {
+                        if (response is ChatResponse.Error) {
+                            recordStatus(decision, available = false, message = response.message)
+                        }
                         emit(response)
                     }
                 }
             }
         } catch (_: TimeoutCancellationException) {
-            emit(ChatResponse.Error("模型响应超过 ${invocation.timeoutMillis / 1000} 秒，已停止"))
+            val message = "模型响应超过 ${invocation.timeoutMillis / 1000} 秒，已停止"
+            recordStatus(decision, available = false, message = message)
+            emit(ChatResponse.Error(message))
             return@flow
         }
         if (remoteFailed) {

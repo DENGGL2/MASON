@@ -50,33 +50,86 @@ class UserMemoryStore @Inject constructor(
         }
     }
 
+    suspend fun saveEvaluatedMemory(
+        evaluation: MemoryWriteEvaluation,
+        scope: UserMemoryScope = UserMemoryScope.GLOBAL,
+        scopeId: String? = null,
+    ): MemorySaveOutcome {
+        require(evaluation.accepted) { evaluation.reason }
+        require(scope == UserMemoryScope.GLOBAL || !scopeId.isNullOrBlank()) {
+            "Scoped memory requires a scope ID"
+        }
+        val existing = _items.value.firstOrNull { item ->
+            item.scope == scope &&
+                item.scopeId == scopeId &&
+                item.label.normalizedMemoryText() == evaluation.label.normalizedMemoryText()
+        }
+        val unchanged = existing?.value?.normalizedMemoryText() == evaluation.value.normalizedMemoryText()
+        val item = UserMemoryItem(
+            id = existing?.id ?: UUID.randomUUID().toString(),
+            label = evaluation.label,
+            value = evaluation.value,
+            type = evaluation.type,
+            sensitive = evaluation.sensitive,
+            autoUse = !evaluation.sensitive,
+            scope = scope,
+            scopeId = scopeId,
+            createdAtMillis = existing?.createdAtMillis ?: System.currentTimeMillis(),
+            keywords = (existing?.keywords.orEmpty() + evaluation.label + evaluation.type.label).distinct(),
+        )
+        upsert(item)
+        return MemorySaveOutcome(
+            item = item,
+            status = when {
+                existing == null -> MemorySaveStatus.Created
+                unchanged -> MemorySaveStatus.Unchanged
+                else -> MemorySaveStatus.Updated
+            },
+        )
+    }
+
     suspend fun relevant(
         query: String,
-        scopeId: String? = null,
+        conversationScopeId: String? = null,
+        projectScopeId: String? = null,
         allowSensitive: Boolean = false,
         limit: Int = 6,
-    ): List<UserMemoryItem> = withContext(Dispatchers.Default) {
-        val normalized = query.lowercase()
-        _items.value.asSequence()
-            .filter(UserMemoryItem::enabled)
-            .filter { item ->
-                item.scope == UserMemoryScope.GLOBAL || item.scopeId == scopeId
+    ): List<UserMemoryItem> {
+        val selected = withContext(Dispatchers.Default) {
+            rankRelevantMemories(
+            items = _items.value,
+            query = query,
+            conversationScopeId = conversationScopeId,
+            projectScopeId = projectScopeId,
+            allowSensitive = allowSensitive,
+            limit = limit,
+            )
+        }
+        if (selected.isNotEmpty()) withContext(Dispatchers.IO) {
+            val selectedIds = selected.map(UserMemoryItem::id).toSet()
+            val now = System.currentTimeMillis()
+            val nextItems = _items.value.map { item ->
+                if (item.id in selectedIds) item.copy(lastUsedAtMillis = now) else item
             }
-            .filter { item ->
-                !item.sensitive || allowSensitive || normalized.contains(item.label.lowercase())
-            }
-            .map { item -> item to relevanceScore(item, normalized) }
-            .filter { (_, score) -> score > 0 }
-            .sortedByDescending { (_, score) -> score }
-            .take(limit.coerceIn(1, 12))
-            .map(Pair<UserMemoryItem, Int>::first)
-            .toList()
+            writeItems(nextItems)
+            _items.value = nextItems
+        }
+        return selected
     }
 
     suspend fun rememberExplicitStatement(text: String): UserMemoryItem? {
         val candidate = explicitCandidate(text) ?: return null
-        upsert(candidate)
-        return candidate
+        val existing = _items.value.firstOrNull { item ->
+            item.scope == candidate.scope &&
+                item.scopeId == candidate.scopeId &&
+                item.label.normalizedMemoryText() == candidate.label.normalizedMemoryText()
+        }
+        val resolved = candidate.copy(
+            id = existing?.id ?: candidate.id,
+            createdAtMillis = existing?.createdAtMillis ?: candidate.createdAtMillis,
+        )
+        upsert(resolved)
+        return resolved
     }
 
     fun explicitCandidate(text: String): UserMemoryItem? {
@@ -96,19 +149,10 @@ class UserMemoryStore @Inject constructor(
             label = label,
             value = value,
             type = type,
-            sensitive = type in setOf(UserMemoryType.IDENTITY, UserMemoryType.PAYMENT, UserMemoryType.ADDRESS),
-            autoUse = type !in setOf(UserMemoryType.IDENTITY, UserMemoryType.PAYMENT, UserMemoryType.ADDRESS),
+            sensitive = type in sensitiveMemoryTypes,
+            autoUse = type !in sensitiveMemoryTypes,
             keywords = listOf(label, type.label).distinct(),
         )
-    }
-
-    private fun relevanceScore(item: UserMemoryItem, query: String): Int {
-        var score = 0
-        if (query.contains(item.label.lowercase())) score += 8
-        if (query.contains(item.type.label.lowercase())) score += 4
-        item.keywords.forEach { keyword -> if (keyword.isNotBlank() && query.contains(keyword.lowercase())) score += 3 }
-        if (item.autoUse && query.contains("我")) score += 1
-        return score
     }
 
     private fun readItems(): List<UserMemoryItem> {
@@ -173,3 +217,84 @@ class UserMemoryStore @Inject constructor(
         const val GCM_TAG_LENGTH = 128
     }
 }
+
+enum class MemorySaveStatus { Created, Updated, Unchanged }
+
+data class MemorySaveOutcome(
+    val item: UserMemoryItem,
+    val status: MemorySaveStatus,
+)
+
+internal fun rankRelevantMemories(
+    items: List<UserMemoryItem>,
+    query: String,
+    conversationScopeId: String? = null,
+    projectScopeId: String? = null,
+    allowSensitive: Boolean = false,
+    limit: Int = 6,
+): List<UserMemoryItem> {
+    val normalizedQuery = query.normalizedMemoryText()
+    val intentTerms = memoryIntentTerms(normalizedQuery)
+    return items.asSequence()
+        .filter(UserMemoryItem::enabled)
+        .filter { item ->
+            when (item.scope) {
+                UserMemoryScope.GLOBAL -> true
+                UserMemoryScope.PROJECT -> projectScopeId != null && item.scopeId == projectScopeId
+                UserMemoryScope.CONVERSATION -> conversationScopeId != null && item.scopeId == conversationScopeId
+            }
+        }
+        .filter { item ->
+            !item.sensitive || allowSensitive || normalizedQuery.contains(item.label.normalizedMemoryText())
+        }
+        .map { item ->
+            val projectContextScore = if (
+                item.scope == UserMemoryScope.PROJECT && item.scopeId == projectScopeId && item.autoUse
+            ) 2 else 0
+            item to (memoryRelevanceScore(item, normalizedQuery, intentTerms) + projectContextScore)
+        }
+        .filter { (_, score) -> score > 0 }
+        .sortedWith(
+            compareByDescending<Pair<UserMemoryItem, Int>> { it.second }
+                .thenByDescending { it.first.lastUsedAtMillis ?: it.first.updatedAtMillis },
+        )
+        .take(limit.coerceIn(1, 12))
+        .map(Pair<UserMemoryItem, Int>::first)
+        .toList()
+}
+
+private fun memoryRelevanceScore(
+    item: UserMemoryItem,
+    query: String,
+    intentTerms: Set<String>,
+): Int {
+    var score = 0
+    val label = item.label.normalizedMemoryText()
+    if (label.isNotBlank() && query.contains(label)) score += 10
+    if (item.type.memoryAliases.any(intentTerms::contains)) score += 6
+    item.keywords.forEach { keyword ->
+        val normalized = keyword.normalizedMemoryText()
+        if (normalized.length >= 2 && query.contains(normalized)) score += 4
+    }
+    return score
+}
+
+private fun memoryIntentTerms(query: String): Set<String> = buildSet {
+    memoryAliasesByType.values.flatten().forEach { alias ->
+        if (query.contains(alias)) add(alias)
+    }
+}
+
+private val UserMemoryType.memoryAliases: Set<String>
+    get() = memoryAliasesByType[this].orEmpty()
+
+private val memoryAliasesByType = mapOf(
+    UserMemoryType.LICENSE_PLATE to setOf("车牌", "车号"),
+    UserMemoryType.IDENTITY to setOf("身份", "姓名", "名字", "称呼", "叫什么"),
+    UserMemoryType.ADDRESS to setOf("地址", "住址", "家里", "公司位置"),
+    UserMemoryType.PAYMENT to setOf("支付", "账号", "收款"),
+    UserMemoryType.OTHER to emptySet(),
+)
+
+private fun String.normalizedMemoryText(): String = lowercase()
+    .replace(Regex("[\\s，。！？、,.!?:：;；_-]+"), "")

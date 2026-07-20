@@ -25,6 +25,8 @@ import com.denggl2.mason.tool.HotspotTool
 import com.denggl2.mason.tool.HttpRequestTool
 import com.denggl2.mason.tool.LocationTool
 import com.denggl2.mason.tool.MemoryTool
+import com.denggl2.mason.tool.MemoryWriteTool
+import com.denggl2.mason.tool.SensitiveMemoryWriteTool
 import com.denggl2.mason.tool.NetworkInfoTool
 import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.tool.ProcessTool
@@ -53,6 +55,8 @@ object ToolModule {
         gpuTool: GpuTool,
         batteryTool: BatteryTool,
         memoryTool: MemoryTool,
+        memoryWriteTool: MemoryWriteTool,
+        sensitiveMemoryWriteTool: SensitiveMemoryWriteTool,
         sensorTool: SensorTool,
         bluetoothTool: BluetoothTool,
         wifiTool: WifiTool,
@@ -92,6 +96,8 @@ object ToolModule {
                 gpuTool,
                 batteryTool,
                 memoryTool,
+                memoryWriteTool,
+                sensitiveMemoryWriteTool,
                 sensorTool,
                 bluetoothTool,
                 wifiTool,

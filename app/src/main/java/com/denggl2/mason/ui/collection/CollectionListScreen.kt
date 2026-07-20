@@ -153,6 +153,7 @@ private val TIMED_TRIGGER_TYPES = setOf(
 fun CollectionListScreen(
     kind: CollectionKind,
     onBack: () -> Unit,
+    initialPreviewPath: String? = null,
     viewModel: CollectionListViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
@@ -190,6 +191,13 @@ fun CollectionListScreen(
             loadCollectionEntries(context.applicationContext, kind)
         }
         loaded = true
+    }
+
+    LaunchedEffect(entries, initialPreviewPath) {
+        if (kind != CollectionKind.ARTIFACTS || initialPreviewPath == null) return@LaunchedEffect
+        previewEntry = entries.firstOrNull { entry ->
+            entry.path == initialPreviewPath || entry.previewFile?.absolutePath == initialPreviewPath
+        }
     }
 
     LaunchedEffect(skillState.message) {

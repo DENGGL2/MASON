@@ -67,7 +67,19 @@ data class TaskRun(
     val artifactPaths: List<String> = emptyList(),
     val lastError: String? = null,
     val agentExecution: AgentExecutionCheckpoint? = null,
-    val schemaVersion: Int = 3,
+    val agentPlan: AgentPlanState? = null,
+    val schemaVersion: Int = 4,
+)
+
+/** Persistent orchestration state. It intentionally contains no hidden model reasoning. */
+@Serializable
+data class AgentPlanState(
+    val goal: String,
+    val plannedStepIds: List<String>,
+    val source: String = "deterministic",
+    val reviewCount: Int = 0,
+    val lastReviewDecision: AgentReviewDecision? = null,
+    val lastReviewDetail: String? = null,
 )
 
 @Serializable
@@ -114,6 +126,7 @@ object ToolPolicy {
         "audio_record",
         "screenshot",
         "notification",
+        "memory_save_sensitive",
     )
 
     private val mediumRiskTools = setOf(
@@ -134,7 +147,8 @@ object ToolPolicy {
     fun requiresUserApproval(toolName: String): Boolean =
         riskFor(toolName) != ToolRiskLevel.Low
 
-    fun requiresMandatoryApproval(toolName: String): Boolean = toolName.startsWith("a2a__")
+    fun requiresMandatoryApproval(toolName: String): Boolean =
+        toolName.startsWith("a2a__") || toolName == "memory_save_sensitive"
 
     fun canRememberApproval(toolName: String): Boolean = !requiresMandatoryApproval(toolName)
 
@@ -356,20 +370,86 @@ fun createTaskRun(goal: String, now: Long = System.currentTimeMillis()): TaskRun
 
 fun annotateTaskRun(content: String, taskRun: TaskRun?): String {
     if (taskRun == null) return content
-    return content.trimEnd() + "\n\n$TASK_RUN_MARKER_PREFIX ${taskRunJson.encodeToString(taskRun)} $TASK_RUN_MARKER_SUFFIX"
+    val sanitizedTaskRun = taskRun.withoutEmbeddedTaskRunMarkers()
+    return content.trimEnd() + "\n\n$TASK_RUN_MARKER_PREFIX ${taskRunJson.encodeToString(sanitizedTaskRun)} $TASK_RUN_MARKER_SUFFIX"
 }
 
-fun extractTaskRunMarker(content: String): TaskRun? = taskRunMarkerRegex()
-    .findAll(content)
-    .lastOrNull()
-    ?.groupValues
-    ?.getOrNull(1)
-    ?.trim()
-    ?.let { encoded -> runCatching { taskRunJson.decodeFromString<TaskRun>(encoded) }.getOrNull() }
+fun extractTaskRunMarker(content: String): TaskRun? = findLastTaskRunMarker(content)?.taskRun
 
-fun stripTaskRunMarkers(content: String): String =
-    content.replace(taskRunMarkerRegex(), "").trimEnd()
+fun stripTaskRunMarkers(content: String): String {
+    var stripped = content
+    while (true) {
+        val marker = findLastTaskRunMarker(stripped) ?: break
+        stripped = stripped.removeRange(marker.startIndex, marker.endExclusive)
+    }
+    return stripped.trimEnd()
+}
 
-private fun taskRunMarkerRegex(): Regex = Regex(
-    Regex.escape(TASK_RUN_MARKER_PREFIX) + """\s+([\s\S]*?)\s+""" + Regex.escape(TASK_RUN_MARKER_SUFFIX),
+private fun TaskRun.withoutEmbeddedTaskRunMarkers(): TaskRun = copy(
+    agentExecution = agentExecution?.copy(
+        messages = agentExecution.messages.map(ChatMessage::withoutTaskRunMarkers),
+        pendingAssistantMessage = agentExecution.pendingAssistantMessage?.withoutTaskRunMarkers(),
+    ),
+)
+
+private fun ChatMessage.withoutTaskRunMarkers(): ChatMessage = copy(
+    content = content?.let(::stripTaskRunMarkers),
+)
+
+private fun findLastTaskRunMarker(content: String): ParsedTaskRunMarker? {
+    val prefixIndexes = content.allIndexesOf(TASK_RUN_MARKER_PREFIX).asReversed()
+    val suffixIndexes = content.allIndexesOf(TASK_RUN_MARKER_SUFFIX).asReversed()
+    for (startIndex in prefixIndexes) {
+        val payloadStart = startIndex + TASK_RUN_MARKER_PREFIX.length
+        for (suffixIndex in suffixIndexes) {
+            if (suffixIndex <= payloadStart) continue
+            val taskRun = runCatching {
+                taskRunJson.decodeFromString<TaskRun>(content.substring(payloadStart, suffixIndex).trim())
+            }.getOrNull()?.normalizeLegacyCancelledRun() ?: continue
+            return ParsedTaskRunMarker(
+                taskRun = taskRun,
+                startIndex = startIndex,
+                endExclusive = suffixIndex + TASK_RUN_MARKER_SUFFIX.length,
+            )
+        }
+    }
+    return null
+}
+
+private fun TaskRun.normalizeLegacyCancelledRun(): TaskRun {
+    val summaryCompleted = steps.any { step ->
+        step.kind == TaskStepKind.Deliver && step.status == TaskStepStatus.Completed
+    }
+    if (!summaryCompleted || steps.none { it.status == TaskStepStatus.Cancelled }) return this
+    val normalizedSteps = steps.map { step ->
+        if (step.status == TaskStepStatus.Pending ||
+            step.status == TaskStepStatus.Running ||
+            step.status == TaskStepStatus.WaitingForUser
+        ) {
+            step.copy(status = TaskStepStatus.Cancelled, finishedAt = finishedAt ?: updatedAt)
+        } else step
+    }
+    return copy(
+        agentExecution = agentExecution?.copy(
+            pendingAssistantMessage = null,
+            pendingCalls = emptyList(),
+            pendingApprovalCallId = null,
+        ),
+    ).withSteps(normalizedSteps)
+}
+
+private fun String.allIndexesOf(value: String): List<Int> = buildList {
+    var startIndex = 0
+    while (startIndex < this@allIndexesOf.length) {
+        val index = this@allIndexesOf.indexOf(value, startIndex)
+        if (index < 0) break
+        add(index)
+        startIndex = index + value.length
+    }
+}
+
+private data class ParsedTaskRunMarker(
+    val taskRun: TaskRun,
+    val startIndex: Int,
+    val endExclusive: Int,
 )

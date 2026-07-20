@@ -111,6 +111,7 @@ import com.denggl2.mason.data.UserMemoryItem
 import com.denggl2.mason.data.UserMemoryType
 import com.denggl2.mason.data.toComposeColor
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 private enum class SettingsPage {
     Overview,
@@ -251,6 +252,24 @@ fun SettingsScreen(
                 requireToolConfirmation = nextRequireToolConfirmation,
             ),
         )
+    }
+
+    // Do not rewrite DataStore for every character typed into editable API fields.
+    LaunchedEffect(url) {
+        delay(350)
+        if (url != config.apiUrl) persistApiConfig(nextUrl = url)
+    }
+    LaunchedEffect(key) {
+        delay(350)
+        if (key != config.apiKey) persistApiConfig(nextKey = key)
+    }
+    LaunchedEffect(model) {
+        delay(350)
+        if (model != config.model) persistApiConfig(nextModel = model)
+    }
+    LaunchedEffect(imageModel) {
+        delay(350)
+        if (imageModel != config.imageModel) persistApiConfig(nextImageModel = imageModel)
     }
 
     fun clearMemoryEditor() {
@@ -409,21 +428,24 @@ fun SettingsScreen(
                                 }
                             },
                             onClick = {
-                                val nextUrl = item.apiUrl
-                                val nextModel = item.defaultModel
-                                val nextToolsEnabled = item.toolsEnabledByDefault
+                                val isCurrentProvider = item.id == providerId
+                                val nextUrl = if (isCurrentProvider) url else item.apiUrl
+                                val nextModel = if (isCurrentProvider) model else item.defaultModel
+                                val nextVisionModel = if (isCurrentProvider) visionModel else ""
+                                val nextImageModel = if (isCurrentProvider) imageModel else ""
+                                val nextToolsEnabled = if (isCurrentProvider) toolsEnabled else item.toolsEnabledByDefault
                                 providerId = item.id
                                 url = nextUrl
                                 model = nextModel
-                                visionModel = ""
-                                imageModel = ""
+                                visionModel = nextVisionModel
+                                imageModel = nextImageModel
                                 toolsEnabled = nextToolsEnabled
                                 persistApiConfig(
                                     nextProviderId = item.id,
                                     nextUrl = nextUrl,
                                     nextModel = nextModel,
-                                    nextVisionModel = "",
-                                    nextImageModel = "",
+                                    nextVisionModel = nextVisionModel,
+                                    nextImageModel = nextImageModel,
                                     nextToolsEnabled = nextToolsEnabled,
                                 )
                                 viewModel.clearApiTestState()
@@ -695,7 +717,6 @@ fun SettingsScreen(
                         CompactInput("API 地址", url, provider.apiUrl) {
                             url = it
                             viewModel.clearApiTestState()
-                            persistApiConfig(nextUrl = it)
                         }
                     }
                     GroupDivider()
@@ -717,7 +738,6 @@ fun SettingsScreen(
                         ) {
                             key = it
                             viewModel.clearApiTestState()
-                            persistApiConfig(nextKey = it)
                         }
                     }
                     GroupDivider()
@@ -725,7 +745,13 @@ fun SettingsScreen(
                         CompactInput("模型名称", model, provider.defaultModel.ifBlank { "model-name" }) {
                             model = it
                             viewModel.clearApiTestState()
-                            persistApiConfig(nextModel = it)
+                        }
+                    }
+                    GroupDivider()
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        CompactInput("生图模型名称", imageModel, "例如 gpt-image-2") {
+                            imageModel = it
+                            viewModel.clearApiTestState()
                         }
                     }
                     GroupDivider()
@@ -794,6 +820,20 @@ fun SettingsScreen(
                 message = apiTestState.capabilityWarning,
                 success = false,
             )
+            apiTestState.capabilities.forEach { capability ->
+                StatusText(
+                    message = buildString {
+                        append(capability.label)
+                        append(if (capability.success) "：可用" else "：不可用")
+                        capability.detail?.takeIf(String::isNotBlank)?.let { detail ->
+                            append("（")
+                            append(detail.take(100))
+                            append("）")
+                        }
+                    },
+                    success = capability.success,
+                )
+            }
             }
 
             if (page == SettingsPage.NotificationIsland) {
@@ -2378,7 +2418,7 @@ private fun islandSummary(preferences: UiPreferences): String {
         IslandVendorMode.VIVO -> "vivo"
         IslandVendorMode.OPPO -> "OPPO"
     }
-    val completion = if (preferences.notifyOnTaskComplete) "完成后通知" else "仅基础通知"
+    val completion = if (preferences.notifyOnTaskComplete) "任务状态通知" else "仅基础通知"
     val payment = if (preferences.notifyOnPaymentSuccess) "支付通知" else "无支付通知"
     return "$vendor · $completion · $payment"
 }
@@ -2648,8 +2688,8 @@ private fun NotificationIslandSetting(
 
         GroupDivider()
         SwitchSettingRow(
-            title = "事务完成后通知",
-            description = "调用工具、生成文件或自动化执行完成后发送提醒",
+            title = "任务状态通知",
+            description = "任务完成、暂停、停止或取消时发送提醒",
             checked = notifyOnTaskComplete,
             onCheckedChange = onNotifyOnTaskCompleteChange,
         )

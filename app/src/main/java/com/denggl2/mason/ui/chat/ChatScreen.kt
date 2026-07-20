@@ -140,10 +140,13 @@ import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.LocalModelCatalog
 import com.denggl2.mason.data.LocalModelFileState
+import com.denggl2.mason.data.ModelCapabilityHealth
+import com.denggl2.mason.model.resolveVisionModel
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.MasonSkillParameter
 import com.denggl2.mason.agent.TaskStep
 import com.denggl2.mason.agent.TaskStepStatus
+import com.denggl2.mason.agent.TaskRunStatus
 import com.denggl2.mason.agent.ToolApprovalRequest
 import com.denggl2.mason.agent.stripTaskRunMarkers
 import com.denggl2.mason.automation.AutomationApplyResult
@@ -156,6 +159,7 @@ import com.denggl2.mason.integration.CapabilityRequirement
 import com.denggl2.mason.integration.CapabilityRequirementStatus
 import com.denggl2.mason.integration.extractCapabilityRequirementMarker
 import com.denggl2.mason.integration.stripCapabilityRequirementMarkers
+import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.ui.conversation.ConversationListItem
 import com.denggl2.mason.ui.conversation.ConversationListViewModel
 import kotlinx.coroutines.launch
@@ -213,6 +217,7 @@ fun ChatScreen(
     onOpenArtifacts: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenAutomations: () -> Unit,
+    notificationTaskCommand: String? = null,
     onBack: (() -> Unit)? = null,
     viewModel: ChatViewModel = hiltViewModel(),
     historyViewModel: ConversationListViewModel = hiltViewModel(),
@@ -234,6 +239,7 @@ fun ChatScreen(
     var showSkillPicker by remember { mutableStateOf(false) }
     var showModelStatusSheet by remember { mutableStateOf(false) }
     var pendingDrawerDeleteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var processedNotificationCommand by remember(notificationTaskCommand) { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -280,6 +286,28 @@ fun ChatScreen(
         uiState.toolCallStatus != null ||
         uiState.pendingToolApproval != null
     val lastAssistantTimestamp = visibleMessages.lastOrNull { it.role == "assistant" }?.timestamp
+
+    LaunchedEffect(notificationTaskCommand, uiState.taskRun?.id, uiState.isStreaming) {
+        val run = uiState.taskRun
+        if (
+            processedNotificationCommand ||
+            notificationTaskCommand == null ||
+            run == null
+        ) return@LaunchedEffect
+        val canRunCommand = when (notificationTaskCommand) {
+            NotificationTool.TASK_COMMAND_RESUME ->
+                run.status == TaskRunStatus.WaitingForUser && !uiState.isStreaming
+            NotificationTool.TASK_COMMAND_CANCEL ->
+                run.status !in setOf(TaskRunStatus.Completed, TaskRunStatus.Failed, TaskRunStatus.Cancelled)
+            else -> false
+        }
+        if (!canRunCommand) return@LaunchedEffect
+        processedNotificationCommand = true
+        when (notificationTaskCommand) {
+            NotificationTool.TASK_COMMAND_RESUME -> viewModel.resumeCurrentTask()
+            NotificationTool.TASK_COMMAND_CANCEL -> viewModel.cancelCurrentTask()
+        }
+    }
     val modeSwitchModels = remember(apiConfig.providerId, apiConfig.model) {
         AiProviderCatalog.quickSwitchModels(apiConfig.providerId, apiConfig.model)
     }
@@ -304,8 +332,17 @@ fun ChatScreen(
     val localModelStates = remember(apiConfig.localModel, showModelStatusSheet) {
         viewModel.localModelStates()
     }
-    val modelStatuses = remember(apiConfig, localModelStates) {
-        buildModelStatuses(apiConfig, localModelStates)
+    val modelCapabilityHealth by viewModel.modelCapabilityHealth.collectAsState()
+    val hasCurrentModelHealth = remember(apiConfig, modelCapabilityHealth) {
+        viewModel.hasCurrentModelCapabilityHealth()
+    }
+    val modelStatuses = remember(apiConfig, localModelStates, modelCapabilityHealth, hasCurrentModelHealth) {
+        buildModelStatuses(
+            config = apiConfig,
+            localStates = localModelStates,
+            capabilityHealth = modelCapabilityHealth.capabilities.takeIf { hasCurrentModelHealth }.orEmpty(),
+            checkedAtMillis = modelCapabilityHealth.checkedAtMillis.takeIf { hasCurrentModelHealth } ?: 0L,
+        )
     }
     val modelSummary = remember(modelStatuses) { summarizeModelAvailability(modelStatuses) }
 
@@ -456,6 +493,7 @@ fun ChatScreen(
                                     hasDraft = uiState.streamingContent.isNotBlank(),
                                     onRetryStep = viewModel::retryTaskStep,
                                     onPause = viewModel::pauseCurrentTask,
+                                    onCancel = viewModel::cancelCurrentTask,
                                 )
                             }
                         }
@@ -639,10 +677,13 @@ private fun ToolApprovalDialog(
                 Text("级别：$riskLabel")
                 Text("影响范围：${approval.reason}")
                 Text(
-                    text = if (approval.integrationProtocol == "A2A") {
-                        "这次只允许当前任务。以后再次委派敏感操作时，Mason 仍会询问。"
-                    } else {
-                        "允许一次只继续本轮任务；总是允许会记住该工具，之后可在设置中撤销。"
+                    text = when {
+                        approval.integrationProtocol == "A2A" ->
+                            "这次只允许当前任务。以后再次委派敏感操作时，Mason 仍会询问。"
+                        !approval.allowPersistentGrant ->
+                            "这次只允许当前任务。以后再次保存敏感信息时，Mason 仍会询问。"
+                        else ->
+                            "允许一次只继续本轮任务；总是允许会记住该工具，之后可在设置中撤销。"
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
@@ -1292,6 +1333,7 @@ private fun MasonProcessPanel(
     hasDraft: Boolean,
     onRetryStep: (String) -> Unit,
     onPause: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     if (steps.isNotEmpty()) {
         val finished = steps.none {
@@ -1333,6 +1375,15 @@ private fun MasonProcessPanel(
                         Icon(
                             Icons.Outlined.Pause,
                             contentDescription = "暂停任务",
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+                if (steps.any { it.status == TaskStepStatus.Running || it.status == TaskStepStatus.WaitingForUser }) {
+                    IconButton(onClick = onCancel, modifier = Modifier.size(30.dp)) {
+                        Icon(
+                            Icons.Outlined.Close,
+                            contentDescription = "取消任务",
                             modifier = Modifier.size(16.dp),
                         )
                     }
@@ -3453,6 +3504,8 @@ private fun AttachmentMenuRow(
 private fun buildModelStatuses(
     config: ApiConfig,
     localStates: List<LocalModelFileState>,
+    capabilityHealth: Map<String, ModelCapabilityHealth> = emptyMap(),
+    checkedAtMillis: Long = 0L,
 ): List<ModelStatusItem> {
     val provider = AiProviderCatalog.getProvider(config.providerId)
     val remoteAvailability = when {
@@ -3467,8 +3520,27 @@ private fun buildModelStatuses(
     }
     val chatModelName = AiProviderCatalog.getModel(config.providerId, config.model)?.name
         ?: config.model.ifBlank { "未配置" }
+    val checkedAt = checkedAtMillis.takeIf { it > 0L }?.let {
+        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it))
+    }
 
-    fun remoteCapability(label: String, modelId: String, icon: ImageVector): ModelStatusItem {
+    fun healthStatus(label: String): Pair<ModelAvailability, String>? = capabilityHealth[label]?.let { health ->
+        val status = when {
+            health.available -> "已检测可用"
+            !health.detail.isNullOrBlank() -> "不可用：${health.detail.take(70)}"
+            else -> "检测不可用"
+        }
+        (if (health.available) ModelAvailability.Available else ModelAvailability.Unavailable) to
+            listOfNotNull(status, checkedAt?.let { "检测于 $it" }).joinToString(" · ")
+    }
+
+    fun remoteCapability(
+        label: String,
+        modelId: String,
+        icon: ImageVector,
+        fallbackStatus: String? = null,
+        healthLabel: String,
+    ): ModelStatusItem {
         if (modelId.isBlank()) {
             return ModelStatusItem(
                 label = label,
@@ -3479,11 +3551,12 @@ private fun buildModelStatuses(
             )
         }
         val name = AiProviderCatalog.getModel(config.providerId, modelId)?.name ?: modelId
+        val (availability, status) = healthStatus(healthLabel) ?: (remoteAvailability to remoteStatus)
         return ModelStatusItem(
             label = label,
             modelName = "${provider?.name ?: config.providerId} · $name",
-            status = remoteStatus,
-            availability = remoteAvailability,
+            status = listOfNotNull(fallbackStatus, status).joinToString(" · "),
+            availability = availability,
             icon = icon,
         )
     }
@@ -3516,15 +3589,31 @@ private fun buildModelStatuses(
     }
 
     return listOf(
-        ModelStatusItem(
-            label = "聊天模型",
-            modelName = "${provider?.name ?: config.providerId} · $chatModelName",
-            status = remoteStatus,
-            availability = remoteAvailability,
-            icon = Icons.Outlined.Forum,
+        run {
+            val (availability, status) = healthStatus("聊天") ?: (remoteAvailability to remoteStatus)
+            ModelStatusItem(
+                label = "聊天模型",
+                modelName = "${provider?.name ?: config.providerId} · $chatModelName",
+                status = status,
+                availability = availability,
+                icon = Icons.Outlined.Forum,
+            )
+        },
+        remoteCapability(
+            label = "识图模型",
+            modelId = resolveVisionModel(config),
+            icon = Icons.Outlined.Visibility,
+            fallbackStatus = "复用聊天模型".takeIf {
+                config.visionModel.isBlank() && resolveVisionModel(config).isNotBlank()
+            },
+            healthLabel = "识图",
         ),
-        remoteCapability("识图模型", config.visionModel, Icons.Outlined.Visibility),
-        remoteCapability("生图模型", config.imageModel, Icons.Outlined.ImageIcon),
+        remoteCapability(
+            label = "生图模型",
+            modelId = config.imageModel,
+            icon = Icons.Outlined.ImageIcon,
+            healthLabel = "生图",
+        ),
         ModelStatusItem(
             label = "本地模型",
             modelName = localModel?.name ?: selectedLocalId.ifBlank { "未配置" },

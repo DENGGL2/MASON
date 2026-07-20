@@ -4,6 +4,7 @@ import android.content.Context
 import com.denggl2.mason.tool.ToolExecutor
 import com.denggl2.mason.tool.ToolResult
 import com.denggl2.mason.integration.A2aToolManager
+import com.denggl2.mason.tool.INTERNAL_CONVERSATION_ID
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.UUID
@@ -27,6 +28,7 @@ enum class ToolExecutionSource {
 data class ToolExecutionContext(
     val source: ToolExecutionSource,
     val taskRunId: String? = null,
+    val conversationId: String? = null,
     val userConfirmed: Boolean = false,
     val background: Boolean = false,
 )
@@ -137,10 +139,14 @@ class GovernedToolExecutor @Inject constructor(
         } else if (context.background && !profile.backgroundAllowed) {
             ToolResult(success = false, error = "工具不允许后台自动执行：$name")
         } else {
-            val executionArgs = if (name.startsWith("a2a__") && context.taskRunId != null) {
-                args + (A2aToolManager.MASON_TASK_RUN_ID to context.taskRunId)
-            } else {
-                args
+            val executionArgs = buildMap {
+                putAll(args)
+                if (name.startsWith("a2a__") && context.taskRunId != null) {
+                    put(A2aToolManager.MASON_TASK_RUN_ID, context.taskRunId)
+                }
+                if (name in memoryWriteTools && context.conversationId != null) {
+                    put(INTERNAL_CONVERSATION_ID, context.conversationId)
+                }
             }
             executor.execute(name, executionArgs)
         }
@@ -169,6 +175,7 @@ class GovernedToolExecutor @Inject constructor(
 
     private companion object {
         val trustedSources = setOf(ToolExecutionSource.System)
+        val memoryWriteTools = setOf("memory_save", "memory_save_sensitive")
         val backgroundAllowedTools = setOf(
             "notification", "calendar", "get_battery_info", "get_wifi_info", "file_read", "file_write",
         )

@@ -11,6 +11,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import com.denggl2.mason.data.ThemeMode
 import com.denggl2.mason.data.UiPreferences
@@ -19,6 +20,7 @@ import com.denggl2.mason.data.toComposeColor
 import com.denggl2.mason.navigation.MasonNavGraph
 import com.denggl2.mason.integration.McpOAuthCoordinator
 import com.denggl2.mason.tool.BatteryOptimizationTool
+import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.tool.ScreenshotTool
 import com.denggl2.mason.ui.theme.MasonTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -27,6 +29,10 @@ import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    private var notificationConversationId = mutableStateOf<Long?>(null)
+    private var notificationTaskCommand = mutableStateOf<String?>(null)
+    private var notificationArtifactPath = mutableStateOf<String?>(null)
 
     @Inject
     lateinit var batteryOptimizationTool: BatteryOptimizationTool
@@ -42,6 +48,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationConversationId.value = intent.notificationConversationId()
+        notificationTaskCommand.value = intent.notificationTaskCommand()
+        notificationArtifactPath.value = intent.notificationArtifactPath()
         lifecycleScope.launch { mcpOAuthCoordinator.handleCallback(intent?.data) }
         setContent {
             val uiPreferences by uiPreferencesDataStore.preferences.collectAsState(initial = UiPreferences())
@@ -80,6 +89,9 @@ class MainActivity : ComponentActivity() {
             ) {
                 MasonNavGraph(
                     uiPreferences = uiPreferences,
+                    openConversationId = notificationConversationId.value,
+                    notificationTaskCommand = notificationTaskCommand.value,
+                    notificationArtifactPath = notificationArtifactPath.value,
                     onThemeModeChange = { mode ->
                         scope.launch { uiPreferencesDataStore.updateThemeMode(mode) }
                     },
@@ -109,6 +121,9 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        notificationConversationId.value = intent.notificationConversationId()
+        notificationTaskCommand.value = intent.notificationTaskCommand()
+        notificationArtifactPath.value = intent.notificationArtifactPath()
         lifecycleScope.launch { mcpOAuthCoordinator.handleCallback(intent.data) }
     }
 
@@ -122,3 +137,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private fun Intent?.notificationConversationId(): Long? =
+    takeIf { it?.action == NotificationTool.ACTION_OPEN_TASK }
+        ?.getLongExtra(NotificationTool.EXTRA_CONVERSATION_ID, -1L)
+        ?.takeIf { it > 0L }
+
+private fun Intent?.notificationTaskCommand(): String? =
+    takeIf { it?.action == NotificationTool.ACTION_OPEN_TASK }
+        ?.getStringExtra(NotificationTool.EXTRA_TASK_COMMAND)
+        ?.takeIf {
+            it == NotificationTool.TASK_COMMAND_RESUME || it == NotificationTool.TASK_COMMAND_CANCEL
+                || it == NotificationTool.TASK_COMMAND_OPEN_ARTIFACT
+        }
+
+private fun Intent?.notificationArtifactPath(): String? =
+    takeIf { it?.action == NotificationTool.ACTION_OPEN_TASK }
+        ?.getStringExtra(NotificationTool.EXTRA_ARTIFACT_PATH)
+        ?.takeIf { it.isNotBlank() }
