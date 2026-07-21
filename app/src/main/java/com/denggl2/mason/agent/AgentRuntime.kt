@@ -89,22 +89,7 @@ class AgentRuntime @Inject constructor(
     )
 
     fun review(run: TaskRun): AgentReview {
-        val failed = run.steps.firstOrNull { it.status == TaskStepStatus.Failed }
-        return when {
-            run.steps.any { it.status == TaskStepStatus.WaitingForUser } -> AgentReview(
-                AgentReviewDecision.WaitForUser,
-                "任务正在等待用户确认或补充信息",
-            )
-            failed?.retryable == true &&
-                failed.toolCall?.let { ToolPolicy.riskFor(it.function.name) == ToolRiskLevel.Low } == true &&
-                failed.attempt < MAX_ATTEMPTS -> AgentReview(
-                AgentReviewDecision.Retry,
-                "${failed.title} 可以重试",
-                failed.id,
-            )
-            failed != null -> AgentReview(AgentReviewDecision.WaitForUser, failed.error ?: failed.detail)
-            else -> AgentReview(AgentReviewDecision.Complete, "任务步骤已完成并通过检查")
-        }
+        return reviewTaskRun(run, MAX_ATTEMPTS)
     }
 
     fun reviewed(run: TaskRun, review: AgentReview): TaskRun = run.copy(
@@ -135,5 +120,28 @@ class AgentRuntime @Inject constructor(
             TaskStepStatus.Running,
             TaskStepStatus.WaitingForUser,
         )
+    }
+}
+
+internal fun reviewTaskRun(run: TaskRun, maxAttempts: Int = 2): AgentReview {
+    val failed = run.steps.firstOrNull { it.status == TaskStepStatus.Failed }
+    return when {
+        run.steps.any { it.status == TaskStepStatus.WaitingForUser } -> AgentReview(
+            AgentReviewDecision.WaitForUser,
+            "任务正在等待用户确认或补充信息",
+        )
+        failed?.retryable == true &&
+            failed.toolCall?.let { ToolPolicy.riskFor(it.function.name) == ToolRiskLevel.Low } == true &&
+            failed.attempt < maxAttempts -> AgentReview(
+            AgentReviewDecision.Retry,
+            "${failed.title} 可以重试",
+            failed.id,
+        )
+        failed != null -> AgentReview(
+            AgentReviewDecision.WaitForUser,
+            "${failed.error ?: failed.detail}，可重试该步骤或取消任务",
+            failed.id.takeIf { failed.retryable },
+        )
+        else -> AgentReview(AgentReviewDecision.Complete, "任务步骤已完成并通过检查")
     }
 }

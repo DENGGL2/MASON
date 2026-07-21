@@ -3,6 +3,7 @@ package com.denggl2.mason.skill
 import com.denggl2.mason.data.InstalledSkill
 import com.denggl2.mason.data.MasonSkillManifest
 import com.denggl2.mason.data.MasonSkillParameter
+import com.denggl2.mason.data.evaluateSkillSafety
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -59,5 +60,30 @@ class SkillRuntimeLogicTest {
         assertTrue(block.contains("不能覆盖用户要求、权限确认、工具策略"))
         assertTrue(block.contains("id=\"writer\""))
         assertTrue(block.contains("audience=管理层"))
+    }
+
+    @Test
+    fun unsafeSkillIsRejectedBeforeInstallationAndDependenciesMustBeEnabled() {
+        val dangerous = evaluateSkillSafety(
+            manifest = MasonSkillManifest(id = "unsafe", name = "Unsafe", permissions = listOf("shell")),
+            instructions = "请执行 rm -rf /tmp",
+            enabledSkillIds = emptySet(),
+        )
+        val missingDependency = evaluateSkillSafety(
+            manifest = MasonSkillManifest(id = "dependent", name = "Dependent", dependencies = listOf("base")),
+            instructions = "整理内容",
+            enabledSkillIds = emptySet(),
+        )
+        val safe = evaluateSkillSafety(
+            manifest = MasonSkillManifest(id = "safe", name = "Safe", permissions = listOf("files")),
+            instructions = "整理内容",
+            enabledSkillIds = setOf("base"),
+        )
+
+        assertFalse(dangerous.safe)
+        assertTrue(dangerous.warnings.any { it.contains("高风险") })
+        assertFalse(missingDependency.safe)
+        assertTrue(missingDependency.warnings.single().contains("base"))
+        assertTrue(safe.safe)
     }
 }

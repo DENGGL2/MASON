@@ -38,6 +38,8 @@ data class ToolSecurityProfile(
     val risk: ToolRiskLevel,
     val permissions: List<String>,
     val backgroundAllowed: Boolean,
+    val mandatoryApproval: Boolean,
+    val persistentGrantAllowed: Boolean,
 )
 
 @Serializable
@@ -126,7 +128,7 @@ class GovernedToolExecutor @Inject constructor(
     ): ToolResult {
         val startedAt = System.currentTimeMillis()
         val profile = profile(name)
-        val allowed = if (ToolPolicy.requiresMandatoryApproval(name)) {
+        val allowed = if (profile.mandatoryApproval) {
             context.userConfirmed
         } else {
             profile.risk == ToolRiskLevel.Low ||
@@ -166,27 +168,10 @@ class GovernedToolExecutor @Inject constructor(
         return result
     }
 
-    fun profile(name: String): ToolSecurityProfile = ToolSecurityProfile(
-        name = name,
-        risk = ToolPolicy.riskFor(name),
-        permissions = permissions[name].orEmpty(),
-        backgroundAllowed = name in backgroundAllowedTools,
-    )
+    fun profile(name: String): ToolSecurityProfile = ToolPolicy.profileFor(name)
 
     private companion object {
         val trustedSources = setOf(ToolExecutionSource.System)
         val memoryWriteTools = setOf("memory_save", "memory_save_sensitive")
-        val backgroundAllowedTools = setOf(
-            "notification", "calendar", "get_battery_info", "get_wifi_info", "file_read", "file_write",
-        )
-        val permissions = mapOf(
-            "calendar" to listOf("android.permission.READ_CALENDAR", "android.permission.WRITE_CALENDAR"),
-            "location" to listOf("android.permission.ACCESS_FINE_LOCATION"),
-            "contacts" to listOf("android.permission.READ_CONTACTS"),
-            "sms" to listOf("android.permission.SEND_SMS"),
-            "camera" to listOf("android.permission.CAMERA"),
-            "audio_record" to listOf("android.permission.RECORD_AUDIO"),
-            "notification" to listOf("android.permission.POST_NOTIFICATIONS"),
-        )
     }
 }

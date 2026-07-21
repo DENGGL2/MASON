@@ -143,10 +143,14 @@ class MasonModelRouter @Inject constructor(
                 }
             }
         } catch (_: TimeoutCancellationException) {
-            val message = "模型响应超过 ${invocation.timeoutMillis / 1000} 秒，已停止"
+            val message = remoteTimeoutMessage(invocation.timeoutMillis)
             recordStatus(decision, available = false, message = message)
-            emit(ChatResponse.Error(message))
-            return@flow
+            if (decision.fallbackModelId == null) {
+                emit(ChatResponse.Error(message))
+                return@flow
+            }
+            remoteFailed = true
+            remoteError = message
         }
         if (remoteFailed) {
             val fallback = invocation.copy(
@@ -154,12 +158,25 @@ class MasonModelRouter @Inject constructor(
                 attachments = emptyList(),
                 toolsEnabled = false,
             )
+            recordStatus(decision, available = false, message = remoteError.orEmpty())
             emit(ChatResponse.TextChunk("进行中：远程模型失败，已切换到本地模型。\n"))
-            localEngine.invoke(fallback).collect(::emit)
+            var fallbackFailed = false
+            var fallbackError = ""
+            localEngine.invoke(fallback).collect { response ->
+                if (response is ChatResponse.Error) {
+                    fallbackFailed = true
+                    fallbackError = response.message
+                }
+                emit(response)
+            }
             recordStatus(
                 decision.copy(engineId = localEngine.id, modelId = fallback.modelId),
-                true,
-                "远程失败后已启用本地兜底：${remoteError.orEmpty()}",
+                !fallbackFailed,
+                if (fallbackFailed) {
+                    "远程模型失败，本地兜底也不可用：$fallbackError"
+                } else {
+                    "远程失败后已启用本地兜底：${remoteError.orEmpty()}"
+                },
             )
         }
     }
@@ -182,6 +199,9 @@ class MasonModelRouter @Inject constructor(
         ))
     }
 }
+
+internal fun remoteTimeoutMessage(timeoutMillis: Long): String =
+    "模型响应超过 ${timeoutMillis / 1000} 秒，已停止"
 
 internal fun detectModelModality(
     userText: String,

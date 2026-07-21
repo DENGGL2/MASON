@@ -18,6 +18,7 @@ import com.denggl2.mason.data.MasonAutomationStepLog
 import com.denggl2.mason.data.MasonAutomationSpec
 import com.denggl2.mason.data.SkillAutomationStore
 import com.denggl2.mason.agent.GovernedToolExecutor
+import com.denggl2.mason.agent.ToolPolicy
 import com.denggl2.mason.agent.ToolExecutionContext
 import com.denggl2.mason.agent.ToolExecutionSource
 import dagger.hilt.EntryPoint
@@ -86,8 +87,10 @@ class AutomationRunner @Inject constructor(
                         ACTION_TOOL -> {
                             val toolName = action.arguments["tool_name"].orEmpty()
                             check(toolName.isNotBlank()) { "步骤缺少工具名称" }
-                            if (source == SOURCE_SCHEDULE) {
-                                check(toolName in BACKGROUND_SAFE_TOOLS) { "后台不支持 $toolName 工具" }
+                            if (source != SOURCE_MANUAL) {
+                                check(ToolPolicy.allowsBackgroundExecution(toolName)) {
+                                    "后台不支持 $toolName 工具"
+                                }
                             }
                             val args = action.arguments
                                 .filterKeys { it != "tool_name" }
@@ -139,7 +142,18 @@ class AutomationRunner @Inject constructor(
                                 append(action.arguments["prompt"].orEmpty())
                                 if (input.isNotBlank()) append("\n\n输入：\n$input")
                             }
-                            modelGenerator.generate(prompt).content
+                            val output = modelGenerator.generate(prompt).content
+                            val artifact = artifactStore.saveTextArtifact(
+                                fileName = action.arguments["file_name"].orEmpty()
+                                    .let { AutomationWorkflowLogic.interpolate(it, values) }
+                                    .ifBlank { "${skill.manifest.id}-output.md" },
+                                content = output,
+                            )
+                            artifactPath = artifact.path
+                            values["artifact_name"] = artifact.name
+                            values["artifact_path"] = artifact.path
+                            values["skill_output"] = output
+                            "已生成 ${artifact.name}"
                         }
                         "notification", "launch_app" -> {
                             val result = executeTool(
@@ -231,9 +245,6 @@ class AutomationRunner @Inject constructor(
         private const val CONTEXT_CALENDAR = "calendar"
         private val BACKGROUND_ACTIONS = setOf(
             "notification", ACTION_MODEL_ARTIFACT, ACTION_TOOL, ACTION_SKILL,
-        )
-        private val BACKGROUND_SAFE_TOOLS = setOf(
-            "calendar", "location", "network_info", "battery", "get_wifi_info", "get_bluetooth_info",
         )
     }
 

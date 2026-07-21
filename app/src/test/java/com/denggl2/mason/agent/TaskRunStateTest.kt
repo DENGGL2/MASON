@@ -42,6 +42,24 @@ class TaskRunStateTest {
     }
 
     @Test
+    fun restartRecoveryKeepsCheckpointAndMakesRunningStepsResumable() {
+        val checkpoint = AgentExecutionCheckpoint(
+            messages = listOf(ChatMessage(role = "user", content = "生成报告")),
+            round = 1,
+        )
+        val run = createTaskRun("生成报告", now = 100L).copy(agentExecution = checkpoint)
+
+        val recovered = run.recoverAfterProcessRestart(now = 200L)
+
+        assertEquals(TaskRunStatus.WaitingForUser, recovered.status)
+        assertEquals(TaskStepStatus.WaitingForUser, recovered.steps.first().status)
+        assertEquals("应用已重新启动，可继续或取消此任务", recovered.steps.first().detail)
+        assertEquals(checkpoint, recovered.agentExecution)
+        assertEquals(200L, recovered.updatedAt)
+        assertEquals(null, recovered.finishedAt)
+    }
+
+    @Test
     fun taskRunSchemaKeepsRecoveryMetadata() {
         val run = createTaskRun("生成报告").copy(
             conversationId = 42L,
@@ -164,6 +182,19 @@ class TaskRunStateTest {
     }
 
     @Test
+    fun toolPolicyUsesOneProfileForRiskPermissionsAndBackgroundRules() {
+        val location = ToolPolicy.profileFor("location")
+        val remoteAgent = ToolPolicy.profileFor("a2a__wechat__delegate")
+
+        assertEquals(ToolRiskLevel.Medium, location.risk)
+        assertTrue(location.permissions.contains("android.permission.ACCESS_FINE_LOCATION"))
+        assertTrue(location.backgroundAllowed)
+        assertTrue(remoteAgent.mandatoryApproval)
+        assertTrue(!remoteAgent.persistentGrantAllowed)
+        assertTrue(!remoteAgent.backgroundAllowed)
+    }
+
+    @Test
     fun taskRunMarkerPreservesAgentPlanAndReviewCheckpoint() {
         val planned = createTaskRun("整理项目资料").copy(
             agentPlan = AgentPlanState(
@@ -192,5 +223,24 @@ class TaskRunStateTest {
         assertEquals(ToolRiskLevel.High, ToolPolicy.riskFor(riskyCall.function.name))
         assertTrue(TaskStepFactory.toolSteps(listOf(safeCall)).single().retryable)
         assertTrue(TaskStepFactory.toolSteps(listOf(riskyCall)).single().retryable)
+    }
+
+    @Test
+    fun failedRetryableStepWaitsForUserAfterAutomaticRetriesAreExhausted() {
+        val call = ToolCall("read", function = FunctionCall("file_read", "{}"))
+        val failedRun = createTaskRun("读取文件").withSteps(
+            TaskStepFactory.initial("读取文件")
+                .withToolSteps(listOf(call))
+                .updateStep(call.taskStepId(), TaskStepStatus.Failed, "文件暂时不可读")
+                .map { step ->
+                    if (step.id == call.taskStepId()) step.copy(attempt = 2, error = "文件暂时不可读") else step
+                },
+        )
+
+        val review = reviewTaskRun(failedRun)
+
+        assertEquals(AgentReviewDecision.WaitForUser, review.decision)
+        assertEquals(call.taskStepId(), review.retryStepId)
+        assertTrue(review.detail.contains("可重试"))
     }
 }

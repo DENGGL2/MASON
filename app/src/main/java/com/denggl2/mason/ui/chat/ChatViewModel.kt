@@ -1467,11 +1467,22 @@ class ChatViewModel @Inject constructor(
         val runBeforeReview = activeTaskRun?.withSteps(_uiState.value.taskSteps)
         val review = runBeforeReview?.let(agentRuntime::review)
         activeTaskRun = runBeforeReview?.let { agentRuntime.reviewed(it, review ?: return@let it) }
-        val waiting = _uiState.value.taskSteps.any { it.status == TaskStepStatus.WaitingForUser }
+        val waitingForInput = _uiState.value.taskSteps.any { it.status == TaskStepStatus.WaitingForUser }
+        val waitingForRetry = review?.decision == com.denggl2.mason.agent.AgentReviewDecision.WaitForUser &&
+            _uiState.value.taskSteps.none { it.status == TaskStepStatus.WaitingForUser }
+        val waiting = waitingForInput || waitingForRetry
         val finalSteps = if (waiting) {
             _uiState.value.taskSteps
-                .updateStep("review", TaskStepStatus.Completed, review?.detail ?: "等待用户继续")
-                .updateStep("summary", TaskStepStatus.Completed, "已说明需要补充的信息")
+                .updateStep(
+                    "review",
+                    if (waitingForRetry) TaskStepStatus.WaitingForUser else TaskStepStatus.Completed,
+                    review?.detail ?: "等待用户继续",
+                )
+                .updateStep(
+                    "summary",
+                    TaskStepStatus.Completed,
+                    if (waitingForRetry) "已保留失败步骤，等待用户重试或取消" else "已说明需要补充的信息",
+                )
         } else {
             completeOpenTaskSteps(
                 completeTaskStepUnlessFailed(

@@ -15,7 +15,9 @@ import androidx.work.WorkerParameters
 import androidx.core.content.ContextCompat
 import com.denggl2.mason.data.AutomationPreferencesDataStore
 import com.denggl2.mason.data.SkillAutomationStore
-import com.denggl2.mason.tool.ToolExecutor
+import com.denggl2.mason.agent.GovernedToolExecutor
+import com.denggl2.mason.agent.ToolExecutionContext
+import com.denggl2.mason.agent.ToolExecutionSource
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -141,7 +143,11 @@ class AutomationLocationWorker(
         val targetLat = parts.getOrNull(0)?.toDoubleOrNull() ?: return Result.failure()
         val targetLng = parts.getOrNull(1)?.toDoubleOrNull() ?: return Result.failure()
         val radius = parts.getOrNull(2)?.toDoubleOrNull()?.coerceAtLeast(50.0) ?: 200.0
-        val location = entry.toolExecutor().execute("location", mapOf("provider" to "auto"))
+        val location = entry.governedToolExecutor().execute(
+            "location",
+            mapOf("provider" to "auto"),
+            backgroundAutomationContext(),
+        )
         if (!location.success) return Result.retry()
         val lat = location.data["latitude"]?.toDoubleOrNull() ?: return Result.retry()
         val lng = location.data["longitude"]?.toDoubleOrNull() ?: return Result.retry()
@@ -185,7 +191,11 @@ class AutomationEventPollWorker(
                 if (!charging) emptyMap() else mapOf("charging" to "true")
             }
             AutomationScheduler.TRIGGER_WIFI -> {
-                val result = entry.toolExecutor().execute("get_wifi_info", emptyMap())
+                val result = entry.governedToolExecutor().execute(
+                    "get_wifi_info",
+                    emptyMap(),
+                    backgroundAutomationContext(),
+                )
                 if (!result.success) emptyMap() else mapOf("ssid" to result.data["ssid"].orEmpty())
             }
             else -> emptyMap()
@@ -215,5 +225,11 @@ interface AutomationEventEntryPoint {
     fun eventDispatcher(): AutomationEventDispatcher
     fun automationRunner(): AutomationRunner
     fun automationStore(): SkillAutomationStore
-    fun toolExecutor(): ToolExecutor
+    fun governedToolExecutor(): GovernedToolExecutor
 }
+
+private fun backgroundAutomationContext() = ToolExecutionContext(
+    source = ToolExecutionSource.Automation,
+    userConfirmed = true,
+    background = true,
+)

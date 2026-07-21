@@ -55,6 +55,38 @@ data class InstalledSkill(
     val instructions: String,
 )
 
+internal fun evaluateSkillSafety(
+    manifest: MasonSkillManifest,
+    instructions: String,
+    enabledSkillIds: Set<String>,
+): SkillSafetyReport {
+    val warnings = buildList {
+        val unknownPermissions = manifest.permissions
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .filterNot { it in KNOWN_SKILL_PERMISSIONS }
+        if (unknownPermissions.isNotEmpty()) {
+            add("声明了不支持的权限：${unknownPermissions.joinToString()}")
+        }
+        if (manifest.permissions.any { it.equals("shell", true) || it.equals("root", true) }) {
+            add("声明了高风险系统执行权限")
+        }
+        if (instructions.contains(DANGEROUS_SKILL_INSTRUCTION)) {
+            add("说明中包含高风险命令模式")
+        }
+        val missing = manifest.dependencies.filterNot(enabledSkillIds::contains)
+        if (missing.isNotEmpty()) add("缺少已启用依赖：${missing.distinct().joinToString()}")
+    }
+    return SkillSafetyReport(warnings.isEmpty(), warnings)
+}
+
+private val KNOWN_SKILL_PERMISSIONS = setOf(
+    "network", "files", "calendar", "location", "contacts", "sms", "camera", "microphone",
+    "notifications", "clipboard", "shell", "root",
+)
+
+private val DANGEROUS_SKILL_INSTRUCTION = Regex("(?i)(rm -rf|rmdir /s|del /s|curl.+\\|.+sh)")
+
 @Serializable
 data class MasonAutomationTrigger(
     val type: String,
@@ -207,21 +239,14 @@ class SkillAutomationStore @Inject constructor(
     }
 
     suspend fun safetyReport(skillId: String): SkillSafetyReport = withContext(Dispatchers.IO) {
-        val skill = listInstalledSkillsInternal().firstOrNull { it.manifest.id == skillId }
+        val installed = listInstalledSkillsInternal()
+        val skill = installed.firstOrNull { it.manifest.id == skillId }
             ?: return@withContext SkillSafetyReport(false, listOf("Skill 未安装"))
-        val warnings = buildList {
-            if (skill.manifest.permissions.any { it.equals("shell", true) || it.equals("root", true) }) {
-                add("声明了高风险系统执行权限")
-            }
-            if (skill.instructions.contains(Regex("(?i)(rm -rf|rmdir /s|del /s|curl.+\\|.+sh)"))) {
-                add("说明中包含高风险命令模式")
-            }
-            val missing = skill.manifest.dependencies.filter { dependency ->
-                listInstalledSkillsInternal().none { it.manifest.id == dependency && it.manifest.enabled }
-            }
-            if (missing.isNotEmpty()) add("缺少依赖：${missing.joinToString()}")
-        }
-        SkillSafetyReport(warnings.isEmpty(), warnings)
+        evaluateSkillSafety(
+            manifest = skill.manifest,
+            instructions = skill.instructions,
+            enabledSkillIds = installed.filter { it.manifest.enabled }.map { it.manifest.id }.toSet(),
+        )
     }
 
     suspend fun saveAutomation(spec: MasonAutomationSpec): MasonAutomationSpec =
@@ -457,6 +482,33 @@ class SkillAutomationStore @Inject constructor(
             check(selected.any { it.relativePath == entryName }) { "Skill 入口文件不存在：$entryName" }
             val fallbackId = installRoot.substringAfterLast('/').ifBlank { source.repository }
             val skillId = (replaceSkillId ?: archivedManifest?.id ?: fallbackId).toSafeSkillId()
+            val baseManifest = archivedManifest ?: MasonSkillManifest(
+                id = skillId,
+                name = skillEntry.first.let { entry ->
+                    zip.getInputStream(entry).bufferedReader(Charsets.UTF_8).use { reader ->
+                        reader.readText().lineSequence()
+                            .firstOrNull { it.trimStart().startsWith("#") }
+                            ?.trim()?.trimStart('#')?.trim()
+                            ?: skillId
+                    }
+                },
+                description = "",
+            )
+            val instructions = selected.first { it.relativePath == entryName }.let { item ->
+                zip.getInputStream(item.entry).bufferedReader(Charsets.UTF_8).use { reader ->
+                    reader.readText().take(MAX_SKILL_INSTRUCTIONS_CHARS)
+                }
+            }
+            val enabledSkillIds = listInstalledSkillsInternal()
+                .filter { it.manifest.enabled && it.manifest.id != replaceSkillId }
+                .map { it.manifest.id }
+                .toSet()
+            val safety = evaluateSkillSafety(
+                manifest = baseManifest.copy(id = skillId),
+                instructions = instructions,
+                enabledSkillIds = enabledSkillIds,
+            )
+            check(safety.safe) { "Skill 安全检查未通过：${safety.warnings.joinToString()}" }
             val target = File(skillsRoot(), skillId)
             check(replaceSkillId != null || !target.exists()) { "Skill $skillId 已安装，请先处理现有版本" }
             check(target.exists() || target.mkdirs()) { "无法创建 Skill 目录" }
@@ -484,12 +536,6 @@ class SkillAutomationStore @Inject constructor(
                 }
             }
 
-            val baseManifest = archivedManifest ?: MasonSkillManifest(
-                id = skillId,
-                name = File(target, "SKILL.md").readFirstHeading() ?: skillId,
-                description = File(target, "SKILL.md").readFrontMatterValue("description")
-                    ?: File(target, "SKILL.md").readFirstParagraph().orEmpty(),
-            )
             val installedManifest = baseManifest.copy(
                 id = skillId,
                 enabled = true,

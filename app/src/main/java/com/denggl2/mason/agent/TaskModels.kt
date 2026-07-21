@@ -112,51 +112,106 @@ data class ToolApprovalRequest(
 )
 
 object ToolPolicy {
-    private val highRiskTools = setOf(
-        "sms",
-        "file_delete",
-        "file_write",
-        "run_shell",
-        "system_setting",
-        "app_launcher",
-        "app_manager",
-        "alarm",
-        "calendar",
-        "camera",
-        "audio_record",
-        "screenshot",
-        "notification",
-        "memory_save_sensitive",
+    private val rules = mapOf(
+        "sms" to rule(ToolRiskLevel.High, permissions = listOf("android.permission.SEND_SMS")),
+        "file_delete" to rule(ToolRiskLevel.High),
+        "file_write" to rule(ToolRiskLevel.High, backgroundAllowed = true),
+        "run_shell" to rule(ToolRiskLevel.High),
+        "system_setting" to rule(ToolRiskLevel.High),
+        "app_launcher" to rule(ToolRiskLevel.High),
+        "app_manager" to rule(ToolRiskLevel.High),
+        "alarm" to rule(ToolRiskLevel.High),
+        "calendar" to rule(
+            ToolRiskLevel.High,
+            permissions = listOf("android.permission.READ_CALENDAR", "android.permission.WRITE_CALENDAR"),
+            backgroundAllowed = true,
+        ),
+        "camera" to rule(ToolRiskLevel.High, permissions = listOf("android.permission.CAMERA")),
+        "audio_record" to rule(ToolRiskLevel.High, permissions = listOf("android.permission.RECORD_AUDIO")),
+        "screenshot" to rule(ToolRiskLevel.High),
+        "notification" to rule(
+            ToolRiskLevel.High,
+            permissions = listOf("android.permission.POST_NOTIFICATIONS"),
+            backgroundAllowed = true,
+        ),
+        "memory_save_sensitive" to rule(ToolRiskLevel.High, mandatoryApproval = true, persistentGrantAllowed = false),
+        "contacts" to rule(ToolRiskLevel.Medium, permissions = listOf("android.permission.READ_CONTACTS")),
+        "call_log" to rule(ToolRiskLevel.Medium, permissions = listOf("android.permission.READ_CALL_LOG")),
+        "location" to rule(
+            ToolRiskLevel.Medium,
+            permissions = listOf("android.permission.ACCESS_FINE_LOCATION"),
+            backgroundAllowed = true,
+        ),
+        "clipboard" to rule(ToolRiskLevel.Medium),
+        "http_request" to rule(ToolRiskLevel.Medium),
+        "file_read" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
+        "network_info" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
+        "battery" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
+        "get_battery_info" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
+        "get_wifi_info" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
+        "get_bluetooth_info" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
     )
 
-    private val mediumRiskTools = setOf(
-        "contacts",
-        "call_log",
-        "location",
-        "clipboard",
-        "http_request",
-    )
+    fun profileFor(toolName: String): ToolSecurityProfile = when {
+        toolName.startsWith("a2a__") -> rule(
+            ToolRiskLevel.High,
+            mandatoryApproval = true,
+            persistentGrantAllowed = false,
+        )
+        toolName.startsWith("mcp__") -> rule(ToolRiskLevel.High)
+        else -> rules[toolName] ?: rule(ToolRiskLevel.Low)
+    }.toProfile(toolName)
 
-    fun riskFor(toolName: String): ToolRiskLevel = when {
-        toolName.startsWith("mcp__") || toolName.startsWith("a2a__") -> ToolRiskLevel.High
-        toolName in highRiskTools -> ToolRiskLevel.High
-        toolName in mediumRiskTools -> ToolRiskLevel.Medium
-        else -> ToolRiskLevel.Low
-    }
+    fun riskFor(toolName: String): ToolRiskLevel = profileFor(toolName).risk
 
     fun requiresUserApproval(toolName: String): Boolean =
-        riskFor(toolName) != ToolRiskLevel.Low
+        profileFor(toolName).risk != ToolRiskLevel.Low
 
     fun requiresMandatoryApproval(toolName: String): Boolean =
-        toolName.startsWith("a2a__") || toolName == "memory_save_sensitive"
+        profileFor(toolName).mandatoryApproval
 
-    fun canRememberApproval(toolName: String): Boolean = !requiresMandatoryApproval(toolName)
+    fun canRememberApproval(toolName: String): Boolean =
+        profileFor(toolName).persistentGrantAllowed
+
+    fun allowsBackgroundExecution(toolName: String): Boolean =
+        profileFor(toolName).backgroundAllowed
 
     fun approvalReason(toolName: String): String = when (riskFor(toolName)) {
         ToolRiskLevel.High -> "这个操作可能修改手机状态、写入数据、发送消息、打开应用，或捕获敏感信息。"
         ToolRiskLevel.Medium -> "这个操作可能读取隐私数据、位置、剪贴板、联系人，或访问外部网络内容。"
         ToolRiskLevel.Low -> "这个操作主要是只读或低风险。"
     }
+
+    private fun rule(
+        risk: ToolRiskLevel,
+        permissions: List<String> = emptyList(),
+        backgroundAllowed: Boolean = false,
+        mandatoryApproval: Boolean = false,
+        persistentGrantAllowed: Boolean = !mandatoryApproval,
+    ) = ToolCapabilityRule(
+        risk = risk,
+        permissions = permissions,
+        backgroundAllowed = backgroundAllowed,
+        mandatoryApproval = mandatoryApproval,
+        persistentGrantAllowed = persistentGrantAllowed,
+    )
+}
+
+private data class ToolCapabilityRule(
+    val risk: ToolRiskLevel,
+    val permissions: List<String>,
+    val backgroundAllowed: Boolean,
+    val mandatoryApproval: Boolean,
+    val persistentGrantAllowed: Boolean,
+) {
+    fun toProfile(name: String) = ToolSecurityProfile(
+        name = name,
+        risk = risk,
+        permissions = permissions,
+        backgroundAllowed = backgroundAllowed,
+        mandatoryApproval = mandatoryApproval,
+        persistentGrantAllowed = persistentGrantAllowed,
+    )
 }
 
 object TaskStepFactory {
@@ -341,6 +396,24 @@ fun TaskRun.withSteps(nextSteps: List<TaskStep>): TaskRun {
         },
     )
 }
+
+/** Converts an interrupted in-flight task into an explicit user-resumable checkpoint. */
+internal fun TaskRun.recoverAfterProcessRestart(now: Long = System.currentTimeMillis()): TaskRun = copy(
+    status = TaskRunStatus.WaitingForUser,
+    steps = steps.map { step ->
+        if (step.status == TaskStepStatus.Running) {
+            step.copy(
+                status = TaskStepStatus.WaitingForUser,
+                detail = "应用已重新启动，可继续或取消此任务",
+                finishedAt = null,
+            )
+        } else {
+            step
+        }
+    },
+    updatedAt = now,
+    finishedAt = null,
+)
 
 private val terminalStepStatuses = setOf(
     TaskStepStatus.Completed,

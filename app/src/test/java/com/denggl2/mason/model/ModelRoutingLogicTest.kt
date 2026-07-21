@@ -11,6 +11,11 @@ import org.junit.Test
 
 class ModelRoutingLogicTest {
     @Test
+    fun timeoutMessageUsesTheConfiguredTimeout() {
+        assertEquals("模型响应超过 15 秒，已停止", remoteTimeoutMessage(15_000L))
+    }
+
+    @Test
     fun imageRequestDoesNotFallBackToTextWhenImageModelIsMissing() {
         assertEquals(
             ModelModality.ImageGeneration,
