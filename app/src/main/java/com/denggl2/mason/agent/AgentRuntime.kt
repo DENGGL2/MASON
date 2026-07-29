@@ -46,7 +46,11 @@ class AgentRuntime @Inject constructor(
                 )
             } else step
         }
-        return run.copy(status = TaskRunStatus.Running, finishedAt = null).withSteps(steps)
+        return run.copy(
+            status = TaskRunStatus.Running,
+            finishedAt = null,
+            interruptionReason = null,
+        ).withSteps(steps)
     }
 
     fun pause(run: TaskRun): TaskRun = run.withSteps(
@@ -59,7 +63,7 @@ class AgentRuntime @Inject constructor(
                 )
             } else step
         },
-    )
+    ).copy(interruptionReason = TaskInterruptionReason.UserPaused)
 
     fun cancel(run: TaskRun, reason: String = "用户已取消任务"): TaskRun = run.withSteps(
         run.steps.map { step ->
@@ -71,7 +75,7 @@ class AgentRuntime @Inject constructor(
                 )
             } else step
         },
-    )
+    ).copy(interruptionReason = null)
 
     fun retry(run: TaskRun, stepId: String): TaskRun = run.withSteps(
         run.steps.map { step ->

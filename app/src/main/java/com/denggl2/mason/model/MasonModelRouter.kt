@@ -3,12 +3,15 @@ package com.denggl2.mason.model
 import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
+import com.denggl2.mason.data.connection
+import com.denggl2.mason.data.resolvedChatModelRef
+import com.denggl2.mason.data.resolvedImageModelRef
+import com.denggl2.mason.data.resolvedVisionModelRef
 import com.denggl2.mason.data.LocalModelCatalog
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelStore
 import com.denggl2.mason.data.ConversationContextManager
 import com.denggl2.mason.llm.ChatResponse
-import com.denggl2.mason.llm.LiteRtModelEngine
 import com.denggl2.mason.llm.ModelEngineStatus
 import com.denggl2.mason.llm.ModelInvocation
 import com.denggl2.mason.llm.ModelModality
@@ -22,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
 
@@ -30,6 +34,7 @@ data class ModelRouteDecision(
     val modelId: String,
     val modality: ModelModality,
     val reason: String,
+    val connectionId: String? = null,
     val fallbackModelId: String? = null,
 )
 
@@ -43,7 +48,7 @@ class MasonModelRouter @Inject constructor(
     private val configStore: ApiConfigDataStore,
     private val remoteEngine: OpenAiCompatibleModelEngine,
     private val localStore: LocalModelStore,
-    private val localEngine: LiteRtModelEngine,
+    private val localEngines: LocalModelEngineRegistry,
     private val attachmentResolver: ChatAttachmentResolver,
     private val contextManager: ConversationContextManager,
 ) {
@@ -68,34 +73,50 @@ class MasonModelRouter @Inject constructor(
             scopeId = memoryScopeId,
             includeMemory = includeMemory,
         )
-        val localModelId = config.localModel.ifBlank { LocalModelCatalog.gemmaModels.firstOrNull()?.id.orEmpty() }
+        val localModelId = resolveSelectedLocalModelId(config)
+        val selectedLocalEngine = localEngines.engineFor(localModelId)
         val localReady = LocalModelCatalog.get(localModelId)?.let(localStore::stateFor)?.state in setOf(
             LocalModelInstallState.Installed,
             LocalModelInstallState.DeviceMayBeUnsupported,
         )
-        val useLocal = modality == ModelModality.Text && context.attachments.isEmpty() && context.skillId == null &&
-            config.localModelDirectEnabled && localReady
-        val selectedModel = when (modality) {
-            ModelModality.Text -> if (useLocal) localModelId else config.model
-            ModelModality.Vision -> resolveVisionModel(config)
-            ModelModality.ImageGeneration -> config.imageModel
+        val useLocal = shouldUseLocalModel(
+            config = config,
+            modality = modality,
+            userText = context.userText,
+            hasAttachments = context.attachments.isNotEmpty(),
+            hasSkill = context.skillId != null,
+            localReady = localReady,
+            localEngineAvailable = selectedLocalEngine != null,
+        )
+        val remoteRef = when (modality) {
+            ModelModality.Text -> config.resolvedChatModelRef()
+            ModelModality.Vision -> config.resolvedVisionModelRef()
+            ModelModality.ImageGeneration -> config.resolvedImageModelRef()
         }
+        val selectedModel = if (useLocal) localModelId else remoteRef?.modelId.orEmpty()
+        val selectedConnection = remoteRef?.let { config.connection(it.connectionId) }
+        val selectedPreset = selectedConnection?.let { connection ->
+            AiProviderCatalog.getModel(connection.providerId, selectedModel)
+        }
+        val modelSupportsTools = selectedConnection?.toolsSupported == true &&
+            (selectedPreset?.supportsTools != false)
         val decision = ModelRouteDecision(
-            engineId = if (useLocal) localEngine.id else remoteEngine.id,
+            engineId = if (useLocal) selectedLocalEngine?.id.orEmpty() else remoteEngine.id,
             modelId = selectedModel,
             modality = modality,
-            reason = routeReason(modality, useLocal, context.attachments.isNotEmpty()),
-            fallbackModelId = localModelId.takeIf {
-                !useLocal && modality == ModelModality.Text && config.offlineFallbackEnabled && localReady
-            },
+            reason = routeReason(modality, useLocal, context.attachments.isNotEmpty(), config.dynamicLocalRoutingEnabled),
+            connectionId = if (useLocal) null else remoteRef?.connectionId,
+            fallbackModelId = resolveLocalFallbackModelId(config, modality, useLocal, localReady),
         )
         recordStatus(decision, selectedModel.isNotBlank(), if (selectedModel.isBlank()) "未配置对应模型" else "已路由")
         val invocation = ModelInvocation(
             modality = modality,
             messages = preparedMessages,
             modelId = selectedModel,
+            connectionId = decision.connectionId,
             attachments = attachments,
-            toolsEnabled = toolsEnabled && modality == ModelModality.Text,
+            toolsEnabled = toolsEnabled && config.phoneToolsEnabled && modelSupportsTools &&
+                modality == ModelModality.Text && !useLocal,
         )
         val responses = when {
             attachmentResult.isFailure -> {
@@ -112,9 +133,9 @@ class MasonModelRouter @Inject constructor(
         return RoutedModelResponse(decision, responses)
     }
 
-    suspend fun cancelActive() = localEngine.cancelActiveInvocation()
+    suspend fun cancelActive() = localEngines.cancelActive()
 
-    suspend fun releaseLocal() = localEngine.release()
+    suspend fun releaseLocal() = localEngines.releaseAll()
 
     private fun invokeWithFallback(
         invocation: ModelInvocation,
@@ -122,7 +143,15 @@ class MasonModelRouter @Inject constructor(
     ): Flow<ChatResponse> = flow {
         var remoteFailed = false
         var remoteError: String? = null
-        val engine = if (decision.engineId == localEngine.id) localEngine else remoteEngine
+        val engine = if (decision.engineId == remoteEngine.id) {
+            remoteEngine
+        } else {
+            localEngines.engineFor(decision.modelId)
+        }
+        if (engine == null) {
+            emit(ChatResponse.Error("所选本地模型运行时不可用"))
+            return@flow
+        }
         if (!engine.canHandle(invocation)) {
             emit(ChatResponse.Error("所选模型无法处理当前请求"))
             return@flow
@@ -131,7 +160,11 @@ class MasonModelRouter @Inject constructor(
         try {
             withTimeout(invocation.timeoutMillis) {
                 primary.collect { response ->
-                    if (response is ChatResponse.Error && decision.fallbackModelId != null) {
+                    if (
+                        response is ChatResponse.Error &&
+                        decision.fallbackModelId != null &&
+                        isOfflineFailure(response.message)
+                    ) {
                         remoteFailed = true
                         remoteError = response.message
                     } else {
@@ -151,6 +184,18 @@ class MasonModelRouter @Inject constructor(
             }
             remoteFailed = true
             remoteError = message
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            val message = "模型请求失败：${error.message ?: error.javaClass.simpleName}"
+            recordStatus(decision, available = false, message = message)
+            if (decision.fallbackModelId != null && isOfflineFailure(message)) {
+                remoteFailed = true
+                remoteError = message
+            } else {
+                emit(ChatResponse.Error(message))
+                return@flow
+            }
         }
         if (remoteFailed) {
             val fallback = invocation.copy(
@@ -162,7 +207,12 @@ class MasonModelRouter @Inject constructor(
             emit(ChatResponse.TextChunk("进行中：远程模型失败，已切换到本地模型。\n"))
             var fallbackFailed = false
             var fallbackError = ""
-            localEngine.invoke(fallback).collect { response ->
+            val fallbackEngine = localEngines.engineFor(fallback.modelId)
+            if (fallbackEngine == null) {
+                emit(ChatResponse.Error("本地兜底模型运行时不可用"))
+                return@flow
+            }
+            fallbackEngine.invoke(fallback).collect { response ->
                 if (response is ChatResponse.Error) {
                     fallbackFailed = true
                     fallbackError = response.message
@@ -170,7 +220,7 @@ class MasonModelRouter @Inject constructor(
                 emit(response)
             }
             recordStatus(
-                decision.copy(engineId = localEngine.id, modelId = fallback.modelId),
+                decision.copy(engineId = fallbackEngine.id, modelId = fallback.modelId),
                 !fallbackFailed,
                 if (fallbackFailed) {
                     "远程模型失败，本地兜底也不可用：$fallbackError"
@@ -181,7 +231,13 @@ class MasonModelRouter @Inject constructor(
         }
     }
 
-    private fun routeReason(modality: ModelModality, local: Boolean, hasAttachments: Boolean): String = when {
+    private fun routeReason(
+        modality: ModelModality,
+        local: Boolean,
+        hasAttachments: Boolean,
+        dynamicLocalRoutingEnabled: Boolean,
+    ): String = when {
+        local && dynamicLocalRoutingEnabled -> "简单文字请求，按难度动态使用本地模型"
         local -> "用户选择本地直连，且请求仅包含文字"
         modality == ModelModality.Vision -> "检测到图片附件，使用识图模型"
         modality == ModelModality.ImageGeneration -> "检测到生图请求，使用生图模型"
@@ -198,6 +254,73 @@ class MasonModelRouter @Inject constructor(
             message = message,
         ))
     }
+}
+
+internal fun resolveSelectedLocalModelId(config: ApiConfig): String =
+    config.localModel.ifBlank { LocalModelCatalog.models.firstOrNull()?.id.orEmpty() }
+
+internal fun resolveLocalFallbackModelId(
+    config: ApiConfig,
+    modality: ModelModality,
+    useLocalDirect: Boolean,
+    localReady: Boolean,
+): String? = resolveSelectedLocalModelId(config).takeIf {
+    !useLocalDirect && modality == ModelModality.Text && config.offlineFallbackEnabled && localReady
+}
+
+internal fun shouldUseLocalModel(
+    config: ApiConfig,
+    modality: ModelModality,
+    userText: String,
+    hasAttachments: Boolean,
+    hasSkill: Boolean,
+    localReady: Boolean,
+    localEngineAvailable: Boolean,
+): Boolean {
+    if (
+        modality != ModelModality.Text || hasAttachments || hasSkill ||
+        !localReady || !localEngineAvailable
+    ) return false
+    return config.localModelDirectEnabled ||
+        (config.dynamicLocalRoutingEnabled && isSimpleLocalRequest(userText))
+}
+
+internal fun isSimpleLocalRequest(userText: String): Boolean {
+    val text = userText.trim().lowercase()
+    if (text.isBlank() || text.length > 240 || text.lines().size > 4) return false
+    if (isConversationDispatchRequest(text)) return false
+    val remoteOnlyTerms = listOf(
+        "图片", "照片", "截图", "附件", "pdf", "文档", "文件",
+        "手机", "短信", "电话", "联系人", "日历", "闹钟", "相机", "定位", "位置",
+        "蓝牙", "wifi", "wi-fi", "剪贴板", "通知", "应用", "系统设置",
+        "生成图片", "画一张", "生图", "image", "photo", "attachment",
+        "phone", "sms", "call", "contact", "calendar", "alarm", "camera",
+        "location", "bluetooth", "clipboard", "notification",
+    )
+    if (remoteOnlyTerms.any(text::contains)) return false
+    val complexTerms = listOf(
+        "详细分析", "深入分析", "全面比较", "制定方案", "分步骤", "多个步骤",
+        "调研", "检索", "联网", "最新", "实时", "长文", "报告", "代码",
+        "analyze", "research", "compare", "plan", "step by step", "latest", "code",
+    )
+    return complexTerms.none(text::contains)
+}
+
+internal fun isConversationDispatchRequest(text: String): Boolean {
+    val normalized = text.lowercase()
+    val targetTerms = listOf("对话", "会话", "conversation", "chat")
+    val actionTerms = listOf("发到", "发送到", "转到", "转发到", "send to", "forward to")
+    return targetTerms.any(normalized::contains) && actionTerms.any(normalized::contains)
+}
+
+internal fun isOfflineFailure(message: String): Boolean {
+    val normalized = message.lowercase()
+    return listOf(
+        "timeout", "timed out", "unable to resolve host", "failed to connect",
+        "unknownhostexception", "sockettimeoutexception", "connectexception",
+        "connection reset", "connection refused", "network is unreachable",
+        "网络", "超时", "无法连接", "连接失败", "api 错误 502", "api 错误 503", "api 错误 504",
+    ).any(normalized::contains)
 }
 
 internal fun remoteTimeoutMessage(timeoutMillis: Long): String =

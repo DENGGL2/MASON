@@ -1,10 +1,15 @@
 package com.denggl2.mason.automation
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
+import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.BatteryManager
 import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
@@ -74,8 +79,7 @@ class AutomationEventReceiver : BroadcastReceiver() {
                 mapOf("ssid" to wifi?.connectionInfo?.ssid.orEmpty().removeSurrounding("\""))
             }
             AutomationScheduler.TRIGGER_BLUETOOTH -> mapOf(
-                "device" to intent.getParcelableExtra<android.bluetooth.BluetoothDevice>("android.bluetooth.device.extra.DEVICE")
-                    ?.name.orEmpty(),
+                "device" to bluetoothDeviceName(context, intent),
             )
             else -> emptyMap()
         }
@@ -88,6 +92,26 @@ class AutomationEventReceiver : BroadcastReceiver() {
             }
         }
     }
+}
+
+@SuppressLint("MissingPermission")
+private fun bluetoothDeviceName(context: Context, intent: Intent): String {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) !=
+        PackageManager.PERMISSION_GRANTED
+    ) {
+        return ""
+    }
+
+    return runCatching {
+        val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra("android.bluetooth.device.extra.DEVICE", BluetoothDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra("android.bluetooth.device.extra.DEVICE")
+        }
+        device?.name.orEmpty()
+    }.getOrDefault("")
 }
 
 @Singleton

@@ -24,42 +24,42 @@ private fun contentColorFor(background: Color): Color {
     return if (luminance > 0.54) Color(0xFF071015) else Color.White
 }
 
-private fun interactiveAccent(accentColor: Color): Color {
+private fun interactiveAccent(accentColor: Color, darkTheme: Boolean): Color {
     val brightness = (accentColor.red + accentColor.green + accentColor.blue) / 3f
     val spread = maxOf(accentColor.red, accentColor.green, accentColor.blue) -
         minOf(accentColor.red, accentColor.green, accentColor.blue)
     return if (brightness < 0.18f || brightness > 0.92f || spread < 0.08f) {
-        Color(0xFF4FC3F7)
+        if (darkTheme) Color(0xFFE1DED8) else Color(0xFF20201F)
     } else {
         accentColor
     }
 }
 
 private fun darkMasonColorScheme(accentColor: Color) = darkColorScheme(
-    primary = interactiveAccent(accentColor),
-    onPrimary = contentColorFor(interactiveAccent(accentColor)),
-    secondary = Color(0xFF9AD7D0),
-    background = Color(0xFF111419),
-    onBackground = Color(0xFFECEFF3),
-    surface = Color(0xFF191D23),
-    onSurface = Color(0xFFEDEFF2),
-    surfaceVariant = Color(0xFF242A31),
-    onSurfaceVariant = Color(0xFFB3BBC6),
-    outline = Color(0xFF444C57),
+    primary = interactiveAccent(accentColor, darkTheme = true),
+    onPrimary = contentColorFor(interactiveAccent(accentColor, darkTheme = true)),
+    secondary = Color(0xFFBAB7B1),
+    background = Color(0xFF171716),
+    onBackground = Color(0xFFE9E7E1),
+    surface = Color(0xFF1E1E1C),
+    onSurface = Color(0xFFE9E7E1),
+    surfaceVariant = Color(0xFF2A2926),
+    onSurfaceVariant = Color(0xFFC8C5BE),
+    outline = Color(0xFF4A4944),
     error = Color(0xFFFF8A80),
 )
 
 private fun lightMasonColorScheme(accentColor: Color) = lightColorScheme(
-    primary = interactiveAccent(accentColor),
-    onPrimary = contentColorFor(interactiveAccent(accentColor)),
-    secondary = Color(0xFF296D91),
-    background = Color(0xFFF5F6F8),
-    onBackground = Color(0xFF171A1F),
-    surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF171A1F),
-    surfaceVariant = Color(0xFFE9EDF2),
-    onSurfaceVariant = Color(0xFF5F6670),
-    outline = Color(0xFFD0D6DE),
+    primary = interactiveAccent(accentColor, darkTheme = false),
+    onPrimary = contentColorFor(interactiveAccent(accentColor, darkTheme = false)),
+    secondary = Color(0xFF5B5A56),
+    background = Color.White,
+    onBackground = Color(0xFF20201F),
+    surface = Color.White,
+    onSurface = Color(0xFF20201F),
+    surfaceVariant = Color(0xFFF3F4F6),
+    onSurfaceVariant = Color(0xFF6B6D72),
+    outline = Color(0xFFDADCE0),
     error = Color(0xFFD32F2F),
 )
 

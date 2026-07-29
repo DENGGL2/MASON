@@ -5,10 +5,14 @@ import android.content.Context
 import android.content.Intent
 import android.os.Environment
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -30,27 +34,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.EventNote
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Extension
-import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.PowerSettingsNew
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.Delete
@@ -66,6 +63,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -76,13 +74,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -102,6 +101,7 @@ import com.denggl2.mason.data.MasonAutomationTrigger
 import com.denggl2.mason.automation.AutomationWorkflowLogic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -161,17 +161,25 @@ fun CollectionListScreen(
     val automationState by viewModel.automationState.collectAsState()
     val automationCapabilityIssues by viewModel.automationCapabilityIssues.collectAsState()
     val automationPreferences by viewModel.automationPreferences.collectAsState()
-    var query by remember { mutableStateOf("") }
-    var searchActive by remember(kind) { mutableStateOf(false) }
-    var loaded by remember(kind) { mutableStateOf(false) }
-    var entries by remember(kind) { mutableStateOf<List<CollectionEntry>>(emptyList()) }
+    var activeKind by rememberSaveable(kind) { mutableStateOf(kind) }
+    var query by remember(activeKind) { mutableStateOf("") }
+    var searchActive by remember(activeKind) { mutableStateOf(false) }
+    var loaded by remember(activeKind) { mutableStateOf(false) }
+    var entries by remember(activeKind) { mutableStateOf<List<CollectionEntry>>(emptyList()) }
     var previewEntry by remember { mutableStateOf<CollectionEntry?>(null) }
-    var showInstallDialog by remember(kind) { mutableStateOf(false) }
-    var showCreateAutomationDialog by remember(kind) { mutableStateOf(false) }
-    var editingAutomation by remember(kind) { mutableStateOf<MasonAutomationSpec?>(null) }
+    var showInstallDialog by remember(activeKind) { mutableStateOf(false) }
+    var showCreateAutomationDialog by remember(activeKind) { mutableStateOf(false) }
+    var editingAutomation by remember(activeKind) { mutableStateOf<MasonAutomationSpec?>(null) }
     var pendingAutomationRun by remember { mutableStateOf<CollectionEntry?>(null) }
-    LaunchedEffect(kind, automationState.revision) {
-        if (kind == CollectionKind.AUTOMATIONS) viewModel.refreshAutomationCapabilities()
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedArtifactPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var pendingArtifactDeletePaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val scope = rememberCoroutineScope()
+    val localSkillArchivePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.importSkillFromLocalZip(it) }
+    }
+    LaunchedEffect(activeKind, automationState.revision) {
+        if (activeKind == CollectionKind.AUTOMATIONS) viewModel.refreshAutomationCapabilities()
     }
     val filteredEntries = remember(entries, query) {
         val keyword = query.trim()
@@ -184,17 +192,33 @@ fun CollectionListScreen(
             }
         }
     }
+    val visibleArtifactPaths = remember(filteredEntries, activeKind) {
+        if (activeKind == CollectionKind.ARTIFACTS) filteredEntries.map { it.path }.toSet() else emptySet()
+    }
 
-    LaunchedEffect(kind, skillState.revision, automationState.revision) {
+    BackHandler(enabled = selectionMode) {
+        selectedArtifactPaths = emptySet()
+        selectionMode = false
+    }
+
+    fun toggleArtifactSelection(path: String) {
+        selectedArtifactPaths = if (path in selectedArtifactPaths) {
+            selectedArtifactPaths - path
+        } else {
+            selectedArtifactPaths + path
+        }
+    }
+
+    LaunchedEffect(activeKind, skillState.revision, automationState.revision) {
         loaded = false
         entries = withContext(Dispatchers.IO) {
-            loadCollectionEntries(context.applicationContext, kind)
+            loadCollectionEntries(context.applicationContext, activeKind)
         }
         loaded = true
     }
 
     LaunchedEffect(entries, initialPreviewPath) {
-        if (kind != CollectionKind.ARTIFACTS || initialPreviewPath == null) return@LaunchedEffect
+        if (activeKind != CollectionKind.ARTIFACTS || initialPreviewPath == null) return@LaunchedEffect
         previewEntry = entries.firstOrNull { entry ->
             entry.path == initialPreviewPath || entry.previewFile?.absolutePath == initialPreviewPath
         }
@@ -222,14 +246,21 @@ fun CollectionListScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    if (searchActive) {
+                    if (selectionMode) {
+                        Text(
+                            "已选 ${selectedArtifactPaths.size}",
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    } else if (searchActive) {
                         TopBarSearchField(
                             value = query,
                             onValueChange = { query = it },
                         )
                     } else {
                         Text(
-                            kind.title,
+                            "工作台",
                             color = MaterialTheme.colorScheme.onBackground,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -237,7 +268,16 @@ fun CollectionListScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(
+                        onClick = {
+                            if (selectionMode) {
+                                selectedArtifactPaths = emptySet()
+                                selectionMode = false
+                            } else {
+                                onBack()
+                            }
+                        },
+                    ) {
                         Icon(
                             Icons.AutoMirrored.Outlined.ArrowBack,
                             contentDescription = "返回",
@@ -246,33 +286,20 @@ fun CollectionListScreen(
                     }
                 },
                 actions = {
-                    if (kind == CollectionKind.SKILLS || kind == CollectionKind.AUTOMATIONS) {
-                        IconButton(
+                    if (selectionMode) {
+                        TextButton(
                             onClick = {
-                                if (kind == CollectionKind.SKILLS) {
-                                    showInstallDialog = true
-                                } else {
-                                    showCreateAutomationDialog = true
-                                }
-                            },
-                            enabled = if (kind == CollectionKind.SKILLS) {
-                                !skillState.working
-                            } else {
-                                !automationState.working
+                                selectedArtifactPaths = emptySet()
+                                selectionMode = false
                             },
                         ) {
-                            Icon(
-                                Icons.Outlined.Add,
-                                contentDescription = if (kind == CollectionKind.SKILLS) {
-                                    "从 GitHub 安装 Skill"
-                                } else {
-                                    "创建自动化"
-                                },
-                                tint = MaterialTheme.colorScheme.onBackground,
-                            )
+                            Text("取消")
                         }
-                    }
-                    IconButton(
+                        TextButton(onClick = { selectedArtifactPaths = visibleArtifactPaths }) {
+                            Text("全选")
+                        }
+                    } else {
+                        IconButton(
                         onClick = {
                             if (searchActive) {
                                 query = ""
@@ -281,12 +308,13 @@ fun CollectionListScreen(
                                 searchActive = true
                             }
                         },
-                    ) {
-                        Icon(
-                            imageVector = if (searchActive) Icons.Outlined.Close else Icons.Outlined.Search,
-                            contentDescription = if (searchActive) "关闭搜索" else "搜索",
-                            tint = MaterialTheme.colorScheme.onBackground,
-                        )
+                        ) {
+                            Icon(
+                                imageVector = if (searchActive) Icons.Outlined.Close else Icons.Outlined.Search,
+                                contentDescription = if (searchActive) "关闭搜索" else "搜索",
+                                tint = MaterialTheme.colorScheme.onBackground,
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -298,12 +326,28 @@ fun CollectionListScreen(
             )
         },
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 12.dp, vertical = 4.dp),
+                .padding(padding),
+            contentAlignment = Alignment.TopCenter,
         ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 960.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+            WorkbenchTabs(
+                selected = activeKind,
+                onSelect = { selectedKind ->
+                    if (selectedKind != activeKind) {
+                        selectedArtifactPaths = emptySet()
+                        selectionMode = false
+                        activeKind = selectedKind
+                    }
+                },
+            )
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -322,7 +366,7 @@ fun CollectionListScreen(
                     }
                     filteredEntries.isEmpty() -> {
                         Text(
-                            if (entries.isEmpty()) kind.emptyText else "没有匹配结果",
+                            if (entries.isEmpty()) activeKind.emptyText else "没有匹配结果",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 14.sp,
                             modifier = Modifier.padding(top = emptyTopPadding),
@@ -337,8 +381,18 @@ fun CollectionListScreen(
                                 Box(modifier = Modifier.animateItem()) {
                                     CollectionEntryRow(
                                         entry = entry,
-                                        icon = kind.iconFor(entry),
-                                        onPreview = { previewEntry = entry },
+                                        selectionMode = selectionMode,
+                                        selected = entry.path in selectedArtifactPaths,
+                                        onPreview = {
+                                            if (selectionMode) toggleArtifactSelection(entry.path)
+                                            else previewEntry = entry
+                                        },
+                                        onLongClick = {
+                                            if (activeKind == CollectionKind.ARTIFACTS) {
+                                                selectionMode = true
+                                                selectedArtifactPaths = selectedArtifactPaths + entry.path
+                                            }
+                                        },
                                         onOpen = { openEntry(context, entry, edit = false) },
                                         onEdit = {
                                             entry.automation?.let { editingAutomation = it }
@@ -380,7 +434,62 @@ fun CollectionListScreen(
                     }
                 }
             }
+            if (selectionMode) {
+                TextButton(
+                    onClick = { pendingArtifactDeletePaths = selectedArtifactPaths },
+                    enabled = selectedArtifactPaths.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        Icons.Outlined.Delete,
+                        contentDescription = null,
+                        tint = if (selectedArtifactPaths.isNotEmpty()) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            }
+            }
         }
+    }
+
+    if (pendingArtifactDeletePaths.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { pendingArtifactDeletePaths = emptySet() },
+            title = { Text("删除产出？") },
+            text = { Text("将删除 ${pendingArtifactDeletePaths.size} 个文件，删除后不能恢复。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val targets = pendingArtifactDeletePaths
+                        pendingArtifactDeletePaths = emptySet()
+                        scope.launch {
+                            val deletedPaths = withContext(Dispatchers.IO) {
+                                targets.filterTo(mutableSetOf()) { path ->
+                                    val file = File(path)
+                                    file.isFile && file.delete()
+                                }
+                            }
+                            entries = entries.filterNot { it.path in deletedPaths }
+                            selectedArtifactPaths = selectedArtifactPaths - deletedPaths
+                            Toast.makeText(
+                                context,
+                                "已删除 ${deletedPaths.size} 个产出",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    },
+                ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingArtifactDeletePaths = emptySet() }) { Text("取消") }
+            },
+        )
     }
 
     previewEntry?.let { entry ->
@@ -404,6 +513,23 @@ fun CollectionListScreen(
                 showInstallDialog = false
                 viewModel.installSkillFromGitHub(url)
             },
+            onImportLocal = {
+                showInstallDialog = false
+                localSkillArchivePicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
+            },
+        )
+    }
+    skillState.replaceCandidate?.let { candidate ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearSkillReplaceCandidate,
+            title = { Text("Skill 已存在") },
+            text = { Text("${candidate.name} 与已安装 Skill 同名。替换会保留旧版本直到新版本发布成功。") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.importSkillFromLocalZip(candidate.uri, replaceConfirmed = true) }) {
+                    Text("确认替换")
+                }
+            },
+            dismissButton = { TextButton(onClick = viewModel::clearSkillReplaceCandidate) { Text("取消") } },
         )
     }
     if (showCreateAutomationDialog) {
@@ -502,12 +628,14 @@ private fun TopBarSearchField(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun CollectionEntryRow(
     entry: CollectionEntry,
-    icon: ImageVector,
+    selectionMode: Boolean,
+    selected: Boolean,
     onPreview: () -> Unit,
+    onLongClick: () -> Unit,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
     onShare: () -> Unit,
@@ -522,32 +650,45 @@ private fun CollectionEntryRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(collectionGlassBrush())
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+            .combinedClickable(
+                onClick = onPreview,
+                onLongClick = onLongClick,
+            )
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                else Color.Transparent,
                 RoundedCornerShape(8.dp),
             )
-            .clickable(onClick = onPreview)
-            .padding(horizontal = 11.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(28.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp),
-                )
+            if (selectionMode) {
+                Box(
+                    modifier = Modifier
+                        .size(19.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                        )
+                        .border(
+                            1.dp,
+                            if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.46f),
+                            CircleShape,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (selected) {
+                        Icon(
+                            Icons.Outlined.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.width(9.dp))
             }
-
-            Spacer(Modifier.width(9.dp))
-
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     entry.name,
@@ -558,15 +699,17 @@ private fun CollectionEntryRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(3.dp))
-                Text(
-                    entry.summary,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(3.dp))
+                if (entry.kind != CollectionKind.ARTIFACTS) {
+                    Text(
+                        entry.summary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                }
                 Text(
                     "${entry.typeLabel} · ${entry.sourceLabel} · ${formatModifiedTime(entry.modifiedAt)} · ${entry.sizeLabel}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.70f),
@@ -586,75 +729,48 @@ private fun CollectionEntryRow(
                     )
                 }
             }
+            if (onToggleAutomation != null) {
+                Switch(
+                    checked = entry.automationEnabled == true,
+                    onCheckedChange = { onToggleAutomation() },
+                )
+            }
         }
 
-        Spacer(Modifier.height(6.dp))
+    }
+}
 
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            EntryActionChip(
-                label = "预览",
-                icon = Icons.Outlined.Visibility,
-                onClick = onPreview,
-            )
-            EntryActionChip(
-                label = if (entry.kind == CollectionKind.ARTIFACTS || entry.automation != null) "编辑" else "打开",
-                icon = if (entry.kind == CollectionKind.ARTIFACTS || entry.automation != null) {
-                    Icons.Outlined.Edit
-                } else {
-                    Icons.AutoMirrored.Outlined.OpenInNew
-                },
-                onClick = if (entry.kind == CollectionKind.ARTIFACTS || entry.automation != null) onEdit else onOpen,
-            )
-            if (!entry.isDirectory) {
-                EntryActionChip(
-                    label = "分享",
-                    icon = Icons.Outlined.Share,
-                    onClick = onShare,
+@Composable
+private fun WorkbenchTabs(
+    selected: CollectionKind,
+    onSelect: (CollectionKind) -> Unit,
+) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        listOf(
+            CollectionKind.ARTIFACTS,
+            CollectionKind.AUTOMATIONS,
+            CollectionKind.SKILLS,
+        ).forEach { item ->
+            val active = item == selected
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onSelect(item) }
+                    .padding(vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    item.title,
+                    color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 14.sp,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
                 )
-            }
-            if (onToggleSkill != null) {
-                EntryActionChip(
-                    label = if (entry.skillEnabled == true) "停用" else "启用",
-                    icon = Icons.Outlined.PowerSettingsNew,
-                    onClick = onToggleSkill,
-                )
-            }
-            if (onUpdateSkill != null) {
-                EntryActionChip(
-                    label = "更新",
-                    icon = Icons.Outlined.Refresh,
-                    onClick = onUpdateSkill,
-                )
-            }
-            if (onArchiveSkill != null) {
-                EntryActionChip(
-                    label = "卸载",
-                    icon = Icons.Outlined.Delete,
-                    onClick = onArchiveSkill,
-                )
-            }
-            if (onRunAutomation != null) {
-                EntryActionChip(
-                    label = "运行",
-                    icon = Icons.Outlined.PlayArrow,
-                    onClick = onRunAutomation,
-                )
-            }
-            if (onShowAutomationLogs != null) {
-                EntryActionChip(
-                    label = "日志",
-                    icon = Icons.Outlined.History,
-                    onClick = onShowAutomationLogs,
-                )
-            }
-            if (onToggleAutomation != null) {
-                EntryActionChip(
-                    label = if (entry.automationEnabled == true) "停用" else "启用",
-                    icon = Icons.Outlined.PowerSettingsNew,
-                    onClick = onToggleAutomation,
+                Spacer(Modifier.height(7.dp))
+                Box(
+                    modifier = Modifier
+                        .width(34.dp)
+                        .height(2.dp)
+                        .background(if (active) MaterialTheme.colorScheme.onSurface else Color.Transparent),
                 )
             }
         }
@@ -666,6 +782,7 @@ private fun InstallSkillDialog(
     working: Boolean,
     onDismiss: () -> Unit,
     onInstall: (String) -> Unit,
+    onImportLocal: () -> Unit,
 ) {
     var url by remember { mutableStateOf("") }
     AlertDialog(
@@ -691,8 +808,9 @@ private fun InstallSkillDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !working) {
-                Text("取消")
+            Row {
+                TextButton(onClick = onImportLocal, enabled = !working) { Text("导入本地 ZIP") }
+                TextButton(onClick = onDismiss, enabled = !working) { Text("取消") }
             }
         },
     )
@@ -1338,44 +1456,6 @@ private fun AutomationLogsDialog(
 private fun collectionGlassBrush(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)
 
 @Composable
-private fun EntryActionChip(
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .height(27.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
-                RoundedCornerShape(8.dp),
-            )
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.44f))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.size(13.dp),
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            label,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
 private fun EntryPreviewDialog(
     entry: CollectionEntry,
     onDismiss: () -> Unit,
@@ -1458,15 +1538,6 @@ private fun EntryPreviewDialog(
             }
         },
     )
-}
-
-private fun CollectionKind.iconFor(entry: CollectionEntry): ImageVector {
-    if (entry.isDirectory) return Icons.Outlined.Folder
-    return when (this) {
-        CollectionKind.ARTIFACTS -> Icons.Outlined.Description
-        CollectionKind.SKILLS -> Icons.Outlined.Extension
-        CollectionKind.AUTOMATIONS -> Icons.AutoMirrored.Outlined.EventNote
-    }
 }
 
 private fun loadCollectionEntries(context: Context, kind: CollectionKind): List<CollectionEntry> {
@@ -1738,7 +1809,10 @@ private fun openEntry(context: Context, entry: CollectionEntry, edit: Boolean) {
     }
 
     runCatching {
-        context.startActivity(Intent.createChooser(intent, if (edit) "选择编辑应用" else "选择打开应用"))
+        val chooser = Intent.createChooser(intent, if (edit) "选择编辑应用" else "选择打开应用").apply {
+            putExtra("android.intent.extra.AUTO_LAUNCH_SINGLE_CHOICE", false)
+        }
+        context.startActivity(chooser)
     }.onFailure { error ->
         if (error is ActivityNotFoundException) {
             Toast.makeText(context, "没有找到可用应用", Toast.LENGTH_SHORT).show()

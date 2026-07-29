@@ -19,6 +19,10 @@ import kotlinx.coroutines.launch
 @HiltAndroidApp
 class MasonApp : Application() {
 
+    private companion object {
+        const val LEGACY_FAKE_ISLAND_CHANNEL_ID = "mason_island_notification"
+    }
+
     @Inject
     lateinit var crashGuard: CrashGuard
 
@@ -49,6 +53,7 @@ class MasonApp : Application() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NotificationManager::class.java)
+            nm.deleteNotificationChannel(LEGACY_FAKE_ISLAND_CHANNEL_ID)
             nm.createNotificationChannel(
                 NotificationChannel(
                     NotificationTool.CHANNEL_ID,
@@ -60,11 +65,11 @@ class MasonApp : Application() {
             )
             nm.createNotificationChannel(
                 NotificationChannel(
-                    NotificationTool.ISLAND_CHANNEL_ID,
-                    NotificationTool.ISLAND_CHANNEL_NAME,
-                    NotificationManager.IMPORTANCE_HIGH,
+                    NotificationTool.LIVE_UPDATE_CHANNEL_ID,
+                    "Mason 任务实时状态",
+                    NotificationManager.IMPORTANCE_DEFAULT,
                 ).apply {
-                    description = "Mason 的高优先级通知岛提醒"
+                    description = "用于 Android 16 的任务实时通知"
                 },
             )
         }

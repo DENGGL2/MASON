@@ -22,6 +22,55 @@ class AiModelRepository @Inject constructor() {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    suspend fun fetchModels(
+        apiUrl: String,
+        apiKey: String,
+        workspaceId: String = "",
+    ): Result<List<AiModelPreset>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val normalizedBase = apiUrl.trim().trimEnd('/')
+            val modelsUrl = if (normalizedBase.endsWith("/models")) {
+                normalizedBase
+            } else {
+                "$normalizedBase/models"
+            }
+            val request = Request.Builder()
+                .url(modelsUrl)
+                .apply {
+                    if (apiKey.isNotBlank()) addHeader("Authorization", "Bearer $apiKey")
+                    if (workspaceId.isNotBlank()) addHeader("X-DashScope-WorkSpace", workspaceId)
+                }
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    error("服务商返回 ${response.code}: ${body.take(160)}")
+                }
+                val root = json.parseToJsonElement(body).jsonObject
+                root["data"]
+                    ?.jsonArray
+                    .orEmpty()
+                    .mapNotNull { element ->
+                        val item = element.jsonObject
+                        val id = item["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                        val name = item["name"]?.jsonPrimitive?.contentOrNull
+                            ?: id.substringAfterLast('/')
+                        AiModelPreset(
+                            id = id,
+                            name = name,
+                            description = "远程接口返回的模型",
+                            isFree = id.endsWith(":free", ignoreCase = true),
+                            supportsVision = true,
+                            supportsImageGeneration = true,
+                        )
+                    }
+                    .distinctBy(AiModelPreset::id)
+                    .sortedBy { it.name.lowercase() }
+            }
+        }
+    }
+
     suspend fun fetchOpenRouterFreeModels(apiKey: String): Result<List<AiModelPreset>> =
         withContext(Dispatchers.IO) {
             runCatching {

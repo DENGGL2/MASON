@@ -116,13 +116,15 @@ class ChatClient @Inject constructor(
         messages: List<ChatMessage>,
         toolsEnabled: Boolean? = null,
         modelOverride: String? = null,
+        connectionIdOverride: String? = null,
         attachments: List<ModelAttachment> = emptyList(),
     ): Flow<ChatResponse> = flow {
-        val apiUrl = configProvider.getApiUrl()
-        val apiKey = configProvider.getApiKey()
-        val model = modelOverride?.takeIf(String::isNotBlank) ?: configProvider.getModel()
-        val resolvedToolsEnabled = toolsEnabled ?: configProvider.getToolsEnabled()
-        val requiresApiKey = configProvider.requiresApiKey()
+        val connection = configProvider.resolve(connectionIdOverride)
+        val apiUrl = connection.apiUrl
+        val apiKey = connection.apiKey
+        val model = modelOverride?.takeIf(String::isNotBlank) ?: connection.model
+        val resolvedToolsEnabled = toolsEnabled ?: connection.toolsEnabled
+        val requiresApiKey = connection.requiresApiKey
 
         if (apiKey.isBlank() && requiresApiKey) {
             emit(ChatResponse.Error("请先在设置中配置 API Key"))
@@ -140,12 +142,12 @@ class ChatClient @Inject constructor(
         )
 
         var response = withContext(Dispatchers.IO) {
-            executeTestRequest(apiUrl, apiKey, request)
+            executeTestRequest(apiUrl, apiKey, request, connection.additionalHeaders)
         }
         if (response.code == 400 && request.tool_choice != null) {
             response.close()
             response = withContext(Dispatchers.IO) {
-                executeTestRequest(apiUrl, apiKey, request.copy(tool_choice = null))
+                executeTestRequest(apiUrl, apiKey, request.copy(tool_choice = null), connection.additionalHeaders)
             }
         }
 
@@ -200,9 +202,14 @@ class ChatClient @Inject constructor(
         }
     }
 
-    fun generateImage(prompt: String, modelOverride: String): Flow<ChatResponse> = flow {
-        val apiUrl = configProvider.getApiUrl()
-        val apiKey = configProvider.getApiKey()
+    fun generateImage(
+        prompt: String,
+        modelOverride: String,
+        connectionIdOverride: String? = null,
+    ): Flow<ChatResponse> = flow {
+        val connection = configProvider.resolve(connectionIdOverride)
+        val apiUrl = connection.apiUrl
+        val apiKey = connection.apiKey
         if (prompt.isBlank()) {
             emit(ChatResponse.Error("生图提示词不能为空"))
             return@flow
@@ -211,7 +218,7 @@ class ChatClient @Inject constructor(
             emit(ChatResponse.Error("没有配置生图模型"))
             return@flow
         }
-        if (apiKey.isBlank() && configProvider.requiresApiKey()) {
+        if (apiKey.isBlank() && connection.requiresApiKey) {
             emit(ChatResponse.Error("请先在设置中配置 API Key"))
             return@flow
         }
@@ -221,7 +228,12 @@ class ChatClient @Inject constructor(
             put("prompt", kotlinx.serialization.json.JsonPrimitive(prompt))
             put("n", kotlinx.serialization.json.JsonPrimitive(1))
         }
-        val request = buildAuthorizedRequest(endpoint, apiKey, json.encodeToString(JsonObject.serializer(), payload))
+        val request = buildAuthorizedRequest(
+            endpoint,
+            apiKey,
+            json.encodeToString(JsonObject.serializer(), payload),
+            connection.additionalHeaders,
+        )
         val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
         response.use {
             val body = it.body?.string().orEmpty()
@@ -321,6 +333,7 @@ class ChatClient @Inject constructor(
         imageModel: String = "",
         requiresApiKey: Boolean = true,
         testTools: Boolean = true,
+        additionalHeaders: Map<String, String> = emptyMap(),
     ): ApiTestResult {
         if (apiUrl.isBlank()) return ApiTestResult(false, "请填写 API 地址")
         if (model.isBlank()) return ApiTestResult(false, "请填写模型名称")
@@ -341,7 +354,7 @@ class ChatClient @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             runCatching {
-                executeTestRequest(apiUrl, apiKey, textRequest).use { response ->
+                executeTestRequest(apiUrl, apiKey, textRequest, additionalHeaders).use { response ->
                     val responseBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
                         val message = "API 错误 ${response.code}: ${responseBody.take(240)}"
@@ -368,8 +381,8 @@ class ChatClient @Inject constructor(
                     val textMessage = if (content.isNullOrBlank()) "连接成功" else "连接成功：${content.take(80)}"
                     val capabilities = mutableListOf(
                         ApiCapabilityCheck(label = "聊天", success = true),
-                        probeVisionCapability(apiUrl, apiKey, visionModel.ifBlank { model }),
-                        probeImageCapability(apiUrl, apiKey, imageModel),
+                        probeVisionCapability(apiUrl, apiKey, visionModel.ifBlank { model }, additionalHeaders),
+                        probeImageCapability(apiUrl, apiKey, imageModel, additionalHeaders),
                     )
                     if (!testTools) {
                         return@use ApiTestResult(
@@ -379,7 +392,7 @@ class ChatClient @Inject constructor(
                         )
                     }
 
-                    val probe = probeToolCalling(apiUrl, apiKey, model)
+                    val probe = probeToolCalling(apiUrl, apiKey, model, additionalHeaders)
                     capabilities += ApiCapabilityCheck(
                         label = "工具调用",
                         success = probe.available,
@@ -407,6 +420,7 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         model: String,
+        additionalHeaders: Map<String, String>,
     ): ApiCapabilityCheck {
         val request = ChatRequest(
             model = model,
@@ -430,7 +444,7 @@ class ChatClient @Inject constructor(
             stream = false,
         )
         return runCatching {
-            executeTestRequest(apiUrl, apiKey, request).use { response ->
+            executeTestRequest(apiUrl, apiKey, request, additionalHeaders).use { response ->
                 val body = response.body?.string().orEmpty()
                 if (response.isSuccessful) {
                     ApiCapabilityCheck(label = "识图", success = true)
@@ -447,6 +461,7 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         model: String,
+        additionalHeaders: Map<String, String>,
     ): ApiCapabilityCheck {
         if (model.isBlank()) return ApiCapabilityCheck(label = "生图", success = false, detail = "未配置模型")
         val payload = kotlinx.serialization.json.buildJsonObject {
@@ -459,6 +474,7 @@ class ChatClient @Inject constructor(
                 normalizeImagesUrl(apiUrl),
                 apiKey,
                 json.encodeToString(JsonObject.serializer(), payload),
+                additionalHeaders,
             ).let(client::newCall).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 val hasImage = runCatching {
@@ -479,16 +495,23 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         request: ChatRequest,
+        additionalHeaders: Map<String, String> = emptyMap(),
     ) = client.newCall(
         buildRequest(
             apiUrl,
             apiKey,
             json.encodeToString(ChatRequest.serializer(), request)
                 .toRequestBody("application/json".toMediaType()),
+            additionalHeaders,
         ),
     ).execute()
 
-    private fun probeToolCalling(apiUrl: String, apiKey: String, model: String): ToolProbeResult {
+    private fun probeToolCalling(
+        apiUrl: String,
+        apiKey: String,
+        model: String,
+        additionalHeaders: Map<String, String>,
+    ): ToolProbeResult {
         val baseRequest = ChatRequest(
             model = model,
             messages = listOf(
@@ -504,7 +527,12 @@ class ChatClient @Inject constructor(
         )
         var lastFailure = "中转站或模型未返回 function calling"
         for (toolChoice in listOf("auto", null)) {
-            executeTestRequest(apiUrl, apiKey, baseRequest.copy(tool_choice = toolChoice)).use { response ->
+            executeTestRequest(
+                apiUrl,
+                apiKey,
+                baseRequest.copy(tool_choice = toolChoice),
+                additionalHeaders,
+            ).use { response ->
                 val body = response.body?.string().orEmpty()
                 if (response.isSuccessful && CONNECTION_PROBE_TOOL in responseToolNames(body)) {
                     return ToolProbeResult(available = true)
@@ -566,16 +594,17 @@ class ChatClient @Inject constructor(
             append("你可以在用户授权范围内调用手机工具获取设备、系统、网络和应用信息。")
             append("当用户询问设备配置、硬件状态、系统设置或性能问题时，优先调用合适工具获取真实数据。")
             append("拿到工具结果后，用简洁、通俗、可执行的中文回答。")
-            append("回答需要适配 Mason 的工作流界面：")
-            append("可以使用“思考：”“进行中：”“引导：”“最终总结：”这些可见小节。")
-            append("“思考”只写一句可见判断或计划，不输出隐藏推理过程。")
-            append("需要用户选择、授权或确认风险时，用“引导”给出 2 到 3 个清晰选项。")
+            append("回答第一段直接给出结论或当前最重要的判断，再补充必要依据和操作。")
+            append("比较方案、预算、规格、重复字段或其他二维结构化信息时，优先使用标准 Markdown 表格。")
+            append("不要在正文中输出“思考”“进行中”“最后总结”“最终总结”等流程标签；思考和工具状态由 Mason 界面单独展示。")
+            append("需要用户选择、授权或确认风险时，直接说明原因并给出 2 到 3 个清晰选项。")
             append("如果工具列表中存在 skill__activate，且用户任务明确匹配某个 Skill，先调用它获取受控任务方法；普通问答不要调用。")
             append("Skill 返回 needs_input 时，只询问 missing_parameters，不要猜测；返回 activated 后按 instructions 完成任务，且不能绕过工具确认。")
             append("只有用户明确要求记住，或信息明显是可跨任务复用的长期偏好时，才调用 memory_save；当前状态、临时安排、推测和一次性内容不要保存。")
             append("用户个人偏好使用 GLOBAL 记忆；当前项目的技术栈、约定和项目事实使用 PROJECT 记忆并提供稳定 project_id。")
             append("姓名、身份、地址、账号、支付或收款信息必须调用 memory_save_sensitive，不能用普通记忆工具绕过确认。工具未成功时不得声称已经记住。")
-            append("任务完成后用“最终总结”收束，优先说明结果、文件、下一步。")
+            append("用户明确要求把总结或消息发送到另一个已有对话并让其继续处理时，调用 conversation_dispatch；目标不明确时先询问，工具未成功时不得声称已经发送。")
+            append("任务完成后直接回复结果，不要为了收束而重复一遍总结；有文件或下一步时自然说明即可。")
             append("当用户要求生成文档、代码、报告、配置或其他文件时，必须输出一个带 filename=\"相对路径/文件名.扩展名\" 的 fenced code block，便于 Mason 自动保存为产出。")
             append("文件代码块示例：```markdown filename=\"notes/summary.md\"。不要把普通解释性回答伪装成文件。")
         },
@@ -669,6 +698,7 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         body: okhttp3.RequestBody,
+        additionalHeaders: Map<String, String> = emptyMap(),
     ): Request {
         val normalizedUrl = normalizeChatCompletionsUrl(apiUrl)
         val lowerUrl = normalizedUrl.lowercase()
@@ -688,6 +718,9 @@ class ChatClient @Inject constructor(
                 }
                 if ("xiaomimimo.com" in lowerUrl) {
                     addHeader("User-Agent", "Mason Android")
+                }
+                additionalHeaders.forEach { (name, value) ->
+                    if (name.isNotBlank() && value.isNotBlank()) addHeader(name, value)
                 }
             }
             .addHeader("Content-Type", "application/json")
@@ -713,7 +746,12 @@ class ChatClient @Inject constructor(
         }
     }
 
-    private fun buildAuthorizedRequest(url: String, apiKey: String, body: String): Request {
+    private fun buildAuthorizedRequest(
+        url: String,
+        apiKey: String,
+        body: String,
+        additionalHeaders: Map<String, String> = emptyMap(),
+    ): Request {
         val lowerUrl = url.lowercase()
         return Request.Builder()
             .url(url)
@@ -725,6 +763,9 @@ class ChatClient @Inject constructor(
                 if ("openrouter.ai" in lowerUrl) {
                     addHeader("HTTP-Referer", "https://github.com/DENGGL2/MASON")
                     addHeader("X-Title", "Mason")
+                }
+                additionalHeaders.forEach { (name, value) ->
+                    if (name.isNotBlank() && value.isNotBlank()) addHeader(name, value)
                 }
             }
             .addHeader("Content-Type", "application/json")

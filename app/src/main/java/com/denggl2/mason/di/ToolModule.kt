@@ -12,6 +12,7 @@ import com.denggl2.mason.tool.CallLogTool
 import com.denggl2.mason.tool.CameraTool
 import com.denggl2.mason.tool.ClipboardTool
 import com.denggl2.mason.tool.ContactsTool
+import com.denggl2.mason.tool.ConversationDispatchTool
 import com.denggl2.mason.tool.CpuTool
 import com.denggl2.mason.tool.DeviceInfoTool
 import com.denggl2.mason.tool.DnsLookupTool
@@ -82,6 +83,7 @@ object ToolModule {
         calendarTool: CalendarTool,
         alarmTool: AlarmTool,
         contactsTool: ContactsTool,
+        conversationDispatchTool: ConversationDispatchTool,
         smsTool: SmsTool,
         callLogTool: CallLogTool,
         appManagerTool: AppManagerTool,
@@ -122,6 +124,7 @@ object ToolModule {
                 calendarTool,
                 alarmTool,
                 contactsTool,
+                conversationDispatchTool,
                 smsTool,
                 callLogTool,
                 appManagerTool,

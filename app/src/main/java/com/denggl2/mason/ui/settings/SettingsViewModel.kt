@@ -10,6 +10,10 @@ import com.denggl2.mason.crashguard.data.CrashDao
 import com.denggl2.mason.automation.AutomationScheduler
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
+import com.denggl2.mason.data.ApiConnection
+import com.denggl2.mason.data.connectionIdForProvider
+import com.denggl2.mason.data.connectionForProvider
+import com.denggl2.mason.data.saveConnection
 import com.denggl2.mason.data.AutomationPreferences
 import com.denggl2.mason.data.AutomationPreferencesDataStore
 import com.denggl2.mason.data.AiProviderCatalog
@@ -33,11 +37,11 @@ import com.denggl2.mason.data.UserMemoryType
 import com.denggl2.mason.llm.ChatClient
 import com.denggl2.mason.llm.ApiCapabilityCheck
 import com.denggl2.mason.llm.ChatResponse
-import com.denggl2.mason.llm.LiteRtModelEngine
 import com.denggl2.mason.llm.ModelInvocation
 import com.denggl2.mason.llm.ModelModality
 import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.agent.ToolGrantStore
+import com.denggl2.mason.model.LocalModelEngineRegistry
 import com.denggl2.mason.sync.SyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -65,6 +69,7 @@ data class ApiTestUiState(
 
 data class ModelRefreshUiState(
     val isRefreshing: Boolean = false,
+    val providerId: String? = null,
     val models: List<AiModelPreset> = emptyList(),
     val message: String? = null,
     val success: Boolean? = null,
@@ -102,7 +107,7 @@ class SettingsViewModel @Inject constructor(
     private val officialChannelStore: OfficialChannelPreferencesDataStore,
     private val localModelStore: LocalModelStore,
     private val localModelDownloadCoordinator: LocalModelDownloadCoordinator,
-    private val liteRtModelEngine: LiteRtModelEngine,
+    private val localModelEngines: LocalModelEngineRegistry,
     private val automationPreferencesStore: AutomationPreferencesDataStore,
     private val automationScheduler: AutomationScheduler,
     private val toolGrantStore: ToolGrantStore,
@@ -159,6 +164,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun saveConnection(connection: ApiConnection) {
+        viewModelScope.launch {
+            configDataStore.updateConfig(config.value.saveConnection(connection))
+        }
+    }
+
     fun revokeToolGrant(toolName: String) {
         toolGrantStore.revoke(toolName)
         _alwaysAllowedTools.value = toolGrantStore.listAlwaysAllowed()
@@ -191,7 +202,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun refreshLocalModelStates() {
-        _localModelStates.value = localModelStore.states(LocalModelCatalog.gemmaModels)
+        _localModelStates.value = localModelStore.states(LocalModelCatalog.models)
     }
 
     private fun refreshLocalModelDownloadStates() {
@@ -227,7 +238,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 localModelDownloadCoordinator.cancelAndJoin(modelId)
-                liteRtModelEngine.release()
+                localModelEngines.release(modelId)
                 localModelStore.deleteModel(model)
                 if (!localModelDownloadCoordinator.isAnyDownloadActive()) {
                     LocalModelDownloadService.clearNotification(context)
@@ -236,7 +247,7 @@ class SettingsViewModel @Inject constructor(
                 refreshLocalModelDownloadStates()
                 val currentConfig = config.value
                 if (currentConfig.localModel == modelId) {
-                    val replacement = LocalModelCatalog.gemmaModels.firstOrNull { candidate ->
+                    val replacement = LocalModelCatalog.models.firstOrNull { candidate ->
                         localModelStore.stateFor(candidate).installed
                     }
                     configDataStore.updateConfig(
@@ -285,7 +296,7 @@ class SettingsViewModel @Inject constructor(
             LocalModelInstallState.Installed,
             LocalModelInstallState.DeviceMayBeUnsupported -> null
             LocalModelInstallState.FileMissing -> "模型文件异常，请重新导入 ${model.name}"
-            LocalModelInstallState.NotInstalled -> "请先导入 ${model.name} 的 LiteRT-LM 模型文件"
+            LocalModelInstallState.NotInstalled -> "请先导入 ${model.name} 的 ${model.runtime} 模型文件"
         }
         if (unavailable != null) {
             _localModelTestState.value = LocalModelTestUiState(
@@ -302,7 +313,7 @@ class SettingsViewModel @Inject constructor(
                 isTesting = true,
                 message = "正在测试本地模型...",
             )
-            val runtimeStatus = liteRtModelEngine.runtimeStatus()
+            val runtimeStatus = localModelEngines.runtimeStatus(modelId)
             if (!runtimeStatus.available) {
                 _localModelTestState.value = LocalModelTestUiState(
                     modelId = modelId,
@@ -314,27 +325,35 @@ class SettingsViewModel @Inject constructor(
 
             var text = ""
             var error: String? = null
-            liteRtModelEngine.invoke(
-                ModelInvocation(
-                    modality = ModelModality.Text,
-                    modelId = modelId,
-                    messages = listOf(
-                        ChatMessage(
-                            role = "user",
-                            content = "用一句中文回答：Mason 本地模型测试成功了吗？",
+            try {
+                val engine = requireNotNull(localModelEngines.engineFor(modelId)) {
+                    "未找到本地模型运行时"
+                }
+                engine.invoke(
+                    ModelInvocation(
+                        modality = ModelModality.Text,
+                        modelId = modelId,
+                        messages = listOf(
+                            ChatMessage(
+                                role = "user",
+                                content = "用一句中文回答：Mason 本地模型测试成功了吗？",
+                            ),
                         ),
                     ),
-                ),
-            ).collect { response ->
-                when (response) {
-                    is ChatResponse.TextChunk -> {
-                        text += response.text
+                ).collect { response ->
+                    when (response) {
+                        is ChatResponse.TextChunk -> {
+                            text += response.text
+                        }
+                        is ChatResponse.Error -> {
+                            error = response.message
+                        }
+                        else -> Unit
                     }
-                    is ChatResponse.Error -> {
-                        error = response.message
-                    }
-                    else -> Unit
                 }
+            } finally {
+                // A settings test must not keep the multi-GB runtime resident.
+                localModelEngines.release(modelId)
             }
 
             _localModelTestState.value = if (text.isNotBlank()) {
@@ -437,11 +456,36 @@ class SettingsViewModel @Inject constructor(
                 imageModel = config.imageModel,
                 requiresApiKey = AiProviderCatalog.requiresApiKey(config),
                 testTools = config.toolsEnabled,
+                additionalHeaders = buildMap {
+                    config.connectionForProvider(config.providerId)?.workspaceId
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { put("X-DashScope-WorkSpace", it) }
+                },
             )
             if (result.success) {
+                val verifiedSignature = AiProviderCatalog.verificationSignature(config)
+                val connectionId = connectionIdForProvider(config.providerId)
+                val existing = this@SettingsViewModel.config.value.connections
+                    .firstOrNull { it.id == connectionId }
                 configDataStore.updateConfig(
-                    config.copy(
-                        verifiedSignature = AiProviderCatalog.verificationSignature(config),
+                    this@SettingsViewModel.config.value.saveConnection(
+                        ApiConnection(
+                            id = connectionId,
+                            providerId = config.providerId,
+                            name = existing?.name
+                                ?: AiProviderCatalog.getProvider(config.providerId)?.name
+                                ?: config.providerId,
+                            apiUrl = config.apiUrl,
+                            apiKey = config.apiKey,
+                            modelIds = buildList {
+                                addAll(existing?.modelIds.orEmpty())
+                                listOf(config.model, config.visionModel, config.imageModel)
+                                    .filterTo(this) { it.isNotBlank() }
+                            }.distinct(),
+                            toolsSupported = config.toolsEnabled,
+                            verifiedSignature = verifiedSignature,
+                            workspaceId = existing?.workspaceId.orEmpty(),
+                        ),
                     ),
                 )
             }
@@ -470,6 +514,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _modelRefreshState.value = ModelRefreshUiState(
                 isRefreshing = true,
+                providerId = "openrouter",
                 message = "正在刷新免费模型...",
             )
             val result = modelRepository.fetchOpenRouterFreeModels(apiKey)
@@ -477,11 +522,13 @@ class SettingsViewModel @Inject constructor(
                 onSuccess = { models ->
                     if (models.isEmpty()) {
                         ModelRefreshUiState(
+                            providerId = "openrouter",
                             message = "没有获取到免费模型，先使用内置预设",
                             success = false,
                         )
                     } else {
                         ModelRefreshUiState(
+                            providerId = "openrouter",
                             models = models,
                             message = "已刷新 ${models.size} 个免费模型",
                             success = true,
@@ -490,7 +537,49 @@ class SettingsViewModel @Inject constructor(
                 },
                 onFailure = { error ->
                     ModelRefreshUiState(
+                        providerId = "openrouter",
                         message = "刷新失败: ${error.message ?: error.javaClass.simpleName}",
+                        success = false,
+                    )
+                },
+            )
+        }
+    }
+
+    fun refreshRemoteModels(
+        providerId: String,
+        apiUrl: String,
+        apiKey: String,
+        workspaceId: String = "",
+    ) {
+        viewModelScope.launch {
+            _modelRefreshState.value = ModelRefreshUiState(
+                isRefreshing = true,
+                providerId = providerId,
+                message = "正在拉取远程模型...",
+            )
+            val result = modelRepository.fetchModels(apiUrl, apiKey, workspaceId)
+            _modelRefreshState.value = result.fold(
+                onSuccess = { models ->
+                    if (models.isEmpty()) {
+                        ModelRefreshUiState(
+                            providerId = providerId,
+                            message = "接口没有返回可用模型",
+                            success = false,
+                        )
+                    } else {
+                        ModelRefreshUiState(
+                            providerId = providerId,
+                            models = models,
+                            message = "已拉取 ${models.size} 个模型",
+                            success = true,
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    ModelRefreshUiState(
+                        providerId = providerId,
+                        message = "拉取失败: ${error.message ?: error.javaClass.simpleName}",
                         success = false,
                     )
                 },

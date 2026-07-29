@@ -8,26 +8,19 @@ enum class ThemeMode {
     DARK,
 }
 
-enum class IslandVendorMode {
-    AUTO,
-    XIAOMI,
-    VIVO,
-    OPPO,
-}
-
-enum class NotificationDeliveryMode {
-    REGULAR,
-    ISLAND,
+enum class InterfaceStyle {
+    ACRYLIC,
+    MATERIAL3,
+    LIQUID_GLASS,
 }
 
 data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val interfaceStyle: InterfaceStyle = InterfaceStyle.ACRYLIC,
+    val liquidGlassTransparency: Float = 0.72f,
     val accentColor: Long = DEFAULT_ACCENT_COLOR,
-    val notificationIslandEnabled: Boolean = false,
-    val notificationDeliveryMode: NotificationDeliveryMode = NotificationDeliveryMode.REGULAR,
-    val notifyOnTaskComplete: Boolean = true,
-    val notifyOnPaymentSuccess: Boolean = true,
-    val islandVendorMode: IslandVendorMode = IslandVendorMode.AUTO,
+    val regularNotificationsEnabled: Boolean = false,
+    val islandNotificationsEnabled: Boolean = false,
 )
 
 data class AccentPreset(
@@ -45,6 +38,6 @@ val MasonAccentPresets = listOf(
     AccentPreset("纯白", 0xFFFFFFFF),
 )
 
-const val DEFAULT_ACCENT_COLOR: Long = 0xFF4FC3F7
+const val DEFAULT_ACCENT_COLOR: Long = 0xFF20201F
 
 fun Long.toComposeColor(): Color = Color(this)

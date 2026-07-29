@@ -7,8 +7,13 @@ import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
 import com.denggl2.mason.data.stripArtifactMarkers
 import com.denggl2.mason.agent.stripTaskRunMarkers
+import com.denggl2.mason.agent.TaskRunStatus
+import com.denggl2.mason.agent.TaskRunStore
+import com.denggl2.mason.automation.AutomationDraftService
+import com.denggl2.mason.integration.stripCapabilityRequirementMarkers
 import com.denggl2.mason.sync.SyncManager
 import com.denggl2.mason.sync.data.entity.Conversation
+import com.denggl2.mason.tool.ConversationDispatchTool
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.File
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -17,6 +22,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
@@ -25,11 +31,15 @@ import javax.inject.Inject
 data class ConversationListItem(
     val conversation: Conversation,
     val lastMessage: String?,
+    val searchableText: String,
+    val isRunning: Boolean = false,
+    val hasUnreadCompletion: Boolean = false,
 )
 
 @HiltViewModel
 class ConversationListViewModel @Inject constructor(
     private val syncManager: SyncManager,
+    private val taskRunStore: TaskRunStore,
     configDataStore: ApiConfigDataStore,
 ) : ViewModel() {
 
@@ -42,24 +52,54 @@ class ConversationListViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            syncManager.getConversationsFlow().collect { convList ->
+            taskRunStore.refresh()
+            combine(
+                syncManager.getConversationsFlow(),
+                taskRunStore.runs,
+                taskRunStore.activeConversationIds,
+                taskRunStore.unreadCompletionConversationIds,
+            ) { convList, runs, activeConversationIds, unreadCompletionConversationIds ->
+                Triple(
+                    convList,
+                    runs.values
+                        .filter { it.status == TaskRunStatus.Running || it.status == TaskRunStatus.WaitingForUser }
+                        .mapNotNull { it.conversationId }
+                        .toSet() + activeConversationIds,
+                    unreadCompletionConversationIds,
+                )
+            }.collect { (convList, runningConversationIds, unreadCompletionConversationIds) ->
                 val items = convList.map { conv ->
-                    val lastMsg = syncManager.getLastMessage(conv.id)
+                    val messages = syncManager.getMessagesSnapshot(conv.id)
+                    val lastMsg = messages.lastOrNull { it.toolCallName != ConversationDispatchTool.NAME }
+                        ?: syncManager.getLastMessage(conv.id)
                     val preview = lastMsg?.content?.let { content ->
-                        val roleLabel = when (lastMsg.role) {
-                            "user" -> "你: "
-                            "assistant" -> ""
-                            "tool" -> "[工具] "
-                            else -> ""
-                        }
-                        val body = stripTaskRunMarkers(stripArtifactMarkers(content)).replace("\n", " ").trim()
-                        roleLabel + if (body.length > 40) body.take(40) + "..." else body
+                        buildConversationPreview(lastMsg.role, content)
                     }
-                    ConversationListItem(conversation = conv, lastMessage = preview)
+                    ConversationListItem(
+                        conversation = conv,
+                        lastMessage = preview,
+                        searchableText = messages
+                            .filterNot { it.toolCallName == ConversationDispatchTool.NAME }
+                            .joinToString("\n") { it.content.orEmpty() },
+                        isRunning = conv.id in runningConversationIds,
+                        hasUnreadCompletion = conv.id in unreadCompletionConversationIds,
+                    )
                 }
                 _conversations.value = items
             }
         }
+    }
+
+    fun markConversationForegrounded(id: Long) {
+        taskRunStore.markConversationForegrounded(id)
+    }
+
+    fun markConversationBackgrounded(id: Long) {
+        taskRunStore.markConversationBackgrounded(id)
+    }
+
+    fun markConversationSeen(id: Long) {
+        taskRunStore.markConversationSeen(id)
     }
 
     fun createConversation(onCreated: (Long) -> Unit) {
@@ -105,4 +145,26 @@ class ConversationListViewModel @Inject constructor(
             }
         }
     }
+}
+
+private fun buildConversationPreview(role: String, content: String): String {
+    AutomationDraftService.extractAutomationDraftMarker(content)?.let { draft ->
+        return "自动化草稿 · ${draft.name}"
+    }
+    AutomationDraftService.extractAutomationApplyMarker(content)?.let { result ->
+        return if (result.status == "success") "自动化已保存" else "自动化状态已更新"
+    }
+    if (role == "tool") return "工具步骤已完成"
+
+    val body = stripCapabilityRequirementMarkers(
+        stripTaskRunMarkers(stripArtifactMarkers(content)),
+    ).replace("\n", " ")
+        .trim()
+        .replace(
+            Regex("^#{0,6}\\s*\\*{0,2}(最终总结|最后总结)[：:]\\*{0,2}\\s*"),
+            "",
+        )
+    val roleLabel = if (role == "user") "你：" else ""
+    val visible = if (body.length > 40) body.take(40) + "..." else body
+    return roleLabel + visible
 }

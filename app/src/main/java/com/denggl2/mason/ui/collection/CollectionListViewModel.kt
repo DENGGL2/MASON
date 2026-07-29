@@ -2,12 +2,14 @@ package com.denggl2.mason.ui.collection
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
 import com.denggl2.mason.automation.AutomationRunner
 import com.denggl2.mason.automation.AutomationScheduler
 import com.denggl2.mason.automation.AutomationCapabilityInspector
 import com.denggl2.mason.data.AutomationPreferences
 import com.denggl2.mason.data.AutomationPreferencesDataStore
 import com.denggl2.mason.data.SkillAutomationStore
+import com.denggl2.mason.data.LocalSkillImportResult
 import com.denggl2.mason.data.MasonAutomationAction
 import com.denggl2.mason.data.MasonAutomationConstraints
 import com.denggl2.mason.data.MasonAutomationRunLog
@@ -28,7 +30,10 @@ data class SkillManagementUiState(
     val working: Boolean = false,
     val revision: Int = 0,
     val message: String? = null,
+    val replaceCandidate: LocalSkillReplaceCandidate? = null,
 )
+
+data class LocalSkillReplaceCandidate(val uri: Uri, val name: String)
 
 data class AutomationManagementUiState(
     val working: Boolean = false,
@@ -83,6 +88,35 @@ class CollectionListViewModel @Inject constructor(
                     )
                 }
         }
+    }
+
+    fun importSkillFromLocalZip(uri: Uri, replaceConfirmed: Boolean = false) {
+        if (_skillState.value.working) return
+        viewModelScope.launch {
+            _skillState.value = _skillState.value.copy(working = true, message = null, replaceCandidate = null)
+            runCatching { skillStore.importFromLocalZip(uri, replaceConfirmed) }
+                .onSuccess { result ->
+                    _skillState.value = when (result) {
+                        is LocalSkillImportResult.Installed -> SkillManagementUiState(
+                            revision = _skillState.value.revision + 1,
+                            message = "已导入 ${result.skill.manifest.name}；将在下一轮任务生效",
+                        )
+                        is LocalSkillImportResult.Conflict -> SkillManagementUiState(
+                            replaceCandidate = LocalSkillReplaceCandidate(uri, result.skillName),
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _skillState.value = _skillState.value.copy(
+                        working = false,
+                        message = error.message ?: "Skill 导入失败",
+                    )
+                }
+        }
+    }
+
+    fun clearSkillReplaceCandidate() {
+        _skillState.value = _skillState.value.copy(replaceCandidate = null)
     }
 
     fun setSkillEnabled(path: String, enabled: Boolean) {

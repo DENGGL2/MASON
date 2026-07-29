@@ -14,6 +14,18 @@ data class AiModelPreset(
     val modeLabel: String? = null,
 )
 
+enum class AiProviderKind {
+    Official,
+    Relay,
+    Custom,
+}
+
+data class AiProviderEndpoint(
+    val id: String,
+    val name: String,
+    val apiUrl: String,
+)
+
 data class AiProviderPreset(
     val id: String,
     val name: String,
@@ -22,6 +34,9 @@ data class AiProviderPreset(
     val modelOptions: List<AiModelPreset>,
     val defaultModel: String = modelOptions.firstOrNull()?.id.orEmpty(),
     val toolsEnabledByDefault: Boolean = true,
+    val kind: AiProviderKind = AiProviderKind.Official,
+    val endpoints: List<AiProviderEndpoint> = emptyList(),
+    val supportsWorkspaceId: Boolean = false,
 )
 
 object AiProviderCatalog {
@@ -65,6 +80,7 @@ object AiProviderCatalog {
             ),
             defaultModel = "qwen/qwen3-next-80b-a3b-instruct:free",
             toolsEnabledByDefault = false,
+            kind = AiProviderKind.Relay,
         ),
         AiProviderPreset(
             id = DEFAULT_PROVIDER_ID,
@@ -104,6 +120,38 @@ object AiProviderCatalog {
                 ),
             ),
             defaultModel = "gemini-3.5-flash",
+        ),
+        AiProviderPreset(
+            id = "qwen",
+            name = "Qwen",
+            description = "阿里云百炼官方模型；区域不同会使用不同的官方接口地址",
+            apiUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            modelOptions = listOf(
+                AiModelPreset(
+                    id = "qwen-plus",
+                    name = "Qwen Plus",
+                    description = "通用聊天模型，适合中文问答、总结和工具调用",
+                ),
+                AiModelPreset(
+                    id = "qwen-turbo",
+                    name = "Qwen Turbo",
+                    description = "速度优先的通用聊天模型",
+                ),
+            ),
+            defaultModel = "qwen-plus",
+            endpoints = listOf(
+                AiProviderEndpoint(
+                    id = "cn",
+                    name = "中国大陆",
+                    apiUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                ),
+                AiProviderEndpoint(
+                    id = "intl",
+                    name = "国际",
+                    apiUrl = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                ),
+            ),
+            supportsWorkspaceId = true,
         ),
         AiProviderPreset(
             id = "mimo",
@@ -150,6 +198,7 @@ object AiProviderCatalog {
                 ),
             ),
             toolsEnabledByDefault = false,
+            kind = AiProviderKind.Relay,
         ),
         AiProviderPreset(
             id = "openai",
@@ -183,6 +232,7 @@ object AiProviderCatalog {
             modelOptions = emptyList(),
             defaultModel = "",
             toolsEnabledByDefault = true,
+            kind = AiProviderKind.Custom,
         ),
     )
 
@@ -245,6 +295,7 @@ object AiProviderCatalog {
             "openrouter.ai" in normalized -> "openrouter"
             "deepseek.com" in normalized -> DEFAULT_PROVIDER_ID
             "generativelanguage.googleapis.com" in normalized -> "gemini"
+            "dashscope" in normalized -> "qwen"
             "xiaomimimo.com" in normalized || "mimo.mi.com" in normalized -> "mimo"
             "siliconflow" in normalized -> "siliconflow"
             "openai.com" in normalized -> "openai"

@@ -1,7 +1,5 @@
 package com.denggl2.mason.ui.settings
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,16 +12,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Cancel
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,7 +29,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -72,11 +63,6 @@ fun PermissionScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回", tint = MaterialTheme.colorScheme.onBackground)
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Outlined.Refresh, "刷新", tint = MaterialTheme.colorScheme.onBackground)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -138,54 +124,40 @@ private fun PermissionRow(
     isGranted: Boolean,
     onClick: () -> Unit,
 ) {
-    val icon = if (isGranted) Icons.Outlined.CheckCircle else Icons.Outlined.Cancel
     val tint = if (isGranted) Color(0xFF4CAF50) else Color(0xFFEF5350)
     val statusText = if (isGranted) "已授权" else "未授权"
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(permissionGlassBrush())
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-                RoundedCornerShape(12.dp),
-            )
             .then(
                 if (isGranted) Modifier else Modifier.clickable(onClick = onClick)
             )
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier.size(22.dp),
-        )
-        Spacer(Modifier.width(14.dp))
         Text(
             text = label,
             color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f),
         )
-        Text(
-            text = statusText,
-            color = tint,
-            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-        )
-        if (!isGranted) {
-            Spacer(Modifier.width(6.dp))
+        Column(horizontalAlignment = Alignment.End) {
             Text(
-                text = "设置 >",
-                color = Color.Gray.copy(alpha = 0.6f),
-                style = MaterialTheme.typography.bodySmall,
+                text = statusText,
+                color = tint,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontWeight = FontWeight.Medium,
+                    lineHeight = 15.sp,
+                ),
             )
+            if (!isGranted) {
+                Text(
+                    text = "设置>",
+                    color = Color.Gray.copy(alpha = 0.6f),
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 15.sp),
+                )
+            }
         }
     }
 }
-
-@Composable
-private fun permissionGlassBrush(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)

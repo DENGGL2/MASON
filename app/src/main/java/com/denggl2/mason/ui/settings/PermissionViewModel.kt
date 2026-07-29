@@ -197,6 +197,16 @@ class PermissionViewModel @Inject constructor(
                     "蓝牙连接",
                     PermissionGroup.NETWORK,
                 ),
+                permissionItem(
+                    Manifest.permission.BLUETOOTH_SCAN,
+                    "蓝牙扫描",
+                    PermissionGroup.NETWORK,
+                ),
+                permissionItem(
+                    Manifest.permission.NEARBY_WIFI_DEVICES,
+                    "附近 Wi-Fi 设备",
+                    PermissionGroup.NETWORK,
+                ),
             )
         }
     }

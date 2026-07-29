@@ -52,6 +52,17 @@ enum class TaskRunStatus {
     Cancelled,
 }
 
+/** Why an unfinished task stopped. Persisted so recovery never has to guess. */
+@Serializable
+enum class TaskInterruptionReason {
+    AppRestarted,
+    NetworkInterrupted,
+    UserPaused,
+    WaitingForApproval,
+    WaitingForInput,
+    ExecutionFailed,
+}
+
 @Serializable
 data class TaskRun(
     val id: String,
@@ -66,6 +77,7 @@ data class TaskRun(
     val summary: String? = null,
     val artifactPaths: List<String> = emptyList(),
     val lastError: String? = null,
+    val interruptionReason: TaskInterruptionReason? = null,
     val agentExecution: AgentExecutionCheckpoint? = null,
     val agentPlan: AgentPlanState? = null,
     val schemaVersion: Int = 4,
@@ -91,6 +103,8 @@ data class AgentExecutionCheckpoint(
     val pendingCalls: List<ToolCall> = emptyList(),
     val pendingApprovalCallId: String? = null,
     val approvedCallIds: List<String> = emptyList(),
+    /** Successful calls are never replayed after a process restart. */
+    val completedCallFingerprints: List<String> = emptyList(),
     val waitingForInput: Boolean = false,
 )
 
@@ -142,6 +156,11 @@ object ToolPolicy {
             permissions = listOf("android.permission.ACCESS_FINE_LOCATION"),
             backgroundAllowed = true,
         ),
+        "conversation_dispatch" to rule(
+            ToolRiskLevel.High,
+            mandatoryApproval = true,
+            persistentGrantAllowed = false,
+        ),
         "clipboard" to rule(ToolRiskLevel.Medium),
         "http_request" to rule(ToolRiskLevel.Medium),
         "file_read" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
@@ -165,7 +184,7 @@ object ToolPolicy {
     fun riskFor(toolName: String): ToolRiskLevel = profileFor(toolName).risk
 
     fun requiresUserApproval(toolName: String): Boolean =
-        profileFor(toolName).risk != ToolRiskLevel.Low
+        profileFor(toolName).risk == ToolRiskLevel.High
 
     fun requiresMandatoryApproval(toolName: String): Boolean =
         profileFor(toolName).mandatoryApproval
@@ -315,6 +334,7 @@ object TaskStepFactory {
         "alarm" -> "处理闹钟"
         "camera" -> "使用相机"
         "location" -> "读取位置"
+        "conversation_dispatch" -> "发送到其他对话"
         else -> "执行 $toolName"
     }
 }
@@ -364,6 +384,7 @@ fun ToolCall.fingerprint(): String = "${function.name}:${function.arguments.trim
 
 fun AgentExecutionCheckpoint.canExecute(calls: List<ToolCall>): Boolean {
     if (round >= MAX_AGENT_TOOL_ROUNDS) return false
+    if (calls.any { it.fingerprint() in completedCallFingerprints }) return false
     val previous = callFingerprints.groupingBy { it }.eachCount()
     return calls.none { (previous[it.fingerprint()] ?: 0) >= MAX_IDENTICAL_TOOL_CALLS }
 }
@@ -413,6 +434,12 @@ internal fun TaskRun.recoverAfterProcessRestart(now: Long = System.currentTimeMi
     },
     updatedAt = now,
     finishedAt = null,
+    interruptionReason = when {
+        interruptionReason == TaskInterruptionReason.UserPaused -> TaskInterruptionReason.UserPaused
+        agentExecution?.pendingApprovalCallId != null -> TaskInterruptionReason.WaitingForApproval
+        agentExecution?.waitingForInput == true -> TaskInterruptionReason.WaitingForInput
+        else -> TaskInterruptionReason.AppRestarted
+    },
 )
 
 private val terminalStepStatuses = setOf(

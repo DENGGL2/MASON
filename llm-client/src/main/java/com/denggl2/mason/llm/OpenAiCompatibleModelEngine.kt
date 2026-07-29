@@ -18,12 +18,14 @@ class OpenAiCompatibleModelEngine @Inject constructor(
         ModelModality.ImageGeneration -> chatClient.generateImage(
             prompt = invocation.messages.lastOrNull { it.role == "user" }?.content.orEmpty(),
             modelOverride = invocation.modelId,
+            connectionIdOverride = invocation.connectionId,
         )
         ModelModality.Text,
         ModelModality.Vision -> chatClient.chat(
             messages = invocation.messages,
             toolsEnabled = invocation.toolsEnabled,
             modelOverride = invocation.modelId,
+            connectionIdOverride = invocation.connectionId,
             attachments = invocation.attachments,
         )
     }

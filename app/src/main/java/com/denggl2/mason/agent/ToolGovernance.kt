@@ -5,6 +5,7 @@ import com.denggl2.mason.tool.ToolExecutor
 import com.denggl2.mason.tool.ToolResult
 import com.denggl2.mason.integration.A2aToolManager
 import com.denggl2.mason.tool.INTERNAL_CONVERSATION_ID
+import com.denggl2.mason.tool.ConversationDispatchTool
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.UUID
@@ -145,6 +146,10 @@ class GovernedToolExecutor @Inject constructor(
                 putAll(args)
                 if (name.startsWith("a2a__") && context.taskRunId != null) {
                     put(A2aToolManager.MASON_TASK_RUN_ID, context.taskRunId)
+                }
+                if (name == ConversationDispatchTool.NAME) {
+                    context.taskRunId?.let { put(ConversationDispatchTool.INTERNAL_TASK_RUN_ID, it) }
+                    context.conversationId?.let { put(ConversationDispatchTool.INTERNAL_SOURCE_CONVERSATION_ID, it) }
                 }
                 if (name in memoryWriteTools && context.conversationId != null) {
                     put(INTERNAL_CONVERSATION_ID, context.conversationId)

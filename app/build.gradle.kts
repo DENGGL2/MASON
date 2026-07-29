@@ -10,8 +10,8 @@ android {
     namespace = "com.denggl2.mason"
     defaultConfig {
         applicationId = "com.denggl2.mason"
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildTypes {
@@ -21,6 +21,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+    }
+
+    // llama.cpp discovers its CPU variants by scanning nativeLibraryDir at runtime.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 }
@@ -54,6 +61,7 @@ dependencies {
     implementation(project(":tool-runtime"))
     implementation(project(":sync"))
     implementation(project(":crash-guard"))
+    implementation(project(":llama-runtime"))
 
     debugImplementation(libs.compose.ui.tooling)
     testImplementation("junit:junit:4.13.2")

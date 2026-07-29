@@ -8,11 +8,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.toArgb
 import com.denggl2.mason.data.ThemeMode
 import com.denggl2.mason.data.UiPreferences
 import com.denggl2.mason.data.UiPreferencesDataStore
@@ -87,6 +89,10 @@ class MainActivity : ComponentActivity() {
                 themeMode = uiPreferences.themeMode,
                 accentColor = uiPreferences.accentColor.toComposeColor(),
             ) {
+                val windowBackground = MaterialTheme.colorScheme.background.toArgb()
+                SideEffect {
+                    window.decorView.setBackgroundColor(windowBackground)
+                }
                 MasonNavGraph(
                     uiPreferences = uiPreferences,
                     openConversationId = notificationConversationId.value,
@@ -95,23 +101,22 @@ class MainActivity : ComponentActivity() {
                     onThemeModeChange = { mode ->
                         scope.launch { uiPreferencesDataStore.updateThemeMode(mode) }
                     },
+                    onInterfaceStyleChange = { style ->
+                        scope.launch { uiPreferencesDataStore.updateInterfaceStyle(style) }
+                    },
+                    onLiquidGlassTransparencyChange = { transparency ->
+                        scope.launch {
+                            uiPreferencesDataStore.updateLiquidGlassTransparency(transparency)
+                        }
+                    },
                     onAccentColorChange = { color ->
                         scope.launch { uiPreferencesDataStore.updateAccentColor(color) }
                     },
-                    onNotificationIslandEnabledChange = { enabled ->
-                        scope.launch { uiPreferencesDataStore.updateNotificationIslandEnabled(enabled) }
+                    onRegularNotificationsChange = { enabled ->
+                        scope.launch { uiPreferencesDataStore.updateRegularNotificationsEnabled(enabled) }
                     },
-                    onNotificationDeliveryModeChange = { mode ->
-                        scope.launch { uiPreferencesDataStore.updateNotificationDeliveryMode(mode) }
-                    },
-                    onNotifyOnTaskCompleteChange = { enabled ->
-                        scope.launch { uiPreferencesDataStore.updateNotifyOnTaskComplete(enabled) }
-                    },
-                    onNotifyOnPaymentSuccessChange = { enabled ->
-                        scope.launch { uiPreferencesDataStore.updateNotifyOnPaymentSuccess(enabled) }
-                    },
-                    onIslandVendorModeChange = { mode ->
-                        scope.launch { uiPreferencesDataStore.updateIslandVendorMode(mode) }
+                    onIslandNotificationsChange = { enabled ->
+                        scope.launch { uiPreferencesDataStore.updateIslandNotificationsEnabled(enabled) }
                     },
                 )
             }

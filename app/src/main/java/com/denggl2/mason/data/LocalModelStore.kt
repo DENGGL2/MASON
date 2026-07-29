@@ -55,7 +55,7 @@ class LocalModelStore @Inject constructor(
         models.map(::stateFor)
 
     fun stateFor(model: LocalModelPreset): LocalModelFileState {
-        val file = modelFile(model.id)
+        val file = modelFile(model)
         val availableRamGb = availableRamGb()
         val base = LocalModelFileState(
             modelId = model.id,
@@ -63,8 +63,8 @@ class LocalModelStore @Inject constructor(
             path = file.absolutePath,
             fileName = file.name,
             extension = file.extension.lowercase(),
-            formatSupported = file.hasSupportedExtension(),
-            formatWarning = file.formatWarning(),
+            formatSupported = file.hasSupportedExtension(model),
+            formatWarning = file.formatWarning(model),
             sizeBytes = 0L,
             recommendedRamGb = model.recommendedRamGb,
             availableRamGb = availableRamGb,
@@ -87,7 +87,7 @@ class LocalModelStore @Inject constructor(
     suspend fun importModel(model: LocalModelPreset, uri: Uri): LocalModelFileState =
         withContext(Dispatchers.IO) {
             val sourceName = displayName(uri)
-            val target = modelFile(model.id, sourceName)
+            val target = modelFile(model, sourceName)
             target.parentFile?.mkdirs()
             context.contentResolver.openInputStream(uri).use { input ->
                 requireNotNull(input) { "无法读取模型文件" }
@@ -111,10 +111,10 @@ class LocalModelStore @Inject constructor(
         File(context.cacheDir, "litertlm").also { it.mkdirs() }
 
     internal fun modelFileForDownload(modelId: String): File =
-        File(File(context.filesDir, "local_models"), "$modelId.litertlm")
+        modelFile(requireNotNull(LocalModelCatalog.get(modelId)))
 
     internal fun partialFileForDownload(modelId: String): File =
-        File(File(context.filesDir, "local_models"), "$modelId.litertlm.part")
+        File(modelFileForDownload(modelId).absolutePath + ".part")
 
     fun partialDownloadBytes(modelId: String): Long =
         partialFileForDownload(modelId).takeIf { it.isFile }?.length() ?: 0L
@@ -123,7 +123,7 @@ class LocalModelStore @Inject constructor(
         StatFs(context.filesDir.absolutePath).availableBytes
 
     suspend fun deleteModel(model: LocalModelPreset) = withContext(Dispatchers.IO) {
-        val target = modelFile(model.id)
+        val target = modelFile(model)
         val partial = partialFileForDownload(model.id)
         if (target.exists()) check(target.delete()) { "无法删除模型文件" }
         if (partial.exists()) check(partial.delete()) { "无法删除未完成的下载" }
@@ -139,18 +139,18 @@ class LocalModelStore @Inject constructor(
         }.getOrNull()
     }
 
-    private fun modelFile(modelId: String, sourceFileName: String? = null): File {
+    private fun modelFile(model: LocalModelPreset, sourceFileName: String? = null): File {
         val dir = File(context.filesDir, "local_models")
-        val preferred = File(dir, "$modelId.litertlm")
-        val legacy = File(dir, "$modelId.task")
+        val preferred = File(dir, "${model.id}.${model.fileExtension}")
+        val legacy = File(dir, "${model.id}.task")
         val extension = sourceFileName
             ?.substringAfterLast('.', missingDelimiterValue = "")
             ?.lowercase()
         return when {
-            extension == "task" -> legacy
+            model.runtime == LocalModelCatalog.RUNTIME_LITERT && extension == "task" -> legacy
             !sourceFileName.isNullOrBlank() -> preferred
             preferred.exists() -> preferred
-            legacy.exists() -> legacy
+            model.runtime == LocalModelCatalog.RUNTIME_LITERT && legacy.exists() -> legacy
             else -> preferred
         }
     }
@@ -164,21 +164,18 @@ class LocalModelStore @Inject constructor(
         return gb.toInt().coerceAtLeast(1)
     }
 
-    private fun File.hasSupportedExtension(): Boolean =
-        extension.lowercase() in supportedExtensions
+    private fun File.hasSupportedExtension(model: LocalModelPreset): Boolean =
+        extension.lowercase() == model.fileExtension ||
+            (model.runtime == LocalModelCatalog.RUNTIME_LITERT && extension.lowercase() == "task")
 
-    private fun File.formatWarning(): String? {
+    private fun File.formatWarning(model: LocalModelPreset): String? {
         val ext = extension.lowercase()
         return when {
             ext.isBlank() -> "文件没有扩展名，可能无法判断格式"
-            ext !in supportedExtensions -> "格式可能不兼容 LiteRT-LM"
+            !hasSupportedExtension(model) -> "格式可能不兼容 ${model.runtime}"
             ext == "task" -> "旧 .task 格式，仅兼容部分运行时"
             else -> null
         }
-    }
-
-    private companion object {
-        val supportedExtensions = setOf("litertlm", "task")
     }
 }
 

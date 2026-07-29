@@ -26,7 +26,7 @@ class LocalModelDownloadCoordinator @Inject constructor(
     }
 
     fun refreshStates() {
-        _states.value = LocalModelCatalog.gemmaModels.associate { model ->
+        _states.value = LocalModelCatalog.models.associate { model ->
             val current = _states.value[model.id]
             val diskState = downloader.stateFor(model)
             model.id to when {
