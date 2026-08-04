@@ -134,7 +134,7 @@ class SettingsApiDraftLogicTest {
                 requiresApiKey = true,
             ),
         )
-        assertFalse(
+        assertTrue(
             shouldConfirmRemoteModelSheetDismiss(
                 mode = RemoteModelSheetMode.Testing,
                 apiUrl = "https://relay.example/v1",
@@ -337,6 +337,77 @@ class SettingsApiDraftLogicTest {
 
         assertEquals("测试中", remoteModelTestStatus(connection, "model-a", testingA))
         assertEquals("生图，待保存", remoteModelTestStatus(connection, "model-b", testingA))
+    }
+
+    @Test
+    fun backgroundTestingKeepsAnUnsavedModelVisibleInSettings() {
+        val pending = ApiConnection(
+            id = "pending",
+            providerId = "custom",
+            name = "远端模型",
+            apiUrl = "https://example.invalid/v1",
+            apiKey = "key",
+            modelIds = listOf("new-model"),
+        )
+
+        assertEquals(
+            listOf(pending to "new-model"),
+            visibleRemoteModelEntries(
+                config = ApiConfig(),
+                apiTestState = ApiTestUiState(isTesting = true, targetConnection = pending),
+            ),
+        )
+        assertEquals(
+            emptyList<Pair<ApiConnection, String>>(),
+            visibleRemoteModelEntries(
+                config = ApiConfig(),
+                apiTestState = ApiTestUiState(targetConnection = pending),
+            ),
+        )
+    }
+
+    @Test
+    fun failedModelRemainsVisibleWithACompactFailureStatus() {
+        val connection = ApiConnection(
+            id = "failed",
+            providerId = "custom",
+            name = "远端模型",
+            apiUrl = "https://example.invalid/v1",
+            modelIds = listOf("broken-model"),
+            modelTestErrors = mapOf("broken-model" to "HTTP 404 model not found"),
+        )
+
+        assertEquals(
+            "未通过测试 HTTP 404",
+            remoteModelTestStatus(connection, "broken-model", ApiTestUiState()),
+        )
+    }
+
+    @Test
+    fun reopenedPendingModelMatchesItsBackgroundTestWhenTheRunAddedMultipleIds() {
+        val target = ApiConnection(
+            id = "custom",
+            providerId = "custom",
+            name = "远端模型",
+            apiUrl = "https://example.invalid/v1",
+            apiKey = "key",
+            modelIds = listOf("model-a", "model-b"),
+        )
+        val draft = target.copy(modelIds = listOf("model-a"))
+
+        assertEquals(
+            RemoteModelSheetMode.Testing,
+            remoteModelSheetMode(
+                draft = draft,
+                savedConnection = null,
+                editingModelId = "model-a",
+                testState = ApiTestUiState(
+                    isTesting = true,
+                    targetConnection = target,
+                    replacingModelId = null,
+                ),
+            ),
+        )
     }
 
     @Test

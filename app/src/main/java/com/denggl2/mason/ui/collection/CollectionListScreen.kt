@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,12 +55,14 @@ import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -514,23 +517,30 @@ fun CollectionListScreen(
                 }
             }
             if (selectionMode) {
-                TextButton(
+                OutlinedButton(
                     onClick = { pendingArtifactDeletePaths = selectedArtifactPaths },
                     enabled = selectedArtifactPaths.isNotEmpty(),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 4.dp)
+                        .height(44.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.error.copy(alpha = if (selectedArtifactPaths.isNotEmpty()) 0.72f else 0.28f),
+                    ),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
                 ) {
                     Icon(
                         Icons.Outlined.Delete,
                         contentDescription = null,
-                        tint = if (selectedArtifactPaths.isNotEmpty()) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(7.dp))
-                    Text("删除", color = MaterialTheme.colorScheme.error)
+                    Text("删除")
                 }
             }
             }
@@ -556,6 +566,10 @@ fun CollectionListScreen(
                             }
                             entries = entries.filterNot { it.path in deletedPaths }
                             selectedArtifactPaths = selectedArtifactPaths - deletedPaths
+                            if (entries.isEmpty()) {
+                                selectionMode = false
+                                selectedArtifactPaths = emptySet()
+                            }
                             Toast.makeText(
                                 context,
                                 "已删除 ${deletedPaths.size} 个产出",
@@ -1638,6 +1652,7 @@ private fun EntryPreviewDialog(
                             singleLine = true,
                             modifier = Modifier.weight(1f).focusRequester(titleFocusRequester),
                         )
+                        TextButton(onClick = { editingTitle = false }) { Text("取消") }
                         TextButton(
                             onClick = {
                                 val value = titleField.text.trim()

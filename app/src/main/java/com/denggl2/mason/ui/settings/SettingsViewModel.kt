@@ -276,10 +276,13 @@ class SettingsViewModel @Inject constructor(
             replacingModelId = replacingModelId,
         )
         val updated = current.saveConnection(merged)
+        val defaultChatModel = merged.modelIds.firstOrNull { modelId ->
+            modelId !in merged.modelTestErrors
+        }
         val withChatDefault = if (
-            current.configuredChatModelRef() == null && merged.modelIds.isNotEmpty()
+            current.configuredChatModelRef() == null && defaultChatModel != null
         ) {
-            updated.selectChatModel(ModelReference(merged.id, merged.modelIds.first()))
+            updated.selectChatModel(ModelReference(merged.id, defaultChatModel))
         } else {
             updated
         }
@@ -635,6 +638,7 @@ class SettingsViewModel @Inject constructor(
                             workspaceId = existing?.workspaceId.orEmpty(),
                             modelCapabilities = existing?.modelCapabilities.orEmpty(),
                             verifiedModelSignatures = existing?.verifiedModelSignatures.orEmpty(),
+                            modelTestErrors = existing?.modelTestErrors.orEmpty(),
                         ),
                     ),
                 )
@@ -699,6 +703,7 @@ class SettingsViewModel @Inject constructor(
                 observedFailedModels = priorState.observedFailedModels,
             ))) return@launch
             val capabilitiesByModel = linkedMapOf<String, ApiModelCapabilities>()
+            val modelTestErrors = linkedMapOf<String, String>()
             val signatures = linkedMapOf<String, String>()
             val resultMessages = mutableListOf<String>()
             var allConnectionsSucceeded = true
@@ -729,16 +734,17 @@ class SettingsViewModel @Inject constructor(
                 allConnectionsSucceeded = allConnectionsSucceeded && result.success
                 lastCapabilities = result.capabilities
                 resultMessages += "$modelId：${result.message}"
-                capabilitiesByModel[modelId] = ApiModelCapabilities(
-                    supportsChat = result.capabilities.any { it.label == "聊天" && it.success },
-                    supportsTools = result.capabilities.any { it.label == "工具调用" && it.success },
-                    supportsVision = result.capabilities.any { it.label == "识图" && it.success },
-                    supportsImageGeneration = result.capabilities.any { it.label == "生图" && it.success },
-                )
                 if (result.success) {
+                    capabilitiesByModel[modelId] = ApiModelCapabilities(
+                        supportsChat = result.capabilities.any { it.label == "聊天" && it.success },
+                        supportsTools = result.capabilities.any { it.label == "工具调用" && it.success },
+                        supportsVision = result.capabilities.any { it.label == "识图" && it.success },
+                        supportsImageGeneration = result.capabilities.any { it.label == "生图" && it.success },
+                    )
                     signatures[modelId] = AiProviderCatalog.verificationSignature(draftConfig)
                     succeededModelKeys += apiTestModelKey(connection.id, modelId)
                 } else {
+                    modelTestErrors[modelId] = result.message.take(1_200)
                     failedModelKeys += apiTestModelKey(connection.id, modelId)
                 }
             }
@@ -749,11 +755,10 @@ class SettingsViewModel @Inject constructor(
                 verifiedSignature = signatures[firstModel].orEmpty(),
                 modelCapabilities = capabilitiesByModel,
                 verifiedModelSignatures = signatures,
+                modelTestErrors = modelTestErrors,
             )
             if (!apiTestRuntime.isActive(runId)) return@launch
-            if (allConnectionsSucceeded) {
-                persistTestedConnection(tested, replacingModelId)
-            }
+            persistTestedConnection(tested, replacingModelId)
             if (!apiTestRuntime.isActive(runId)) return@launch
             val completedState = ApiTestUiState(
                 message = if (allConnectionsSucceeded) {
@@ -1119,12 +1124,14 @@ internal fun mergeTestedConnection(
     val retainedModelIds = existing.modelIds.filterNot(replacedIds::contains)
     val mergedCapabilities = (existing.modelCapabilities - replacedIds) + tested.modelCapabilities
     val mergedSignatures = (existing.verifiedModelSignatures - replacedIds) + tested.verifiedModelSignatures
+    val mergedTestErrors = (existing.modelTestErrors - replacedIds) + tested.modelTestErrors
     return tested.copy(
         modelIds = (retainedModelIds + tested.modelIds).distinct(),
         toolsSupported = mergedCapabilities.values.any(ApiModelCapabilities::supportsTools),
         verifiedSignature = tested.verifiedSignature.ifBlank { existing.verifiedSignature },
         modelCapabilities = mergedCapabilities,
         verifiedModelSignatures = mergedSignatures,
+        modelTestErrors = mergedTestErrors,
     )
 }
 

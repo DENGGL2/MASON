@@ -117,6 +117,14 @@ class ChatClient @Inject constructor(
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
+    // Capability checks must not inherit the long chat response timeout. A provider can
+    // accept a probe and never finish an unsupported vision/image request.
+    private val testClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        .build()
+
     fun chat(
         messages: List<ChatMessage>,
         toolsEnabled: Boolean? = null,
@@ -359,7 +367,13 @@ class ChatClient @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             runCatching {
-                val chatCapability = executeTestRequest(apiUrl, apiKey, textRequest, additionalHeaders).use { response ->
+                val chatCapability = executeTestRequest(
+                    apiUrl,
+                    apiKey,
+                    textRequest,
+                    additionalHeaders,
+                    httpClient = testClient,
+                ).use { response ->
                     val responseBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
                         ApiCapabilityCheck(
@@ -453,7 +467,13 @@ class ChatClient @Inject constructor(
             stream = false,
         )
         return runCatching {
-            executeTestRequest(apiUrl, apiKey, request, additionalHeaders).use { response ->
+            executeTestRequest(
+                apiUrl,
+                apiKey,
+                request,
+                additionalHeaders,
+                httpClient = testClient,
+            ).use { response ->
                 val body = response.body?.string().orEmpty()
                 if (response.isSuccessful) {
                     ApiCapabilityCheck(label = "识图", success = true)
@@ -488,7 +508,7 @@ class ChatClient @Inject constructor(
                 apiKey,
                 json.encodeToString(JsonObject.serializer(), payload),
                 additionalHeaders,
-            ).let(client::newCall).execute().use { response ->
+            ).let(testClient::newCall).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 val hasImage = runCatching {
                     json.parseToJsonElement(body).jsonObject["data"]?.jsonArray?.isNotEmpty() == true
@@ -513,7 +533,8 @@ class ChatClient @Inject constructor(
         apiKey: String,
         request: ChatRequest,
         additionalHeaders: Map<String, String> = emptyMap(),
-    ) = client.newCall(
+        httpClient: OkHttpClient = client,
+    ) = httpClient.newCall(
         buildRequest(
             apiUrl,
             apiKey,
@@ -549,6 +570,7 @@ class ChatClient @Inject constructor(
                 apiKey,
                 baseRequest.copy(tool_choice = toolChoice),
                 additionalHeaders,
+                httpClient = testClient,
             ).use { response ->
                 val body = response.body?.string().orEmpty()
                 if (response.isSuccessful && CONNECTION_PROBE_TOOL in responseToolNames(body)) {

@@ -1871,10 +1871,8 @@ private fun ModelSettingsContent(
 
     SectionHeader("远端模型")
     SettingGroup {
-        val configuredModels = config.resolvedConnections().flatMap { connection ->
-            connection.modelIds.map { modelId -> connection to modelId }
-        }
-        configuredModels.forEachIndexed { index, (connection, modelId) ->
+        val visibleModels = visibleRemoteModelEntries(config, apiTestState)
+        visibleModels.forEachIndexed { index, (connection, modelId) ->
             if (index > 0) GroupDivider(horizontalPadding = 14.dp)
             RemoteModelConfigurationRow(
                 connection = connection,
@@ -1883,13 +1881,34 @@ private fun ModelSettingsContent(
                 onClick = { onOpenRemoteModel(connection, modelId) },
             )
         }
-        if (configuredModels.isNotEmpty()) GroupDivider(horizontalPadding = 14.dp)
+        if (visibleModels.isNotEmpty()) GroupDivider(horizontalPadding = 14.dp)
         CompactActionRow(
             title = "+ 添加",
             description = "添加模型 API 配置",
             enabled = true,
             onClick = onAddRemoteModel,
         )
+    }
+}
+
+internal fun visibleRemoteModelEntries(
+    config: ApiConfig,
+    apiTestState: ApiTestUiState,
+): List<Pair<ApiConnection, String>> {
+    val configuredModels = config.resolvedConnections().flatMap { connection ->
+        connection.modelIds.map { modelId -> connection to modelId }
+    }
+    val pendingModels = if (apiTestState.isTesting) {
+        apiTestState.targetConnection?.let { connection ->
+            connection.modelIds.map { modelId -> connection to modelId }
+        }.orEmpty()
+    } else {
+        emptyList()
+    }
+    return configuredModels + pendingModels.filterNot { pending ->
+        configuredModels.any { configured ->
+            configured.first.id == pending.first.id && configured.second == pending.second
+        }
     }
 }
 
@@ -1950,6 +1969,8 @@ internal fun remoteModelTestStatus(
     } == true
     if (targetsModel) {
         if (state.isTesting) return "测试中"
+        connection.modelTestErrors[modelId]
+            ?.let { return remoteModelTestFailureStatus(it) }
         val testedCapabilities = state.testedConnection?.modelCapabilities?.get(modelId)
         if (testedCapabilities != null) {
             val savedSignature = connection.verifiedModelSignatures[modelId]
@@ -1968,6 +1989,9 @@ internal fun remoteModelTestStatus(
                 if (connection.modelCapabilities[modelId] == observed) "" else "，待保存"
         }
     if (observedKey in state.observedFailedModels) return "测试失败"
+    connection.modelTestErrors[modelId]
+        ?.let(::remoteModelTestFailureStatus)
+        ?.let { return it }
     return connection.modelCapabilities[modelId]
         ?.let(::remoteModelCapabilitySummary)
         ?: "待测试能力"
@@ -1980,6 +2004,19 @@ internal fun remoteModelCapabilitySummary(capabilities: ApiModelCapabilities): S
         if (capabilities.supportsVision) add("识图")
         if (capabilities.supportsImageGeneration) add("生图")
     }.ifEmpty { listOf("能力未知") }.joinToString("、")
+}
+
+internal fun remoteModelTestFailureStatus(detail: String): String {
+    val httpCode = Regex("\\bHTTP\\s+(\\d{3})\\b", RegexOption.IGNORE_CASE)
+        .find(detail)
+        ?.groupValues
+        ?.getOrNull(1)
+    return when {
+        httpCode != null -> "未通过测试 HTTP $httpCode"
+        detail.contains("timeout", ignoreCase = true) || detail.contains("超时") ->
+            "未通过测试 超时"
+        else -> "未通过测试"
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -2009,6 +2046,15 @@ private fun RemoteModelConfigurationSheet(
     } else {
         null
     }
+    val activeTestConnection = apiTestState.targetConnection?.takeIf { target ->
+        initialModelId != null &&
+            target.id == initialConnectionId &&
+            target.providerId == initialProviderId &&
+            initialModelId in target.modelIds &&
+            (apiTestState.replacingModelId == initialModelId ||
+                apiTestState.replacingModelId == null)
+    }
+    val draftSourceConnection = activeTestConnection ?: savedConnection
     val quickModelIds = config.resolvedConnections()
         .flatMap(ApiConnection::modelIds)
         .distinct()
@@ -2022,11 +2068,11 @@ private fun RemoteModelConfigurationSheet(
     var keyVisible by remember { mutableStateOf(false) }
 
     LaunchedEffect(editorKey) {
-        apiUrl = savedConnection?.apiUrl?.takeIf(String::isNotBlank)
+        apiUrl = draftSourceConnection?.apiUrl?.takeIf(String::isNotBlank)
             ?: selectedProvider.apiUrl.takeUnless { selectedProvider.id == AiProviderCatalog.CUSTOM_PROVIDER_ID }
                 .orEmpty()
-        apiKey = savedConnection?.apiKey.orEmpty()
-        workspaceId = savedConnection?.workspaceId.orEmpty()
+        apiKey = draftSourceConnection?.apiKey.orEmpty()
+        workspaceId = draftSourceConnection?.workspaceId.orEmpty()
         modelIdDrafts = initialRemoteModelIdDrafts(initialModelId)
         pendingModelIdDeleteIndex = null
         confirmDiscard = false
@@ -2035,11 +2081,11 @@ private fun RemoteModelConfigurationSheet(
     }
 
     val draftModelIds = normalizeRemoteModelIds(modelIdDrafts)
-    val initialApiUrl = savedConnection?.apiUrl?.takeIf(String::isNotBlank)
+    val initialApiUrl = draftSourceConnection?.apiUrl?.takeIf(String::isNotBlank)
         ?: selectedProvider.apiUrl.takeUnless { selectedProvider.id == AiProviderCatalog.CUSTOM_PROVIDER_ID }
             .orEmpty()
-    val initialApiKey = savedConnection?.apiKey.orEmpty()
-    val initialWorkspaceId = savedConnection?.workspaceId.orEmpty()
+    val initialApiKey = draftSourceConnection?.apiKey.orEmpty()
+    val initialWorkspaceId = draftSourceConnection?.workspaceId.orEmpty()
     val initialModelIds = normalizeRemoteModelIds(initialRemoteModelIdDrafts(initialModelId))
     val hasDraftChanges = apiUrl.trim().trimEnd('/') != initialApiUrl.trim().trimEnd('/') ||
         apiKey.trim() != initialApiKey.trim() ||
@@ -2059,8 +2105,16 @@ private fun RemoteModelConfigurationSheet(
         workspaceId = workspaceId.trim(),
     )
     val testTargetsDraft = apiTestState.targetConnection?.let { target ->
-        sameRemoteModelDraft(target, draftConnection)
-    } == true && apiTestState.replacingModelId == initialModelId
+        sameRemoteModelEditorTarget(
+            target = target,
+            draft = draftConnection,
+            editingModelId = initialModelId,
+            replacingModelId = apiTestState.replacingModelId,
+        ) &&
+            (apiTestState.replacingModelId == initialModelId ||
+                (apiTestState.replacingModelId == null &&
+                    initialModelId != null && initialModelId in target.modelIds))
+    } == true
     val isTestingDraft = testTargetsDraft && apiTestState.isTesting
     val testedConnection = apiTestState.testedConnection.takeIf { testTargetsDraft }
     val editorMode = remoteModelSheetMode(
@@ -2069,13 +2123,17 @@ private fun RemoteModelConfigurationSheet(
         editingModelId = initialModelId,
         testState = apiTestState,
     )
-    val shouldConfirmDismiss = shouldConfirmRemoteModelSheetDismiss(
-        mode = editorMode,
-        apiUrl = apiUrl,
-        apiKey = apiKey,
-        requiresApiKey = requiresKey,
-        hasDraftChanges = hasDraftChanges,
-    )
+    val shouldConfirmDismiss = if (testTargetsDraft && apiTestState.success == false) {
+        false
+    } else {
+        shouldConfirmRemoteModelSheetDismiss(
+            mode = editorMode,
+            apiUrl = apiUrl,
+            apiKey = apiKey,
+            requiresApiKey = requiresKey,
+            hasDraftChanges = hasDraftChanges,
+        )
+    }
     val currentShouldConfirmDismiss by rememberUpdatedState(shouldConfirmDismiss)
     val sheetScope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(
@@ -2085,7 +2143,13 @@ private fun RemoteModelConfigurationSheet(
                 targetValue = targetValue,
                 shouldConfirmDismiss = currentShouldConfirmDismiss,
             )
-            if (!allowTransition) confirmDiscard = true
+            if (!allowTransition) {
+                if (editorMode == RemoteModelSheetMode.Testing) {
+                    confirmCancelTest = true
+                } else {
+                    confirmDiscard = true
+                }
+            }
             allowTransition
         },
     )
@@ -2099,8 +2163,16 @@ private fun RemoteModelConfigurationSheet(
         confirmDiscard = true
         keepSheetVisible()
     }
+    val showCancelTestConfirmation = {
+        confirmCancelTest = true
+        keepSheetVisible()
+    }
     val requestDismiss = {
-        if (currentShouldConfirmDismiss) showDiscardConfirmation() else onDismiss()
+        when {
+            editorMode == RemoteModelSheetMode.Testing -> showCancelTestConfirmation()
+            currentShouldConfirmDismiss -> showDiscardConfirmation()
+            else -> onDismiss()
+        }
     }
 
     LaunchedEffect(draftConnection) {
@@ -2126,7 +2198,11 @@ private fun RemoteModelConfigurationSheet(
         BackHandler(
             enabled = currentShouldConfirmDismiss && !confirmDiscard && !confirmCancelTest,
         ) {
-            showDiscardConfirmation()
+            if (editorMode == RemoteModelSheetMode.Testing) {
+                showCancelTestConfirmation()
+            } else {
+                showDiscardConfirmation()
+            }
         }
         Column(
             modifier = Modifier
@@ -2483,6 +2559,7 @@ private fun RemoteModelConfigurationSheet(
                     onClick = {
                         confirmCancelTest = false
                         onCancelTest()
+                        onDismiss()
                     },
                 ) {
                     Text("取消测试", color = MaterialTheme.colorScheme.error)
@@ -2570,8 +2647,16 @@ internal fun remoteModelSheetMode(
     testState: ApiTestUiState,
 ): RemoteModelSheetMode {
     val testTargetsDraft = testState.targetConnection?.let { target ->
-        sameRemoteModelDraft(target, draft)
-    } == true && testState.replacingModelId == editingModelId
+        sameRemoteModelEditorTarget(
+            target = target,
+            draft = draft,
+            editingModelId = editingModelId,
+            replacingModelId = testState.replacingModelId,
+        ) &&
+            (testState.replacingModelId == editingModelId ||
+                (testState.replacingModelId == null &&
+                    editingModelId != null && editingModelId in target.modelIds))
+    } == true
     if (testTargetsDraft && testState.isTesting) return RemoteModelSheetMode.Testing
     if (testTargetsDraft && testState.success == true && testState.saved) {
         return RemoteModelSheetMode.Verified
@@ -2589,10 +2674,12 @@ internal fun shouldConfirmRemoteModelSheetDismiss(
     apiKey: String,
     requiresApiKey: Boolean,
     hasDraftChanges: Boolean = true,
-): Boolean = mode == RemoteModelSheetMode.Draft &&
-    hasDraftChanges &&
-    apiUrl.isNotBlank() &&
-    (!requiresApiKey || apiKey.isNotBlank())
+): Boolean = mode == RemoteModelSheetMode.Testing || (
+    mode == RemoteModelSheetMode.Draft &&
+        hasDraftChanges &&
+        apiUrl.isNotBlank() &&
+        (!requiresApiKey || apiKey.isNotBlank())
+    )
 
 @OptIn(ExperimentalMaterial3Api::class)
 internal fun shouldAllowRemoteModelSheetTransition(
@@ -2636,6 +2723,23 @@ internal fun sameRemoteModelDraft(first: ApiConnection, second: ApiConnection): 
         normalizeRemoteModelIds(first.modelIds) == normalizeRemoteModelIds(second.modelIds) &&
         first.workspaceId.trim() == second.workspaceId.trim()
 
+internal fun sameRemoteModelEditorTarget(
+    target: ApiConnection,
+    draft: ApiConnection,
+    editingModelId: String?,
+    replacingModelId: String?,
+): Boolean {
+    if (sameRemoteModelDraft(target, draft)) return true
+    if (replacingModelId != null || editingModelId.isNullOrBlank()) return false
+    return target.id == draft.id &&
+        target.providerId == draft.providerId &&
+        target.apiUrl.trim().trimEnd('/') == draft.apiUrl.trim().trimEnd('/') &&
+        target.apiKey == draft.apiKey &&
+        target.workspaceId.trim() == draft.workspaceId.trim() &&
+        editingModelId in target.modelIds &&
+        draft.modelIds == listOf(editingModelId)
+}
+
 internal fun removeRemoteModel(
     config: ApiConfig,
     connectionId: String,
@@ -2658,6 +2762,7 @@ internal fun removeRemoteModel(
         }.orEmpty(),
         modelCapabilities = connection.modelCapabilities - modelId,
         verifiedModelSignatures = connection.verifiedModelSignatures - modelId,
+        modelTestErrors = connection.modelTestErrors - modelId,
     )
     var next = if (remainingModels.isEmpty()) {
         config.removeConnection(connectionId)
@@ -3970,12 +4075,12 @@ private fun OrchestrationModelSlotRow(
             expanded = expanded,
             onDismissRequest = { expanded = false },
             shape = RoundedCornerShape(14.dp),
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
             border = androidx.compose.foundation.BorderStroke(
                 1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.07f),
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
             ),
         ) {
             models.forEach { item ->
@@ -4751,9 +4856,13 @@ private fun SelectionSettingRow(
     onDismiss: () -> Unit,
     menuContent: @Composable ColumnScope.() -> Unit,
 ) {
+    val rowShape = RoundedCornerShape(8.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(rowShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.16f))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f), rowShape)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -4814,12 +4923,12 @@ private fun SettingsPopupMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(14.dp),
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.07f),
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
         ),
         content = content,
     )
@@ -4939,12 +5048,12 @@ private fun DropdownSettingRow(
             expanded = expanded,
             onDismissRequest = { onExpandedChange(false) },
             shape = RoundedCornerShape(14.dp),
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
             border = androidx.compose.foundation.BorderStroke(
                 1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.07f),
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
             ),
         ) {
             menuContent()
@@ -4959,9 +5068,13 @@ private fun SettingRow(
     description: String,
     onClick: () -> Unit,
 ) {
+    val rowShape = RoundedCornerShape(8.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(rowShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.16f))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f), rowShape)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,

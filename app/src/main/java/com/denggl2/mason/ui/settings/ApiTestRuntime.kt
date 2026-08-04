@@ -100,6 +100,8 @@ class ApiTestRuntime @Inject constructor() {
                 message = "已取消测试，配置未保存",
                 success = false,
                 testedConnection = null,
+                targetConnection = null,
+                replacingModelId = null,
             )
             running
         }

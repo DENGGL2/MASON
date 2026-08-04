@@ -5732,12 +5732,12 @@ private fun ApiAttentionPill(
             .chatBackdrop()
             .background(
                 MaterialTheme.colorScheme.surface.copy(
-                    alpha = chatFloatingSurfaceAlpha(blurred = 0.84f, fallback = 0.74f),
+                    alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.96f),
                 ),
             )
             .border(
                 1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
                 shape,
             )
             .clickable(onClick = onClick)

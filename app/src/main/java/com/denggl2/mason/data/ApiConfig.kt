@@ -32,6 +32,7 @@ data class ApiConnection(
     val workspaceId: String = "",
     val modelCapabilities: Map<String, ApiModelCapabilities> = emptyMap(),
     val verifiedModelSignatures: Map<String, String> = emptyMap(),
+    val modelTestErrors: Map<String, String> = emptyMap(),
 ) {
     fun supportsModel(modelId: String): Boolean = modelId in modelIds
 
@@ -98,7 +99,9 @@ fun ApiConfig.configuredChatModelRefs(): List<ModelReference> {
     val candidates = configuredConnections().flatMap { connection ->
         connection.modelIds.mapNotNull { modelId ->
             val capabilities = connection.modelCapabilities[modelId] ?: return@mapNotNull null
-            ModelReference(connection.id, modelId).takeIf { capabilities.supportsChatModel() }
+            ModelReference(connection.id, modelId).takeIf {
+                modelId !in connection.modelTestErrors && capabilities.supportsChatModel()
+            }
         }
     }
     return (listOfNotNull(selected) + candidates).distinct()
@@ -116,7 +119,8 @@ fun ApiConfig.configuredImageModelRef(): ModelReference? {
     }
     return configuredConnections().firstNotNullOfOrNull { connection ->
         connection.modelIds.firstOrNull { modelId ->
-            connection.modelCapabilities[modelId]?.supportsImageGeneration == true
+            modelId !in connection.modelTestErrors &&
+                connection.modelCapabilities[modelId]?.supportsImageGeneration == true
         }?.let { modelId -> ModelReference(connection.id, modelId) }
     }
 }
@@ -128,6 +132,7 @@ private fun ApiConfig.configuredModelReference(
     if (!reference.isValid) return null
     val connection = configuredConnections().firstOrNull { it.id == reference.connectionId }
         ?: return null
+    if (reference.modelId in connection.modelTestErrors) return null
     val capabilities = connection.modelCapabilities[reference.modelId] ?: return null
     return reference.takeIf {
         connection.supportsModel(it.modelId) && supportsPurpose(capabilities)
@@ -187,7 +192,8 @@ fun ApiConfig.saveConnection(connection: ApiConnection): ApiConfig {
 fun ApiConfig.selectInitialImageModel(connection: ApiConnection): ApiConfig {
     if (resolvedImageModelRef() != null) return this
     val modelId = connection.modelIds.firstOrNull { candidate ->
-        connection.modelCapabilities[candidate]?.supportsImageGeneration == true
+        candidate !in connection.modelTestErrors &&
+            connection.modelCapabilities[candidate]?.supportsImageGeneration == true
     } ?: return this
     return copy(
         imageModel = modelId,
@@ -238,6 +244,7 @@ fun ApiConfig.withActiveConnection(): ApiConfig {
         workspaceId = existing?.workspaceId.orEmpty(),
         modelCapabilities = existing?.modelCapabilities.orEmpty(),
         verifiedModelSignatures = existing?.verifiedModelSignatures.orEmpty(),
+        modelTestErrors = existing?.modelTestErrors.orEmpty(),
     )
     val selectedRef = chatModelRef?.takeIf { it.isValid }
         ?: ModelReference(activeId, model)
