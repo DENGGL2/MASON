@@ -13,35 +13,37 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.AccessibilityNew
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Layers
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,7 +67,6 @@ fun PhoneAgentScreen(
     val config by viewModel.config.collectAsState()
     val permissions by viewModel.permissions.collectAsState()
     val runtime by viewModel.runtime.collectAsState()
-    val logs by viewModel.logs.collectAsState()
     val lifecycleOwner = LocalLifecycleOwner.current
     val allPermissionsGranted = permissions.accessibilityEnabled && permissions.overlayEnabled
 
@@ -88,20 +89,12 @@ fun PhoneAgentScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     PhoneAgentInfoLine(
-                        title = "简述",
-                        text = "屏幕助手可以帮你点击屏幕、输入文字和滑动页面。它使用 Android 系统能力，不需要 Root。",
-                    )
-                    PhoneAgentInfoLine(
                         title = "能力",
-                        text = "它能读取当前页面上的文字和按钮，也能点击按钮、输入文字、上下滑动、返回上一页或回到桌面。需要截图时，会先向你确认。",
-                    )
-                    PhoneAgentInfoLine(
-                        title = "策略",
-                        text = "查看页面和每次操作都会记入日志。点击、输入、滑动、返回等操作会先向你确认。任务中断后会重新读取当前页面，不会重复执行已经完成的操作。",
+                        text = "通过读取屏幕并操作按钮、滑动、打开、关闭等交互完成提出的任务，敏感操作会提前申请",
                     )
                     PhoneAgentInfoLine(
                         title = "权限",
-                        text = "需要无障碍权限才能读取和操作屏幕；需要悬浮窗权限才能显示正在执行的操作和停止按钮。两项权限没有全部开启时，功能开关不可用。截图只保存在本机缓存，不会自动发送给模型。",
+                        text = "需要授权系统的无障碍和悬浮窗功能权限，每次行为都会保存到最近使用记录中",
                     )
                 }
             }
@@ -110,14 +103,7 @@ fun PhoneAgentScreen(
             item {
                 PhoneAgentSwitchRow(
                     title = "开启屏幕助手",
-                    description = when {
-                        !permissions.accessibilityEnabled && !permissions.overlayEnabled ->
-                            "请先开启无障碍权限和悬浮窗权限"
-                        !permissions.accessibilityEnabled -> "请先开启无障碍权限"
-                        !permissions.overlayEnabled -> "请先开启悬浮窗权限"
-                        config.phoneToolsEnabled -> "已开启，Mason 会在你确认后帮你操作屏幕"
-                        else -> "开启后，Mason 才能读取和操作屏幕"
-                    },
+                    description = "",
                     checked = config.phoneToolsEnabled && allPermissionsGranted,
                     enabled = allPermissionsGranted,
                     onCheckedChange = viewModel::setEnabled,
@@ -132,7 +118,6 @@ fun PhoneAgentScreen(
                             .padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Outlined.Shield, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                         Column(
                             modifier = Modifier
                                 .weight(1f)
@@ -146,7 +131,6 @@ fun PhoneAgentScreen(
                             )
                         }
                         TextButton(onClick = viewModel::resumeExecution) {
-                            Icon(Icons.Outlined.PlayArrow, contentDescription = null)
                             Text("恢复")
                         }
                     }
@@ -156,26 +140,20 @@ fun PhoneAgentScreen(
             item { PhoneAgentSectionLabel("权限设置") }
             item {
                 PhoneAgentPermissionRow(
-                    icon = Icons.Outlined.AccessibilityNew,
                     title = "无障碍服务",
-                    description = "读取界面控件并执行点击、输入、滚动和系统导航",
+                    description = "",
                     granted = permissions.accessibilityEnabled,
-                    detail = when {
-                        runtime.serviceConnected -> "服务已连接"
-                        permissions.accessibilityEnabled -> "已开启，等待服务连接"
-                        else -> "未开启"
-                    },
+                    detail = if (permissions.accessibilityEnabled) "已授权" else "未授权",
                     onClick = viewModel::openAccessibilitySettings,
                 )
             }
             item { HorizontalDivider(Modifier.padding(start = 56.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)) }
             item {
                 PhoneAgentPermissionRow(
-                    icon = Icons.Outlined.Layers,
                     title = "悬浮窗",
-                    description = "显示正在执行的动作，并提供立即停止入口",
+                    description = "",
                     granted = permissions.overlayEnabled,
-                    detail = if (permissions.overlayEnabled) "已开启" else "未开启",
+                    detail = if (permissions.overlayEnabled) "已授权" else "未授权",
                     onClick = viewModel::openOverlaySettings,
                 )
             }
@@ -183,9 +161,8 @@ fun PhoneAgentScreen(
             item { PhoneAgentSectionLabel("记录") }
             item {
                 PhoneAgentNavigationRow(
-                    icon = Icons.Outlined.History,
                     title = "最近使用日志",
-                    description = if (logs.isEmpty()) "暂无执行记录" else "最近 ${logs.size} 条执行记录",
+                    description = "",
                     onClick = onOpenLogs,
                 )
             }
@@ -201,6 +178,7 @@ fun PhoneAgentLogScreen(
     viewModel: PhoneAgentViewModel = hiltViewModel(),
 ) {
     val logs by viewModel.logs.collectAsState()
+    var selectedLog by remember { mutableStateOf<PhoneAgentLogEntry?>(null) }
 
     PhoneAgentScaffold(title = "屏幕助手日志", onBack = onBack) { contentPadding ->
         if (logs.isEmpty()) {
@@ -226,13 +204,78 @@ fun PhoneAgentLogScreen(
                 contentPadding = contentPadding,
             ) {
                 items(logs.asReversed(), key = PhoneAgentLogEntry::id) { entry ->
-                    PhoneAgentLogRow(entry)
+                    PhoneAgentLogRow(entry, onClick = { selectedLog = entry })
                     HorizontalDivider(
                         modifier = Modifier.padding(start = 16.dp),
                         color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
                     )
                 }
                 item { Spacer(Modifier.height(24.dp)) }
+            }
+        }
+    }
+
+    selectedLog?.let { entry ->
+        PhoneAgentLogDetailSheet(
+            entry = entry,
+            onDismiss = { selectedLog = null },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PhoneAgentLogDetailSheet(
+    entry: PhoneAgentLogEntry,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                start = 20.dp,
+                end = 20.dp,
+                bottom = 28.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item {
+                Text(entry.action, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    formatPhoneAgentLogTime(entry.timestamp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                )
+                Text(
+                    if (entry.success) "成功" else "未成功",
+                    color = if (entry.success) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            item {
+                Text(entry.summary, fontSize = 14.sp, lineHeight = 20.sp)
+                entry.packageName?.takeIf(String::isNotBlank)?.let { packageName ->
+                    Text(
+                        "应用：$packageName",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+            items(entry.details.entries.toList()) { (key, value) ->
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(phoneAgentDetailLabel(key), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                }
+            }
+            entry.error?.takeIf(String::isNotBlank)?.let { error ->
+                item { Text(error, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) }
             }
         }
     }
@@ -312,13 +355,15 @@ private fun PhoneAgentSwitchRow(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(3.dp))
-            Text(
-                description,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-                lineHeight = 17.sp,
-            )
+            if (description.isNotBlank()) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    description,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                )
+            }
         }
         Spacer(Modifier.padding(horizontal = 6.dp))
         Switch(
@@ -331,7 +376,6 @@ private fun PhoneAgentSwitchRow(
 
 @Composable
 private fun PhoneAgentPermissionRow(
-    icon: ImageVector,
     title: String,
     description: String,
     granted: Boolean,
@@ -345,32 +389,36 @@ private fun PhoneAgentPermissionRow(
             .padding(horizontal = 16.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Column(
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 16.dp),
+                .padding(end = 16.dp),
         ) {
             Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(3.dp))
-            Text(
-                description,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-                lineHeight = 17.sp,
-            )
+            if (description.isNotBlank()) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    description,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                )
+            }
         }
-        Column(horizontalAlignment = Alignment.End) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 detail,
-                color = if (granted) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                color = if (granted) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
+                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                modifier = Modifier.widthIn(min = 52.dp),
             )
             Icon(
                 Icons.Outlined.ChevronRight,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
+                modifier = Modifier.size(18.dp),
             )
         }
     }
@@ -378,7 +426,6 @@ private fun PhoneAgentPermissionRow(
 
 @Composable
 private fun PhoneAgentNavigationRow(
-    icon: ImageVector,
     title: String,
     description: String,
     onClick: () -> Unit,
@@ -390,29 +437,27 @@ private fun PhoneAgentNavigationRow(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Column(
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 16.dp),
+                .padding(end = 16.dp),
         ) {
             Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-            Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            if (description.isNotBlank()) {
+                Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            }
         }
         Icon(Icons.Outlined.ChevronRight, contentDescription = null)
     }
 }
 
 @Composable
-private fun PhoneAgentLogRow(entry: PhoneAgentLogEntry) {
-    val detailText = entry.details.entries.joinToString("\n") { (key, value) ->
-        "${phoneAgentDetailLabel(key)}：$value"
-    }
+private fun PhoneAgentLogRow(entry: PhoneAgentLogEntry, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -422,10 +467,17 @@ private fun PhoneAgentLogRow(entry: PhoneAgentLogEntry) {
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                if (entry.success) "成功" else "失败",
-                color = if (entry.success) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                if (entry.success) "成功" else "未成功",
+                color = if (entry.success) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
+            )
+            Icon(
+                Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
+                modifier = Modifier.size(18.dp),
             )
         }
         Text(
@@ -433,27 +485,6 @@ private fun PhoneAgentLogRow(entry: PhoneAgentLogEntry) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 11.sp,
         )
-        Text(entry.summary, fontSize = 13.sp, lineHeight = 19.sp)
-        if (entry.packageName?.isNotBlank() == true) {
-            Text(
-                "应用：${entry.packageName}",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (detailText.isNotBlank()) {
-            Text(
-                detailText,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-                lineHeight = 17.sp,
-            )
-        }
-        entry.error?.takeIf(String::isNotBlank)?.let { error ->
-            Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, lineHeight = 17.sp)
-        }
     }
 }
 

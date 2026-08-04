@@ -532,7 +532,7 @@ class ChatViewModel @Inject constructor(
                     }
                 }
                 if (currentConversationId == null) {
-                    val title = content.take(20)
+                    val title = summarizeConversationTitle(content)
                     currentConversationId = syncManager.createOrGetConversation(title)
                     activeTaskRun = activeTaskRun?.copy(conversationId = currentConversationId)
                     activeTaskRun?.let { agentRuntime.persist(it) }
@@ -546,7 +546,7 @@ class ChatViewModel @Inject constructor(
 
                     // Auto-title on first user message
                     if (isFirstMessage) {
-                        val autoTitle = content.take(20)
+                        val autoTitle = summarizeConversationTitle(content)
                         syncManager.updateConversationTitle(convId, autoTitle)
                         _uiState.value = _uiState.value.copy(conversationTitle = autoTitle)
                         isFirstMessage = false
@@ -2352,6 +2352,35 @@ class ChatViewModel @Inject constructor(
             runCatching { value.jsonPrimitive.content }.getOrElse { value.toString() }
         }
     }.getOrDefault(emptyMap())
+}
+
+internal fun summarizeConversationTitle(content: String): String {
+    val normalized = content
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .trimEnd('。', '！', '？', '!', '?', '.', '；', ';')
+    if (normalized.isBlank()) return "新对话"
+
+    val sentence = normalized.split(Regex("[。！？!?；;\\n]"))
+        .firstOrNull { it.isNotBlank() }
+        ?.trim()
+        .orEmpty()
+    val withoutPoliteness = sentence.replace(
+        Regex("^(请|帮我|麻烦你|麻烦|能不能|可以帮我|请问|我想要|我需要)\\s*"),
+        "",
+    ).trim()
+    val title = when {
+        Regex("^(分析|解析|总结|梳理)").containsMatchIn(withoutPoliteness) ->
+            "分析${withoutPoliteness.removePrefix("分析").trimStart()}"
+        Regex("^(生成|制作|创建|写|设计)").containsMatchIn(withoutPoliteness) ->
+            "${withoutPoliteness.substringBefore(' ').ifBlank { "处理" }}${withoutPoliteness.substringAfter(' ', "").trim()}"
+        Regex("^(修复|解决|排查|检查)").containsMatchIn(withoutPoliteness) ->
+            "${withoutPoliteness.substringBefore(' ').ifBlank { "处理" }}${withoutPoliteness.substringAfter(' ', "").trim()}"
+        else -> withoutPoliteness.ifBlank { sentence }
+    }
+    return title.replace(Regex("\\s+"), " ").trim().removeSuffix("的问题").let {
+        if (it.length <= 28) it else it.take(27).trimEnd() + "…"
+    }
 }
 
 internal fun isTaskContinuationCommand(content: String): Boolean {

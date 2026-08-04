@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -21,6 +22,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -100,7 +102,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -229,6 +234,72 @@ private const val LOCAL_PROVIDER_ID = "local"
 private const val LIQUID_GLASS_STYLE_VISIBLE = false
 private const val INTERFACE_STYLE_SETTING_VISIBLE = false
 private const val ACCENT_COLOR_SETTING_VISIBLE = false
+private val settingsSheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+
+private fun Modifier.settingsSheetEdgeFade(
+    scrollState: ScrollState,
+    surfaceColor: Color,
+): Modifier = composed {
+    val topAlpha by animateFloatAsState(
+        targetValue = if (scrollState.canScrollBackward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "settings_sheet_top_fade",
+    )
+    val bottomAlpha by animateFloatAsState(
+        targetValue = if (scrollState.canScrollForward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "settings_sheet_bottom_fade",
+    )
+    drawWithContent {
+        drawContent()
+        val fadeHeight = 48.dp.toPx()
+        val fadeSurface = surfaceColor.copy(alpha = 0.995f)
+        if (topAlpha > 0f) {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to fadeSurface,
+                        0.32f to fadeSurface.copy(alpha = 0.82f),
+                        0.70f to fadeSurface.copy(alpha = 0.28f),
+                        1f to Color.Transparent,
+                    ),
+                    startY = 0f,
+                    endY = fadeHeight,
+                ),
+                size = Size(size.width, fadeHeight),
+                alpha = topAlpha,
+            )
+        }
+        if (bottomAlpha > 0f) {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to Color.Transparent,
+                        0.30f to fadeSurface.copy(alpha = 0.28f),
+                        0.68f to fadeSurface.copy(alpha = 0.82f),
+                        1f to fadeSurface,
+                    ),
+                    startY = size.height - fadeHeight,
+                    endY = size.height,
+                ),
+                topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - fadeHeight),
+                size = Size(size.width, fadeHeight),
+                alpha = bottomAlpha,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsSheetDragHandle() {
+    Box(
+        modifier = Modifier
+            .padding(top = 10.dp, bottom = 8.dp)
+            .size(width = 38.dp, height = 4.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f)),
+    )
+}
 
 private enum class OfficialChannelDetail(
     val title: String,
@@ -1930,6 +2001,7 @@ private fun RemoteModelConfigurationSheet(
         ?: AiProviderCatalog.getProvider(AiProviderCatalog.CUSTOM_PROVIDER_ID)
         ?: AiProviderCatalog.defaultProvider
     val editorKey = "$initialConnectionId::$initialProviderId::$initialModelId"
+    val formScrollState = remember(editorKey) { ScrollState(0) }
     val editingExistingModel = initialModelId != null
     val savedConnection = if (editingExistingModel) {
         initialConnectionId?.let(config::connection)
@@ -1963,6 +2035,16 @@ private fun RemoteModelConfigurationSheet(
     }
 
     val draftModelIds = normalizeRemoteModelIds(modelIdDrafts)
+    val initialApiUrl = savedConnection?.apiUrl?.takeIf(String::isNotBlank)
+        ?: selectedProvider.apiUrl.takeUnless { selectedProvider.id == AiProviderCatalog.CUSTOM_PROVIDER_ID }
+            .orEmpty()
+    val initialApiKey = savedConnection?.apiKey.orEmpty()
+    val initialWorkspaceId = savedConnection?.workspaceId.orEmpty()
+    val initialModelIds = normalizeRemoteModelIds(initialRemoteModelIdDrafts(initialModelId))
+    val hasDraftChanges = apiUrl.trim().trimEnd('/') != initialApiUrl.trim().trimEnd('/') ||
+        apiKey.trim() != initialApiKey.trim() ||
+        workspaceId.trim() != initialWorkspaceId.trim() ||
+        draftModelIds != initialModelIds
     val requiresKey = !AiProviderCatalog.allowsBlankApiKey(apiUrl)
     val canTest = apiUrl.isNotBlank() && draftModelIds.isNotEmpty() && (!requiresKey || apiKey.isNotBlank())
     val draftConnection = ApiConnection(
@@ -1992,6 +2074,7 @@ private fun RemoteModelConfigurationSheet(
         apiUrl = apiUrl,
         apiKey = apiKey,
         requiresApiKey = requiresKey,
+        hasDraftChanges = hasDraftChanges,
     )
     val currentShouldConfirmDismiss by rememberUpdatedState(shouldConfirmDismiss)
     val sheetScope = rememberCoroutineScope()
@@ -2030,21 +2113,15 @@ private fun RemoteModelConfigurationSheet(
     ModalBottomSheet(
         onDismissRequest = requestDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.background,
-        contentColor = MaterialTheme.colorScheme.onBackground,
+        shape = settingsSheetShape,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         properties = ModalBottomSheetProperties(
             shouldDismissOnBackPress = !currentShouldConfirmDismiss,
         ),
-        dragHandle = {
-            Box(
-                modifier = Modifier
-                    .padding(top = 10.dp, bottom = 8.dp)
-                    .size(width = 38.dp, height = 4.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)),
-            )
-        },
+        dragHandle = { SettingsSheetDragHandle() },
     ) {
         BackHandler(
             enabled = currentShouldConfirmDismiss && !confirmDiscard && !confirmCancelTest,
@@ -2075,7 +2152,8 @@ private fun RemoteModelConfigurationSheet(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .verticalScroll(rememberScrollState())
+                    .settingsSheetEdgeFade(formScrollState, MaterialTheme.colorScheme.surface)
+                    .verticalScroll(formScrollState)
                     .padding(horizontal = 16.dp, vertical = 10.dp),
             ) {
                 SectionHeader("接口地址")
@@ -2193,13 +2271,13 @@ private fun RemoteModelConfigurationSheet(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(32.dp)
-                            .padding(bottom = 4.dp),
+                            .height(32.dp),
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .horizontalScroll(quickModelIdScrollState),
+                                .horizontalScroll(quickModelIdScrollState)
+                                .align(Alignment.Center),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             availableQuickModelIds.forEach { quickId ->
@@ -2216,7 +2294,9 @@ private fun RemoteModelConfigurationSheet(
                                             modelIdDrafts = applyRemoteModelQuickId(modelIdDrafts, quickId)
                                             onClearTest()
                                         }
-                                        .padding(horizontal = 9.dp, vertical = 6.dp),
+                                        .height(28.dp)
+                                        .padding(horizontal = 9.dp),
+                                    contentAlignment = Alignment.Center,
                                 ) {
                                     Text(
                                         text = quickId,
@@ -2292,13 +2372,29 @@ private fun RemoteModelConfigurationSheet(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 when (editorMode) {
-                    RemoteModelSheetMode.Draft -> Button(
-                        onClick = { onTest(draftConnection) },
-                        enabled = canTest && !apiTestState.isTesting,
-                        modifier = Modifier.weight(1f).height(46.dp),
-                        shape = RoundedCornerShape(8.dp),
-                    ) {
-                        Text("测试连接")
+                    RemoteModelSheetMode.Draft -> {
+                        Button(
+                            onClick = { onTest(draftConnection) },
+                            enabled = canTest && !apiTestState.isTesting,
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text("测试连接")
+                        }
+                        if (editingExistingModel) {
+                            Button(
+                                onClick = { onDelete(draftConnection.id, draftModelIds) },
+                                enabled = draftModelIds.isNotEmpty() && !apiTestState.isTesting,
+                                modifier = Modifier.weight(1f).height(46.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError,
+                                ),
+                            ) {
+                                Text("删除")
+                            }
+                        }
                     }
                     RemoteModelSheetMode.Testing -> Button(
                         onClick = { confirmCancelTest = true },
@@ -2492,7 +2588,9 @@ internal fun shouldConfirmRemoteModelSheetDismiss(
     apiUrl: String,
     apiKey: String,
     requiresApiKey: Boolean,
+    hasDraftChanges: Boolean = true,
 ): Boolean = mode == RemoteModelSheetMode.Draft &&
+    hasDraftChanges &&
     apiUrl.isNotBlank() &&
     (!requiresApiKey || apiKey.isNotBlank())
 
@@ -3871,7 +3969,14 @@ private fun OrchestrationModelSlotRow(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            modifier = Modifier.background(MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(14.dp),
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.07f),
+            ),
         ) {
             models.forEach { item ->
                 DropdownMenuItem(
@@ -4709,12 +4814,12 @@ private fun SettingsPopupMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(14.dp),
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.99f),
-        tonalElevation = 2.dp,
-        shadowElevation = 6.dp,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.07f),
         ),
         content = content,
     )
@@ -4833,7 +4938,14 @@ private fun DropdownSettingRow(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { onExpandedChange(false) },
-            modifier = Modifier.background(MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(14.dp),
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.07f),
+            ),
         ) {
             menuContent()
         }

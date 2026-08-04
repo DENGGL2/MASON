@@ -29,6 +29,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -68,6 +69,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -163,6 +165,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.luminance
@@ -265,6 +268,128 @@ private class ChatBackdropState(
 
 private val LocalChatBackdropState = staticCompositionLocalOf<ChatBackdropState?> { null }
 
+private val chatSheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+
+@Composable
+private fun ChatSheetDragHandle() {
+    Box(
+        modifier = Modifier
+            .padding(top = 10.dp, bottom = 8.dp)
+            .size(width = 38.dp, height = 4.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f)),
+    )
+}
+
+private fun Modifier.chatSheetEdgeFade(
+    scrollState: ScrollState,
+    surfaceColor: Color,
+): Modifier = composed {
+    val topAlpha by animateFloatAsState(
+        targetValue = if (scrollState.canScrollBackward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "chat_sheet_top_fade",
+    )
+    val bottomAlpha by animateFloatAsState(
+        targetValue = if (scrollState.canScrollForward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "chat_sheet_bottom_fade",
+    )
+    drawWithContent {
+        drawContent()
+        val fadeHeight = 48.dp.toPx()
+        val fadeSurface = surfaceColor.copy(alpha = 0.995f)
+        if (topAlpha > 0f) {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to fadeSurface,
+                        0.32f to fadeSurface.copy(alpha = 0.82f),
+                        0.70f to fadeSurface.copy(alpha = 0.28f),
+                        1f to Color.Transparent,
+                    ),
+                    startY = 0f,
+                    endY = fadeHeight,
+                ),
+                topLeft = Offset(0f, 0f),
+                size = Size(size.width, fadeHeight),
+                alpha = topAlpha,
+            )
+        }
+        if (bottomAlpha > 0f) {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to Color.Transparent,
+                        0.30f to fadeSurface.copy(alpha = 0.28f),
+                        0.68f to fadeSurface.copy(alpha = 0.82f),
+                        1f to fadeSurface,
+                    ),
+                    startY = size.height - fadeHeight,
+                    endY = size.height,
+                ),
+                topLeft = Offset(0f, size.height - fadeHeight),
+                size = Size(size.width, fadeHeight),
+                alpha = bottomAlpha,
+            )
+        }
+    }
+}
+
+private fun Modifier.chatSheetEdgeFade(
+    listState: LazyListState,
+    surfaceColor: Color,
+): Modifier = composed {
+    val topAlpha by animateFloatAsState(
+        targetValue = if (listState.canScrollBackward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "chat_sheet_list_top_fade",
+    )
+    val bottomAlpha by animateFloatAsState(
+        targetValue = if (listState.canScrollForward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "chat_sheet_list_bottom_fade",
+    )
+    drawWithContent {
+        drawContent()
+        val fadeHeight = 48.dp.toPx()
+        val fadeSurface = surfaceColor.copy(alpha = 0.995f)
+        if (topAlpha > 0f) {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to fadeSurface,
+                        0.32f to fadeSurface.copy(alpha = 0.82f),
+                        0.70f to fadeSurface.copy(alpha = 0.28f),
+                        1f to Color.Transparent,
+                    ),
+                    startY = 0f,
+                    endY = fadeHeight,
+                ),
+                size = Size(size.width, fadeHeight),
+                alpha = topAlpha,
+            )
+        }
+        if (bottomAlpha > 0f) {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to Color.Transparent,
+                        0.30f to fadeSurface.copy(alpha = 0.28f),
+                        0.68f to fadeSurface.copy(alpha = 0.82f),
+                        1f to fadeSurface,
+                    ),
+                    startY = size.height - fadeHeight,
+                    endY = size.height,
+                ),
+                topLeft = Offset(0f, size.height - fadeHeight),
+                size = Size(size.width, fadeHeight),
+                alpha = bottomAlpha,
+            )
+        }
+    }
+}
+
 @Composable
 private fun rememberChatBackdropState(): ChatBackdropState? {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
@@ -275,8 +400,8 @@ private fun rememberChatBackdropState(): ChatBackdropState? {
             sourceLayer = graphicsContext.createGraphicsLayer(),
             blurredLayer = graphicsContext.createGraphicsLayer().apply {
                 renderEffect = BlurEffect(
-                    radiusX = with(density) { 18.dp.toPx() },
-                    radiusY = with(density) { 18.dp.toPx() },
+                    radiusX = with(density) { 32.dp.toPx() },
+                    radiusY = with(density) { 32.dp.toPx() },
                     edgeTreatment = TileMode.Clamp,
                 )
             },
@@ -1068,19 +1193,17 @@ fun ChatScreen(
                                 },
                                 modifier = Modifier
                                     .size(48.dp)
-                                    .shadow(
-                                        elevation = 10.dp,
-                                        shape = CircleShape,
-                                        clip = false,
-                                        ambientColor = Color.Black.copy(alpha = 0.10f),
-                                        spotColor = Color.Black.copy(alpha = 0.18f),
-                                    )
                                     .clip(CircleShape)
                                     .chatBackdrop()
                                     .background(
                                         MaterialTheme.colorScheme.surface.copy(
-                                            alpha = chatFloatingSurfaceAlpha(blurred = 0.82f, fallback = 0.98f),
+                                            alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.98f),
                                         ),
+                                        CircleShape,
+                                    )
+                                    .border(
+                                        1.dp,
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
                                         CircleShape,
                                     ),
                             ) {
@@ -1148,19 +1271,17 @@ fun ChatScreen(
                                 },
                                 modifier = Modifier
                                     .size(48.dp)
-                                    .shadow(
-                                        elevation = 10.dp,
-                                        shape = CircleShape,
-                                        clip = false,
-                                        ambientColor = Color.Black.copy(alpha = 0.10f),
-                                        spotColor = Color.Black.copy(alpha = 0.18f),
-                                    )
                                     .clip(CircleShape)
                                     .chatBackdrop()
                                     .background(
                                         MaterialTheme.colorScheme.surface.copy(
-                                            alpha = chatFloatingSurfaceAlpha(blurred = 0.82f, fallback = 0.98f),
+                                            alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.98f),
                                         ),
+                                        CircleShape,
+                                    )
+                                    .border(
+                                        1.dp,
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
                                         CircleShape,
                                     ),
                             ) {
@@ -1383,18 +1504,12 @@ private fun ToolApprovalDetailSheet(
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.background,
-        contentColor = MaterialTheme.colorScheme.onBackground,
+        shape = chatSheetShape,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
-        dragHandle = {
-            Box(
-                modifier = Modifier
-                    .padding(top = 10.dp, bottom = 8.dp)
-                    .size(width = 38.dp, height = 4.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)),
-            )
-        },
+        dragHandle = { ChatSheetDragHandle() },
     ) {
         Column(
             modifier = Modifier
@@ -1605,15 +1720,16 @@ private fun MasonDrawer(
 
     val content: @Composable () -> Unit = {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(drawerSurface)
+                modifier = Modifier
+                    .fillMaxSize()
+                    .chatBackdrop()
+                    .background(drawerSurface)
                 .padding(top = 14.dp, bottom = 10.dp),
         ) {
             if (!selectionMode) {
                 DrawerPrimaryAction(
                     label = "新对话",
-                    selected = currentConversationId == null,
+                    selected = false,
                     onClick = onNewChat,
                     icon = Icons.Outlined.Add,
                 )
@@ -1873,13 +1989,7 @@ private fun MasonDrawer(
         ModalDrawerSheet(
             modifier = Modifier
                 .width(292.dp)
-                .shadow(
-                    elevation = 14.dp,
-                    shape = RectangleShape,
-                    clip = false,
-                    ambientColor = Color.Black.copy(alpha = 0.16f),
-                    spotColor = Color.Black.copy(alpha = 0.30f),
-                ),
+                .chatBackdrop(),
             drawerShape = RectangleShape,
             drawerContainerColor = drawerSurface,
             windowInsets = WindowInsets.safeDrawing.only(
@@ -1971,21 +2081,19 @@ private fun TopModelMenuButton(
     Box {
         IconButton(
             onClick = { onExpandedChange(true) },
-            modifier = Modifier
-                .size(48.dp)
-                .shadow(
-                    elevation = 10.dp,
-                    shape = CircleShape,
-                    clip = false,
-                    ambientColor = Color.Black.copy(alpha = 0.10f),
-                    spotColor = Color.Black.copy(alpha = 0.18f),
-                )
-                .clip(CircleShape)
-                .chatBackdrop()
-                .background(
-                    MaterialTheme.colorScheme.surface.copy(
-                        alpha = chatFloatingSurfaceAlpha(blurred = 0.82f, fallback = 0.98f),
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .chatBackdrop()
+                    .background(
+                        MaterialTheme.colorScheme.surface.copy(
+                            alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.98f),
                     ),
+                    CircleShape,
+                )
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
                     CircleShape,
                 ),
         ) {
@@ -2002,12 +2110,12 @@ private fun TopModelMenuButton(
             expanded = expanded,
             onDismissRequest = { onExpandedChange(false) },
             shape = RoundedCornerShape(12.dp),
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.99f),
-            tonalElevation = 2.dp,
-            shadowElevation = 8.dp,
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
             border = androidx.compose.foundation.BorderStroke(
                 1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
             ),
         ) {
             Column(
@@ -2080,7 +2188,7 @@ private fun CurrentModelMenuRow(
 }
 
 @Composable
-private fun drawerGlassSurface(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.99f)
+private fun drawerGlassSurface(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
 
 @Composable
 private fun DrawerPrimaryAction(
@@ -3174,23 +3282,30 @@ private fun TaskProcessLine(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            if ((step.status == TaskStepStatus.Failed && step.retryable) ||
-                (step.status == TaskStepStatus.WaitingForUser && allowWaitingResume)
-            ) {
-                IconButton(onClick = onRetry, modifier = Modifier.size(30.dp)) {
-                    Icon(
-                        if (step.status == TaskStepStatus.WaitingForUser) Icons.Outlined.PlayArrow else Icons.Outlined.Refresh,
-                        contentDescription = if (step.status == TaskStepStatus.WaitingForUser) "继续任务" else "重试此步骤",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(16.dp),
-                    )
+            Box(modifier = Modifier.size(30.dp)) {
+                if ((step.status == TaskStepStatus.Failed && step.retryable) ||
+                    (step.status == TaskStepStatus.WaitingForUser && allowWaitingResume)
+                ) {
+                    IconButton(onClick = onRetry, modifier = Modifier.fillMaxSize()) {
+                        Icon(
+                            if (step.status == TaskStepStatus.WaitingForUser) Icons.Outlined.PlayArrow else Icons.Outlined.Refresh,
+                            contentDescription = if (step.status == TaskStepStatus.WaitingForUser) "继续任务" else "重试此步骤",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
                 }
             }
-            Text(
-                statusLabel,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp,
-            )
+            Box(
+                modifier = Modifier.width(52.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Text(
+                    statusLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp,
+                )
+            }
             Spacer(Modifier.width(6.dp))
             Icon(
                 Icons.AutoMirrored.Outlined.KeyboardArrowRight,
@@ -3236,7 +3351,7 @@ private fun taskStepIcon(step: TaskStep): ImageVector {
     return when (step.kind) {
         TaskStepKind.Understand -> Icons.Outlined.Lightbulb
         TaskStepKind.PrepareInputs -> Icons.Outlined.AttachFile
-        TaskStepKind.Model -> Icons.Outlined.Memory
+        TaskStepKind.Model -> Icons.Outlined.Description
         TaskStepKind.Skill -> Icons.Outlined.Extension
         TaskStepKind.Tool -> Icons.Outlined.Computer
         TaskStepKind.Review -> Icons.Outlined.CheckCircle
@@ -3328,12 +3443,21 @@ private fun ToolExecutionDetailSheet(
     onRetry: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
+    val detailScrollState = rememberScrollState()
     val requestText = remember(detail.step.toolCall) { formatToolRequest(detail.step) }
     val responseText = remember(detail.result?.content, detail.step.error) {
         redactSensitiveToolText(detail.result?.content ?: detail.step.error ?: "暂无返回内容")
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = chatSheetShape,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        dragHandle = { ChatSheetDragHandle() },
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3361,7 +3485,8 @@ private fun ToolExecutionDetailSheet(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .verticalScroll(rememberScrollState()),
+                    .chatSheetEdgeFade(detailScrollState, MaterialTheme.colorScheme.surface)
+                    .verticalScroll(detailScrollState),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 ExecutionDetailSection(
@@ -4215,7 +4340,15 @@ private fun UserMessageActionSheet(
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = chatSheetShape,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        dragHandle = { ChatSheetDragHandle() },
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -4252,7 +4385,15 @@ private fun AssistantActionSheet(
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = chatSheetShape,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        dragHandle = { ChatSheetDragHandle() },
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -4873,8 +5014,17 @@ private fun ArtifactPreviewDialog(
     val previewText = remember(artifact.path, artifact.bytes) {
         buildArtifactPreviewText(artifact)
     }
+    val previewScrollState = rememberScrollState()
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = chatSheetShape,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        dragHandle = { ChatSheetDragHandle() },
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -4920,7 +5070,8 @@ private fun ArtifactPreviewDialog(
                     .height(190.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.54f))
-                    .verticalScroll(rememberScrollState())
+                    .chatSheetEdgeFade(previewScrollState, MaterialTheme.colorScheme.surfaceVariant)
+                    .verticalScroll(previewScrollState)
                     .padding(12.dp),
             ) {
                 Text(
@@ -5245,7 +5396,7 @@ private fun InputBar(
         MaterialTheme.colorScheme.primary.copy(alpha = 0.11f)
     }
     val panelSurface = MaterialTheme.colorScheme.surface.copy(
-        alpha = chatFloatingSurfaceAlpha(blurred = 0.84f, fallback = 0.99f),
+            alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.99f),
     )
     var addMenuExpanded by remember { mutableStateOf(false) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
@@ -5294,13 +5445,6 @@ private fun InputBar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .shadow(
-                    elevation = 12.dp,
-                    shape = panelShape,
-                    clip = false,
-                    ambientColor = Color.Black.copy(alpha = 0.16f),
-                    spotColor = Color.Black.copy(alpha = 0.28f),
-                )
                 .clip(panelShape)
                 .chatBackdrop()
                 .background(panelSurface)
@@ -5335,9 +5479,9 @@ private fun InputBar(
                         expanded = addMenuExpanded,
                         onDismissRequest = { addMenuExpanded = false },
                         shape = RoundedCornerShape(14.dp),
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.99f),
-                        tonalElevation = 2.dp,
-                        shadowElevation = 6.dp,
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                        tonalElevation = 0.dp,
+                        shadowElevation = 0.dp,
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
                             MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
@@ -5417,7 +5561,7 @@ private fun InputBar(
                         ) {
                             if (text.isBlank()) {
                                 Text(
-                                    "询问 Mason，或添加材料...",
+                                    "跟MASON聊聊",
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.76f),
                                     fontSize = 14.sp,
                                     maxLines = 1,
@@ -5507,18 +5651,11 @@ private fun RiskApprovalPill(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(
-                elevation = 5.dp,
-                shape = shape,
-                clip = false,
-                ambientColor = Color.Black.copy(alpha = 0.08f),
-                spotColor = Color.Black.copy(alpha = 0.12f),
-            )
             .clip(shape)
             .chatBackdrop()
             .background(
                 MaterialTheme.colorScheme.surface.copy(
-                    alpha = chatFloatingSurfaceAlpha(blurred = 0.82f, fallback = 0.97f),
+                    alpha = chatFloatingSurfaceAlpha(blurred = 0.88f, fallback = 0.97f),
                 ),
             )
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f), shape)
@@ -5595,7 +5732,7 @@ private fun ApiAttentionPill(
             .chatBackdrop()
             .background(
                 MaterialTheme.colorScheme.surface.copy(
-                    alpha = chatFloatingSurfaceAlpha(blurred = 0.68f, fallback = 0.74f),
+                    alpha = chatFloatingSurfaceAlpha(blurred = 0.84f, fallback = 0.74f),
                 ),
             )
             .border(
@@ -5683,11 +5820,11 @@ private fun ModelModeSwitcher(
             onDismissRequest = { onExpandedChange(false) },
             shape = RoundedCornerShape(16.dp),
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-            tonalElevation = 2.dp,
-            shadowElevation = 8.dp,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
             border = androidx.compose.foundation.BorderStroke(
                 1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
             ),
         ) {
             Text(
@@ -5882,9 +6019,15 @@ private fun SkillPickerSheet(
     onDismiss: () -> Unit,
     onSelect: (SkillOption) -> Unit,
 ) {
+    val skillListState = rememberLazyListState()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
+        shape = chatSheetShape,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        dragHandle = { ChatSheetDragHandle() },
     ) {
         Column(
             modifier = Modifier
@@ -5915,7 +6058,10 @@ private fun SkillPickerSheet(
                     modifier = Modifier.padding(vertical = 22.dp),
                 )
                 else -> LazyColumn(
-                    modifier = Modifier.heightIn(max = 420.dp),
+                    state = skillListState,
+                    modifier = Modifier
+                        .chatSheetEdgeFade(skillListState, MaterialTheme.colorScheme.surface)
+                        .heightIn(max = 420.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     items(skills, key = { it.path }) { skill ->

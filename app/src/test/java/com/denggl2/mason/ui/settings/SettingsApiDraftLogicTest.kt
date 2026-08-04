@@ -153,6 +153,19 @@ class SettingsApiDraftLogicTest {
     }
 
     @Test
+    fun untouchedDraftDoesNotRequireExitConfirmation() {
+        assertFalse(
+            shouldConfirmRemoteModelSheetDismiss(
+                mode = RemoteModelSheetMode.Draft,
+                apiUrl = "https://relay.example/v1",
+                apiKey = "key",
+                requiresApiKey = true,
+                hasDraftChanges = false,
+            ),
+        )
+    }
+
+    @Test
     fun dirtyRemoteModelDraftCannotHideBeforeExitConfirmation() {
         assertFalse(
             shouldAllowRemoteModelSheetTransition(

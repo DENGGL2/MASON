@@ -90,7 +90,11 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -147,7 +151,13 @@ private data class CollectionEntry(
     val automationEnabled: Boolean? = null,
     val automation: MasonAutomationSpec? = null,
     val skillManifest: MasonSkillManifest? = null,
+    val titleOverride: String? = null,
 )
+
+private val CollectionEntry.displayTitle: String
+    get() = titleOverride?.takeIf(String::isNotBlank) ?: name
+
+private const val COLLECTION_TITLE_PREFS = "collection_entry_titles"
 
 private val COLLECTION_JSON = Json { ignoreUnknownKeys = true }
 private val TIMED_TRIGGER_TYPES = setOf(
@@ -211,7 +221,8 @@ fun CollectionListScreen(
             entries
         } else {
             entries.filter { entry ->
-                entry.name.contains(keyword, ignoreCase = true) ||
+                entry.displayTitle.contains(keyword, ignoreCase = true) ||
+                    entry.name.contains(keyword, ignoreCase = true) ||
                     entry.path.contains(keyword, ignoreCase = true)
             }
         }
@@ -446,7 +457,7 @@ fun CollectionListScreen(
                                             { pendingAutomationRun = entry }
                                         },
                                         onShowAutomationLogs = entry.automationId?.let { id ->
-                                            { viewModel.showAutomationLogs(id, entry.name) }
+                                            { viewModel.showAutomationLogs(id, entry.displayTitle) }
                                         },
                                         automationStatus = entry.automation?.let { spec ->
                                             when {
@@ -564,6 +575,16 @@ fun CollectionListScreen(
         EntryPreviewDialog(
             entry = entry,
             onDismiss = { previewEntry = null },
+            onTitleChange = { title ->
+                val trimmed = title.trim()
+                context.getSharedPreferences(COLLECTION_TITLE_PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("title:${entry.path}", trimmed)
+                    .apply()
+                val updated = entry.copy(titleOverride = trimmed)
+                entries = entries.map { item -> if (item.path == entry.path) updated else item }
+                previewEntry = updated
+            },
             onOpen = { openEntry(context, entry, edit = false) },
             onEdit = {
                 entry.automation?.let { editingAutomation = it }
@@ -640,7 +661,7 @@ fun CollectionListScreen(
     pendingAutomationRun?.let { entry ->
         AlertDialog(
             onDismissRequest = { pendingAutomationRun = null },
-            title = { Text("运行 ${entry.name}？") },
+            title = { Text("运行 ${entry.displayTitle}？") },
             text = { Text(entry.summary) },
             confirmButton = {
                 TextButton(
@@ -759,7 +780,7 @@ private fun CollectionEntryRow(
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    entry.name,
+                    entry.displayTitle,
                     color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -1587,6 +1608,7 @@ private fun collectionGlassBrush(): Color = MaterialTheme.colorScheme.surface.co
 private fun EntryPreviewDialog(
     entry: CollectionEntry,
     onDismiss: () -> Unit,
+    onTitleChange: (String) -> Unit,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
     onShare: () -> Unit,
@@ -1594,20 +1616,62 @@ private fun EntryPreviewDialog(
     val previewText = remember(entry.path, entry.modifiedAt) {
         buildPreviewText(entry)
     }
+    var editingTitle by remember(entry.path) { mutableStateOf(false) }
+    val titleFocusRequester = remember { FocusRequester() }
+    var titleField by remember(entry.path, entry.displayTitle) {
+        mutableStateOf(TextFieldValue(entry.displayTitle))
+    }
+    LaunchedEffect(editingTitle) {
+        if (editingTitle) titleFocusRequester.requestFocus()
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
         title = {
             Column {
-                Text(
-                    entry.name,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (editingTitle) {
+                        OutlinedTextField(
+                            value = titleField,
+                            onValueChange = { titleField = it },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).focusRequester(titleFocusRequester),
+                        )
+                        TextButton(
+                            onClick = {
+                                val value = titleField.text.trim()
+                                if (value.isNotBlank()) {
+                                    onTitleChange(value)
+                                    editingTitle = false
+                                }
+                            },
+                        ) { Text("保存") }
+                    } else {
+                        Text(
+                            entry.displayTitle,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (entry.kind == CollectionKind.ARTIFACTS) {
+                            IconButton(
+                                onClick = {
+                                    titleField = TextFieldValue(
+                                        entry.displayTitle,
+                                        selection = TextRange(0, entry.displayTitle.length),
+                                    )
+                                    editingTitle = true
+                                },
+                            ) {
+                                Icon(Icons.Outlined.Edit, contentDescription = "编辑标题")
+                            }
+                        }
+                    }
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "${entry.typeLabel} · ${entry.sourceLabel}",
@@ -1669,11 +1733,15 @@ private fun EntryPreviewDialog(
 }
 
 private fun loadCollectionEntries(context: Context, kind: CollectionKind): List<CollectionEntry> {
+    val titlePrefs = context.getSharedPreferences(COLLECTION_TITLE_PREFS, Context.MODE_PRIVATE)
     return collectionRoots(context, kind)
         .distinctBy { it.safePath() }
         .flatMap { root -> collectEntries(root, kind) }
         .distinctBy { it.path }
         .filterNot { it.skillManifest?.archived == true }
+        .map { entry ->
+            entry.copy(titleOverride = titlePrefs.getString("title:${entry.path}", null))
+        }
         .sortedByDescending { it.modifiedAt }
 }
 

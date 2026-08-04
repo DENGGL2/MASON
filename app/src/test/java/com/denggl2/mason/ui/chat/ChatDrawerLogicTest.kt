@@ -15,6 +15,13 @@ import org.junit.Test
 
 class ChatDrawerLogicTest {
     @Test
+    fun conversationTitle_usesIntentInsteadOfRawPrefix() {
+        assertEquals("分析这份日志里的错误", summarizeConversationTitle("请分析这份日志里的错误。再给我修复建议"))
+        assertEquals("修复登录页按钮无法点击", summarizeConversationTitle("帮我修复登录页按钮无法点击的问题"))
+        assertEquals("新对话", summarizeConversationTitle("   "))
+    }
+
+    @Test
     fun naturalLanguageContinueCommandsResumeButNormalMessagesDoNot() {
         assertTrue(isTaskContinuationCommand("继续"))
         assertTrue(isTaskContinuationCommand("继续任务。"))
