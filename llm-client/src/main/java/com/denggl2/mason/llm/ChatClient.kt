@@ -34,6 +34,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 sealed class ChatResponse {
+    data class ModelExecutionStarted(
+        val engineId: String,
+        val modelId: String,
+        val contribution: String,
+    ) : ChatResponse()
     data class TextChunk(val text: String) : ChatResponse()
     data class UsageReceived(val usage: TokenUsage) : ChatResponse()
     data class ToolCallsRequested(
@@ -354,57 +359,61 @@ class ChatClient @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             runCatching {
-                executeTestRequest(apiUrl, apiKey, textRequest, additionalHeaders).use { response ->
+                val chatCapability = executeTestRequest(apiUrl, apiKey, textRequest, additionalHeaders).use { response ->
                     val responseBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
-                        val message = "API 错误 ${response.code}: ${responseBody.take(240)}"
-                        return@use ApiTestResult(
+                        ApiCapabilityCheck(
+                            label = "聊天",
                             success = false,
-                            message = message,
-                            capabilities = listOf(ApiCapabilityCheck("聊天", success = false, detail = message)),
+                            detail = apiTestHttpFailureDetail(response.code, responseBody),
                         )
+                    } else {
+                        ApiCapabilityCheck(label = "聊天", success = true)
                     }
-
-                    val content = runCatching {
-                        val root = json.parseToJsonElement(responseBody).jsonObject
-                        root["choices"]
-                            ?.jsonArray
-                            ?.firstOrNull()
-                            ?.jsonObject
-                            ?.get("message")
-                            ?.jsonObject
-                            ?.get("content")
-                            ?.jsonPrimitive
-                            ?.contentOrNull
-                    }.getOrNull()
-
-                    val textMessage = if (content.isNullOrBlank()) "连接成功" else "连接成功：${content.take(80)}"
-                    val capabilities = mutableListOf(
-                        ApiCapabilityCheck(label = "聊天", success = true),
-                        probeVisionCapability(apiUrl, apiKey, visionModel.ifBlank { model }, additionalHeaders),
-                        probeImageCapability(apiUrl, apiKey, imageModel, additionalHeaders),
-                    )
-                    if (!testTools) {
-                        return@use ApiTestResult(
-                            success = true,
-                            message = textMessage,
-                            capabilities = capabilities,
-                        )
-                    }
-
-                    val probe = probeToolCalling(apiUrl, apiKey, model, additionalHeaders)
-                    capabilities += ApiCapabilityCheck(
-                        label = "工具调用",
-                        success = probe.available,
-                        detail = probe.warning,
-                    )
-                    ApiTestResult(
-                        success = true,
-                        message = if (probe.available) "$textMessage；工具调用可用" else textMessage,
-                        capabilityWarning = probe.warning,
-                        capabilities = capabilities,
-                    )
                 }
+                val capabilities = mutableListOf(
+                    chatCapability,
+                    probeVisionCapability(apiUrl, apiKey, visionModel.ifBlank { model }, additionalHeaders),
+                    probeImageCapability(apiUrl, apiKey, imageModel, additionalHeaders),
+                )
+                var capabilityWarning: String? = null
+                if (testTools) {
+                    if (chatCapability.success) {
+                        val probe = probeToolCalling(apiUrl, apiKey, model, additionalHeaders)
+                        capabilityWarning = probe.warning
+                        capabilities += ApiCapabilityCheck(
+                            label = "工具调用",
+                            success = probe.available,
+                            detail = probe.warning,
+                        )
+                    } else {
+                        capabilities += ApiCapabilityCheck(
+                            label = "工具调用",
+                            success = false,
+                            detail = "聊天能力不可用",
+                        )
+                    }
+                }
+
+                val coreCapabilities = capabilities.filter { it.label in setOf("聊天", "识图", "生图") }
+                val availableLabels = capabilities.filter(ApiCapabilityCheck::success).map(ApiCapabilityCheck::label)
+                val success = coreCapabilities.any(ApiCapabilityCheck::success)
+                val failureDetails = coreCapabilities
+                    .filterNot(ApiCapabilityCheck::success)
+                    .mapNotNull(ApiCapabilityCheck::detail)
+                    .distinct()
+                    .joinToString("\n\n")
+                    .take(1_200)
+                ApiTestResult(
+                    success = success,
+                    message = if (success) {
+                        "连接成功；支持${availableLabels.joinToString("、")}"
+                    } else {
+                        "模型测试未通过${failureDetails.takeIf(String::isNotBlank)?.let { "：$it" }.orEmpty()}"
+                    },
+                    capabilityWarning = capabilityWarning,
+                    capabilities = capabilities,
+                )
             }.getOrElse { error ->
                 val message = "连接失败: ${error.message ?: error.javaClass.simpleName}"
                 ApiTestResult(
@@ -449,7 +458,11 @@ class ChatClient @Inject constructor(
                 if (response.isSuccessful) {
                     ApiCapabilityCheck(label = "识图", success = true)
                 } else {
-                    ApiCapabilityCheck(label = "识图", success = false, detail = responseErrorSummary(body))
+                    ApiCapabilityCheck(
+                        label = "识图",
+                        success = false,
+                        detail = apiTestHttpFailureDetail(response.code, body),
+                    )
                 }
             }
         }.getOrElse { error ->
@@ -483,7 +496,11 @@ class ChatClient @Inject constructor(
                 when {
                     response.isSuccessful && hasImage -> ApiCapabilityCheck(label = "生图", success = true)
                     response.isSuccessful -> ApiCapabilityCheck(label = "生图", success = false, detail = "未返回图片")
-                    else -> ApiCapabilityCheck(label = "生图", success = false, detail = responseErrorSummary(body))
+                    else -> ApiCapabilityCheck(
+                        label = "生图",
+                        success = false,
+                        detail = apiTestHttpFailureDetail(response.code, body),
+                    )
                 }
             }
         }.getOrElse { error ->
@@ -540,14 +557,28 @@ class ChatClient @Inject constructor(
                 lastFailure = if (response.isSuccessful) {
                     "中转站或模型未返回 function calling"
                 } else {
-                    "检测请求返回 ${response.code}${responseErrorSummary(body)?.let { "：$it" }.orEmpty()}"
+                    apiTestHttpFailureDetail(response.code, body)
                 }
             }
         }
         return ToolProbeResult(available = false, warning = "工具调用不可用：$lastFailure")
     }
 
-    private fun responseErrorSummary(body: String): String? {
+    private fun apiTestHttpFailureDetail(responseCode: Int, body: String): String {
+        val possibleCause = when (responseCode) {
+            400 -> "请求参数、Model ID、接口协议或当前模型能力不匹配"
+            401 -> "API Key 无效、已过期，或认证格式不符合服务商要求"
+            403 -> "API Key 没有该模型权限，或账户、地域受到限制"
+            404 -> "接口地址或 API 版本不匹配、Model ID 不存在，或该模型不能通过当前端点调用"
+            429 -> "请求频率过高、账户额度不足，或服务商当前过载"
+            in 500..599 -> "服务商暂时异常或上游模型不可用"
+            else -> "接口地址、账户权限、Model ID 或服务商状态异常"
+        }
+        val responseDetail = responseErrorSummary(body, maxLength = 600) ?: "未返回错误内容"
+        return "可能原因：$possibleCause\nHTTP $responseCode\n接口返回：$responseDetail"
+    }
+
+    private fun responseErrorSummary(body: String, maxLength: Int = 160): String? {
         val structured = runCatching {
             val root = json.parseToJsonElement(body).jsonObject
             val error = root["error"]
@@ -561,7 +592,7 @@ class ChatClient @Inject constructor(
             .replace(Regex("\\s+"), " ")
             .trim()
             .takeIf(String::isNotBlank)
-            ?.take(160)
+            ?.take(maxLength)
     }
 
     private fun responseToolNames(responseBody: String): List<String> = runCatching {

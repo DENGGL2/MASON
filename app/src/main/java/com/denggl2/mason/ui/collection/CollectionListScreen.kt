@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -68,9 +69,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,8 +85,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -174,6 +181,23 @@ fun CollectionListScreen(
     var selectionMode by remember { mutableStateOf(false) }
     var selectedArtifactPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingArtifactDeletePaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val collectionListState = rememberLazyListState()
+    val fadeRevealDistancePx = with(LocalDensity.current) { 24.dp.toPx() }
+    val topFadeProgress = remember(collectionListState, fadeRevealDistancePx) {
+        derivedStateOf {
+            if (collectionListState.firstVisibleItemIndex > 0) {
+                1f
+            } else {
+                (collectionListState.firstVisibleItemScrollOffset / fadeRevealDistancePx)
+                    .coerceIn(0f, 1f)
+            }
+        }
+    }
+    val bottomFadeProgress by animateFloatAsState(
+        targetValue = if (collectionListState.canScrollForward) 1f else 0f,
+        animationSpec = tween(durationMillis = 180),
+        label = "workbench_bottom_fade",
+    )
     val scope = rememberCoroutineScope()
     val localSkillArchivePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importSkillFromLocalZip(it) }
@@ -373,13 +397,20 @@ fun CollectionListScreen(
                         )
                     }
                     else -> {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            itemsIndexed(filteredEntries, key = { _, item -> item.path }) { _, entry ->
-                                Box(modifier = Modifier.animateItem()) {
-                                    CollectionEntryRow(
+                        val fadeSurface = MaterialTheme.colorScheme.background
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = collectionListState,
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                    top = 4.dp,
+                                    bottom = 10.dp,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                itemsIndexed(filteredEntries, key = { _, item -> item.path }) { _, entry ->
+                                    Box(modifier = Modifier.animateItem()) {
+                                        CollectionEntryRow(
                                         entry = entry,
                                         selectionMode = selectionMode,
                                         selected = entry.path in selectedArtifactPaths,
@@ -427,9 +458,46 @@ fun CollectionListScreen(
                                                 else -> "可运行"
                                             }
                                         },
-                                    )
+                                        )
+                                    }
                                 }
                             }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .fillMaxWidth()
+                                    .height(30.dp)
+                                    .graphicsLayer {
+                                        val progress = topFadeProgress.value
+                                        alpha = progress
+                                        translationY = -30.dp.toPx() * (1f - progress)
+                                    }
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                fadeSurface,
+                                                fadeSurface.copy(alpha = 0.72f),
+                                                Color.Transparent,
+                                            ),
+                                        ),
+                                    ),
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .height(34.dp)
+                                    .graphicsLayer { alpha = bottomFadeProgress }
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.Transparent,
+                                                fadeSurface.copy(alpha = 0.72f),
+                                                fadeSurface,
+                                            ),
+                                        ),
+                                    ),
+                            )
                         }
                     }
                 }
@@ -1388,6 +1456,22 @@ private fun AutomationLogsDialog(
 ) {
     val formatter = remember { SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()) }
     var expandedRunAt by remember { mutableStateOf<Long?>(null) }
+    val listState = rememberLazyListState()
+    val fadeRevealDistancePx = with(LocalDensity.current) { 24.dp.toPx() }
+    val topFadeProgress = remember(listState, fadeRevealDistancePx) {
+        derivedStateOf {
+            if (listState.firstVisibleItemIndex > 0) {
+                1f
+            } else {
+                (listState.firstVisibleItemScrollOffset / fadeRevealDistancePx).coerceIn(0f, 1f)
+            }
+        }
+    }
+    val bottomFadeProgress by animateFloatAsState(
+        targetValue = if (listState.canScrollForward) 1f else 0f,
+        animationSpec = tween(durationMillis = 180),
+        label = "automation_log_bottom_fade",
+    )
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("$title · 运行日志") },
@@ -1395,18 +1479,25 @@ private fun AutomationLogsDialog(
             if (logs.isEmpty()) {
                 Text("暂无运行记录")
             } else {
-                LazyColumn(
-                    modifier = Modifier.height(260.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(logs) { log ->
-                        Column(
+                val fadeSurface = MaterialTheme.colorScheme.surface
+                Box(modifier = Modifier.height(260.dp)) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            top = 4.dp,
+                            bottom = 10.dp,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(logs) { log ->
+                            Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable(enabled = log.steps.isNotEmpty()) {
                                     expandedRunAt = if (expandedRunAt == log.ranAt) null else log.ranAt
                                 },
-                        ) {
+                            ) {
                             Text(
                                 if (log.status == "success") "成功" else "失败",
                                 fontWeight = FontWeight.SemiBold,
@@ -1441,8 +1532,45 @@ private fun AutomationLogsDialog(
                                     )
                                 }
                             }
+                            }
                         }
                     }
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .height(24.dp)
+                            .graphicsLayer {
+                                val progress = topFadeProgress.value
+                                alpha = progress
+                                translationY = -24.dp.toPx() * (1f - progress)
+                            }
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        fadeSurface,
+                                        fadeSurface.copy(alpha = 0.72f),
+                                        Color.Transparent,
+                                    ),
+                                ),
+                            ),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(28.dp)
+                            .graphicsLayer { alpha = bottomFadeProgress }
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        fadeSurface.copy(alpha = 0.72f),
+                                        fadeSurface,
+                                    ),
+                                ),
+                            ),
+                    )
                 }
             }
         },

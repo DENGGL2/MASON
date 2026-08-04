@@ -16,7 +16,16 @@ dependencies {
     implementation(project(":protocol"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.jna.platform)
+    implementation(libs.ktor.server.core)
+    implementation(libs.ktor.server.netty)
+    implementation(libs.ktor.server.content.negotiation)
+    implementation(libs.ktor.serialization.json)
+    implementation(libs.ktor.network.tls.certificates)
+    implementation(libs.zxing.core)
+    implementation(libs.zxing.javase)
 
     testImplementation(kotlin("test"))
     testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.okhttp)
 }

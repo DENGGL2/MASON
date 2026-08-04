@@ -1,6 +1,11 @@
 package com.denggl2.mason.model
 
 import com.denggl2.mason.data.ApiConfig
+import com.denggl2.mason.data.ApiConnection
+import com.denggl2.mason.data.ApiModelCapabilities
+import com.denggl2.mason.data.ModelReference
+import com.denggl2.mason.data.configuredChatModelRef
+import com.denggl2.mason.data.selectChatModel
 import com.denggl2.mason.llm.ModelAttachment
 import com.denggl2.mason.llm.ModelModality
 import com.denggl2.mason.llm.model.ChatMessage
@@ -10,6 +15,103 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ModelRoutingLogicTest {
+    @Test
+    fun dynamicRoutingUsesOnlyConfiguredModelsAndPrefersCurrentForStandardTasks() {
+        val config = routingConfig(dynamic = true)
+
+        val selected = requireNotNull(
+            selectConfiguredRemoteChatModel(
+                config = config,
+                userText = "帮我整理这段内容并给出简短建议",
+                toolsRequested = false,
+            ),
+        )
+
+        assertEquals(ModelReference("deepseek", "deepseek-v4-flash"), selected.reference)
+    }
+
+    @Test
+    fun dynamicRoutingUsesLightModelForSimpleTaskAndStrongModelForComplexTask() {
+        val config = routingConfig(dynamic = true)
+
+        val simple = requireNotNull(
+            selectConfiguredRemoteChatModel(config, "翻译：早上好", toolsRequested = false),
+        )
+        val complex = requireNotNull(
+            selectConfiguredRemoteChatModel(
+                config,
+                "请深入分析这个系统并给出完整架构设计",
+                toolsRequested = false,
+            ),
+        )
+
+        assertEquals("deepseek-v4-flash", simple.reference.modelId)
+        assertEquals("deepseek-v4-pro", complex.reference.modelId)
+    }
+
+    @Test
+    fun toolIntentSelectsConfiguredToolCapableModel() {
+        val config = routingConfig(dynamic = true).selectChatModel(
+            ModelReference("mimo", "mimo-v2.5"),
+        )
+
+        val selected = requireNotNull(
+            selectConfiguredRemoteChatModel(
+                config,
+                "请搜索最新消息并发送给我",
+                toolsRequested = true,
+            ),
+        )
+
+        assertEquals(ModelReference("deepseek", "deepseek-v4-flash"), selected.reference)
+    }
+
+    @Test
+    fun toolsAreNeverSentToUnsupportedOrNonTextModels() {
+        assertFalse(
+            shouldEnableRemoteTools(
+                requested = true,
+                phoneToolsEnabled = true,
+                modelSupportsTools = false,
+                modality = ModelModality.Text,
+                useLocal = false,
+            ),
+        )
+        assertFalse(
+            shouldEnableRemoteTools(
+                requested = true,
+                phoneToolsEnabled = true,
+                modelSupportsTools = true,
+                modality = ModelModality.Vision,
+                useLocal = false,
+            ),
+        )
+        assertTrue(
+            shouldEnableRemoteTools(
+                requested = true,
+                phoneToolsEnabled = true,
+                modelSupportsTools = true,
+                modality = ModelModality.Text,
+                useLocal = false,
+            ),
+        )
+    }
+
+    @Test
+    fun disabledDynamicRoutingAlwaysKeepsTheCurrentModel() {
+        val config = routingConfig(dynamic = false)
+
+        val selected = requireNotNull(
+            selectConfiguredRemoteChatModel(
+                config,
+                "请深入分析并给出完整架构设计",
+                toolsRequested = true,
+            ),
+        )
+
+        assertEquals(config.configuredChatModelRef(), selected.reference)
+    }
+
     @Test
     fun timeoutMessageUsesTheConfiguredTimeout() {
         assertEquals("模型响应超过 15 秒，已停止", remoteTimeoutMessage(15_000L))
@@ -131,10 +233,105 @@ Mason 附加上下文
     }
 
     @Test
+    fun localOnlyConfigurationRoutesDeviceInfoIntentLocally() {
+        val localOnly = ApiConfig(localModel = "minicpm5-1b-q4-k-m-gguf")
+
+        assertTrue(
+            shouldUseLocalModel(
+                config = localOnly,
+                modality = ModelModality.Text,
+                userText = "检测本机手机信息",
+                hasAttachments = false,
+                hasSkill = false,
+                localReady = true,
+                localEngineAvailable = true,
+            ),
+        )
+    }
+
+    @Test
+    fun configuredRemoteModelKeepsPhoneIntentOnRemoteByDefault() {
+        val connection = ApiConnection(
+            id = "remote",
+            providerId = "openai",
+            name = "Remote",
+            apiUrl = "https://example.invalid/v1",
+            apiKey = "test-key",
+            modelIds = listOf("remote-model"),
+            modelCapabilities = mapOf(
+                "remote-model" to ApiModelCapabilities(supportsChat = true),
+            ),
+        )
+        val config = ApiConfig(
+            connections = listOf(connection),
+            chatModelRef = ModelReference(connection.id, "remote-model"),
+            localModel = "minicpm5-1b-q4-k-m-gguf",
+        )
+
+        assertFalse(
+            shouldUseLocalModel(
+                config = config,
+                modality = ModelModality.Text,
+                userText = "检测本机手机信息",
+                hasAttachments = false,
+                hasSkill = false,
+                localReady = true,
+                localEngineAvailable = true,
+            ),
+        )
+    }
+
+    @Test
     fun offlineFallbackDoesNotHideAuthenticationErrors() {
         assertTrue(isOfflineFailure("failed to connect to host"))
         assertTrue(isOfflineFailure("模型请求失败：UnknownHostException"))
         assertTrue(isOfflineFailure("API 错误 503: unavailable"))
         assertFalse(isOfflineFailure("API 错误 401: invalid key"))
+    }
+
+    private fun routingConfig(dynamic: Boolean): ApiConfig {
+        val deepseek = ApiConnection(
+            id = "deepseek",
+            providerId = "deepseek",
+            name = "DeepSeek",
+            apiUrl = "https://api.deepseek.com",
+            apiKey = "key",
+            modelIds = listOf("deepseek-v4-flash", "deepseek-v4-pro"),
+            modelCapabilities = mapOf(
+                "deepseek-v4-flash" to ApiModelCapabilities(supportsChat = true, supportsTools = true),
+                "deepseek-v4-pro" to ApiModelCapabilities(supportsChat = true, supportsTools = true),
+            ),
+        )
+        val qwen = ApiConnection(
+            id = "qwen",
+            providerId = "qwen",
+            name = "Qwen",
+            apiUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            apiKey = "key",
+            modelIds = listOf("qwen-turbo"),
+            modelCapabilities = mapOf(
+                "qwen-turbo" to ApiModelCapabilities(supportsChat = true, supportsTools = true),
+            ),
+        )
+        val mimo = ApiConnection(
+            id = "mimo",
+            providerId = "mimo",
+            name = "MiMo",
+            apiUrl = "https://api.xiaomimimo.com/v1",
+            apiKey = "key",
+            modelIds = listOf("mimo-v2.5"),
+            modelCapabilities = mapOf(
+                "mimo-v2.5" to ApiModelCapabilities(supportsChat = true, supportsTools = false),
+            ),
+        )
+        return ApiConfig(
+            providerId = deepseek.providerId,
+            apiUrl = deepseek.apiUrl,
+            apiKey = deepseek.apiKey,
+            model = "deepseek-v4-flash",
+            connections = listOf(deepseek, qwen, mimo),
+            chatModelRef = ModelReference(deepseek.id, "deepseek-v4-flash"),
+            dynamicLocalRoutingEnabled = dynamic,
+        )
     }
 }

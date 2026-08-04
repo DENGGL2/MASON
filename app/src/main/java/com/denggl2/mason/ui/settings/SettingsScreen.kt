@@ -1,8 +1,15 @@
 package com.denggl2.mason.ui.settings
 
+import android.Manifest
+import android.content.ClipData
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -28,8 +35,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -50,7 +59,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -64,27 +73,36 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
@@ -107,22 +125,31 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.AiProviderKind
 import com.denggl2.mason.data.AiProviderPreset
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConnection
+import com.denggl2.mason.data.ApiModelCapabilities
 import com.denggl2.mason.data.ModelReference
 import com.denggl2.mason.data.connection
 import com.denggl2.mason.data.connectionForProvider
 import com.denggl2.mason.data.connectionIdForProvider
+import com.denggl2.mason.data.configuredChatModelRef
 import com.denggl2.mason.data.configuredConnections
+import com.denggl2.mason.data.configuredImageModelRef
+import com.denggl2.mason.data.configuredVisionModelRef
 import com.denggl2.mason.data.resolvedChatModelRef
+import com.denggl2.mason.data.resolvedConnections
 import com.denggl2.mason.data.resolvedImageModelRef
 import com.denggl2.mason.data.resolvedVisionModelRef
+import com.denggl2.mason.data.removeConnection
 import com.denggl2.mason.data.saveConnection
 import com.denggl2.mason.data.selectChatModel
+import com.denggl2.mason.data.supportsChatModel
 import com.denggl2.mason.data.LocalModelCatalog
 import com.denggl2.mason.data.LocalModelDownloadState
 import com.denggl2.mason.data.LocalModelDownloadStatus
@@ -131,14 +158,19 @@ import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelPreset
 import com.denggl2.mason.data.MasonAccentPresets
 import com.denggl2.mason.data.InterfaceStyle
+import com.denggl2.mason.data.FontSizePreference
 import com.denggl2.mason.data.OfficialChannelPreferences
 import com.denggl2.mason.data.ThemeMode
 import com.denggl2.mason.data.UiPreferences
 import com.denggl2.mason.data.UserMemoryItem
 import com.denggl2.mason.data.UserMemoryType
 import com.denggl2.mason.data.toComposeColor
+import com.denggl2.mason.sync.remote.PairedConnector
+import com.denggl2.mason.tool.shouldRequestPostNotificationPermission
+import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private enum class SettingsPage {
     Overview,
@@ -182,8 +214,21 @@ private data class RemoteModelCandidate(
     )
 }
 
+private data class RemoteModelEditorTarget(
+    val connectionId: String?,
+    val providerId: String,
+    val modelId: String? = null,
+)
+
+private data class PendingRemoteModelDelete(
+    val connectionId: String,
+    val modelIds: List<String>,
+)
+
 private const val LOCAL_PROVIDER_ID = "local"
 private const val LIQUID_GLASS_STYLE_VISIBLE = false
+private const val INTERFACE_STYLE_SETTING_VISIBLE = false
+private const val ACCENT_COLOR_SETTING_VISIBLE = false
 
 private enum class OfficialChannelDetail(
     val title: String,
@@ -207,8 +252,11 @@ private enum class OfficialChannelDetail(
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    openModelSettingsInitially: Boolean = false,
     onNavigateToPermission: () -> Unit = {},
     onNavigateToIntegrations: () -> Unit = {},
+    onNavigateToDevicePairing: () -> Unit = {},
+    onNavigateToPhoneAgent: () -> Unit = {},
     uiPreferences: UiPreferences = UiPreferences(),
     onThemeModeChange: (ThemeMode) -> Unit = {},
     onInterfaceStyleChange: (InterfaceStyle) -> Unit = {},
@@ -216,6 +264,7 @@ fun SettingsScreen(
     onAccentColorChange: (Long) -> Unit = {},
     onRegularNotificationsChange: (Boolean) -> Unit = {},
     onIslandNotificationsChange: (Boolean) -> Unit = {},
+    onFontSizeChange: (FontSizePreference) -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val config by viewModel.config.collectAsState()
@@ -229,10 +278,15 @@ fun SettingsScreen(
     val officialChannels by viewModel.officialChannels.collectAsState()
     val automationPreferences by viewModel.automationPreferences.collectAsState()
     val alwaysAllowedTools by viewModel.alwaysAllowedTools.collectAsState()
+    val pairedConnector by viewModel.pairedConnector.collectAsState()
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
 
-    var page by remember { mutableStateOf(SettingsPage.Overview) }
+    var page by remember(openModelSettingsInitially) {
+        mutableStateOf(
+            if (openModelSettingsInitially) SettingsPage.ModelSettings else SettingsPage.Overview,
+        )
+    }
     var providerId by remember(config) { mutableStateOf(config.providerId) }
     var url by remember(config) { mutableStateOf(config.apiUrl) }
     var key by remember(config) { mutableStateOf(config.apiKey) }
@@ -246,6 +300,8 @@ fun SettingsScreen(
     var toolsEnabled by remember(config) { mutableStateOf(config.toolsEnabled) }
     var requireToolConfirmation by remember(config) { mutableStateOf(config.requireToolConfirmation) }
     var keyVisible by remember { mutableStateOf(false) }
+    var showPairingManagementDialog by remember { mutableStateOf(false) }
+    var remoteModelEditorTarget by remember { mutableStateOf<RemoteModelEditorTarget?>(null) }
     var detailProviderId by remember { mutableStateOf(config.providerId) }
     var detailUrl by remember { mutableStateOf(config.apiUrl) }
     var detailKey by remember { mutableStateOf(config.apiKey) }
@@ -256,9 +312,12 @@ fun SettingsScreen(
     var manualModelId by remember { mutableStateOf("") }
     var showManualModelDialog by remember { mutableStateOf(false) }
     var showCacheDialog by remember { mutableStateOf(false) }
+    var showDiagnosticExportDialog by remember { mutableStateOf(false) }
+    var pendingNotificationPreviewIsland by remember { mutableStateOf<Boolean?>(null) }
     var officialDetail by remember { mutableStateOf<OfficialChannelDetail?>(null) }
     var pendingLocalModelDeleteId by remember { mutableStateOf<String?>(null) }
     var pendingRemoteModelDeleteId by remember { mutableStateOf<String?>(null) }
+    var pendingSheetRemoteModelDelete by remember { mutableStateOf<PendingRemoteModelDelete?>(null) }
     var pendingMemoryDeleteId by remember { mutableStateOf<String?>(null) }
     var editingMemoryId by remember { mutableStateOf<String?>(null) }
     var memoryEditorExpanded by remember { mutableStateOf(false) }
@@ -272,6 +331,33 @@ fun SettingsScreen(
     val memoryScrollState = rememberScrollState()
     val officialChannelsScrollState = rememberScrollState()
     val aboutScrollState = rememberScrollState()
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val island = pendingNotificationPreviewIsland
+        pendingNotificationPreviewIsland = null
+        if (granted && island != null) {
+            viewModel.previewTaskNotification(island)
+        } else if (!granted) {
+            Toast.makeText(
+                context,
+                "通知权限未授予，通知模式已保存，但暂时无法发送通知",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+    fun previewNotificationAfterPermission(island: Boolean) {
+        val permissionGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (shouldRequestPostNotificationPermission(Build.VERSION.SDK_INT, permissionGranted)) {
+            pendingNotificationPreviewIsland = island
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            viewModel.previewTaskNotification(island)
+        }
+    }
     val provider = AiProviderCatalog.getProvider(providerId)
         ?: AiProviderCatalog.defaultProvider
     val modelOptions = if (provider.id == "openrouter" && modelRefreshState.models.isNotEmpty()) {
@@ -406,7 +492,14 @@ fun SettingsScreen(
                 SettingsPage.Overview
             }
             SettingsPage.AiServiceDetail -> SettingsPage.ModelSettings
-            SettingsPage.ModelSettings -> SettingsPage.Overview
+            SettingsPage.ModelSettings -> {
+                if (openModelSettingsInitially) {
+                    onBack()
+                    SettingsPage.ModelSettings
+                } else {
+                    SettingsPage.Overview
+                }
+            }
             else -> SettingsPage.Overview
         }
     }
@@ -435,6 +528,12 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         viewModel.toastEvent.collect { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.diagnosticExportEvent.collect { file ->
+            shareDiagnosticReport(context, file)
         }
     }
 
@@ -539,10 +638,12 @@ fun SettingsScreen(
                     selectedStyle = uiPreferences.interfaceStyle,
                     liquidGlassTransparency = uiPreferences.liquidGlassTransparency,
                     selectedColor = uiPreferences.accentColor,
+                    selectedFontSize = uiPreferences.fontSize,
                     onModeChange = onThemeModeChange,
                     onStyleChange = onInterfaceStyleChange,
                     onLiquidGlassTransparencyChange = onLiquidGlassTransparencyChange,
                     onAccentColorChange = onAccentColorChange,
+                    onFontSizeChange = onFontSizeChange,
                 )
                 AiServiceOverviewContent(
                     localModelId = localModel,
@@ -583,22 +684,27 @@ fun SettingsScreen(
                         localModel = item.id
                         persistApiConfig(nextLocalModel = item.id)
                     },
+                    onClearLocalModel = {
+                        localModel = ""
+                        persistApiConfig(nextLocalModel = "")
+                    },
                     onOpenModelSettings = { page = SettingsPage.ModelSettings },
                 )
                 SettingsOverviewContent(
                     regularNotificationsEnabled = uiPreferences.regularNotificationsEnabled,
                     islandNotificationsEnabled = uiPreferences.islandNotificationsEnabled,
-                    memoryCount = memoryItems.size,
                     onNotificationModeChange = { mode ->
                         when (mode) {
                             TaskNotificationMode.Regular -> {
                                 onRegularNotificationsChange(true)
                                 onIslandNotificationsChange(false)
+                                previewNotificationAfterPermission(island = false)
                             }
                             TaskNotificationMode.Island -> {
                                 // Keep the conventional channel on as the fallback below Android 16.
                                 onRegularNotificationsChange(true)
                                 onIslandNotificationsChange(true)
+                                previewNotificationAfterPermission(island = true)
                             }
                             TaskNotificationMode.Disabled -> {
                                 onRegularNotificationsChange(false)
@@ -607,27 +713,28 @@ fun SettingsScreen(
                         }
                     },
                     onOpenMemory = { page = SettingsPage.Memory },
+                    pairedConnector = pairedConnector,
+                    onOpenDevicePairing = onNavigateToDevicePairing,
+                    onManageDevicePairing = { showPairingManagementDialog = true },
+                    onOpenPhoneAgent = onNavigateToPhoneAgent,
                 )
                 AiServiceOtherSettingsContent(
                     config = config,
                     backgroundExecutionEnabled = automationPreferences.backgroundExecutionEnabled,
-                    onOfflineFallbackChange = {
-                        offlineFallbackEnabled = it
-                        persistApiConfig(nextOfflineFallbackEnabled = it)
-                    },
-                    onDynamicLocalRoutingChange = {
+                    onDynamicModelRoutingChange = {
                         dynamicLocalRoutingEnabled = it
-                        persistApiConfig(nextDynamicLocalRoutingEnabled = it)
+                        viewModel.save(
+                            config.copy(
+                                dynamicLocalRoutingEnabled = it,
+                                localModelDirectEnabled = if (it) false else config.localModelDirectEnabled,
+                            ),
+                        )
                     },
                     onHighRiskConfirmationChange = {
                         requireToolConfirmation = it
                         persistApiConfig(nextRequireToolConfirmation = it)
                     },
                     onBackgroundExecutionChange = viewModel::setBackgroundAutomationEnabled,
-                    onPhoneToolsChange = {
-                        phoneToolsEnabled = it
-                        persistApiConfig(nextPhoneToolsEnabled = it)
-                    },
                 )
                 SettingsSecondaryContent(
                     onOpenPermission = onNavigateToPermission,
@@ -639,7 +746,22 @@ fun SettingsScreen(
                 ModelSettingsContent(
                     config = config,
                     localModelStates = localModelStates,
-                    onOpenProvider = { id -> openProviderDetail(id) },
+                    apiTestState = apiTestState,
+                    onOpenLocalModels = { openProviderDetail(LOCAL_PROVIDER_ID) },
+                    onOpenRemoteModel = { connection, modelId ->
+                        remoteModelEditorTarget = RemoteModelEditorTarget(
+                            connectionId = connection.id,
+                            providerId = connection.providerId,
+                            modelId = modelId,
+                        )
+                    },
+                    onAddRemoteModel = {
+                        val providerId = AiProviderCatalog.CUSTOM_PROVIDER_ID
+                        remoteModelEditorTarget = RemoteModelEditorTarget(
+                            connectionId = null,
+                            providerId = providerId,
+                        )
+                    },
                 )
             }
 
@@ -855,20 +977,13 @@ fun SettingsScreen(
                         SectionHeader("本地模型")
                         LocalModelFallbackContent(
                             models = LocalModelCatalog.models,
-                            selectedModelId = localModel,
                             states = localModelStates,
                             downloadStates = localModelDownloadStates,
-                            onSelect = { item ->
-                                val state = localModelStates.firstOrNull { it.modelId == item.id }
-                                if (state?.installed == true) {
-                                    localModel = item.id
-                                    persistApiConfig(nextLocalModel = item.id)
-                                }
-                            },
                             onDownload = { item ->
                                 viewModel.downloadLocalModel(item.id)
                             },
                             onPauseDownload = { item -> viewModel.pauseLocalModelDownload(item.id) },
+                            onCancelDownload = { item -> viewModel.cancelLocalModelDownload(item.id) },
                             onDelete = { item -> pendingLocalModelDeleteId = item.id },
                         )
                 } else if (detailProvider != null) {
@@ -1040,6 +1155,7 @@ fun SettingsScreen(
 
             AboutSettingsContent(
                 appVersion = viewModel.appVersion,
+                onExportDiagnostic = { showDiagnosticExportDialog = true },
                 onOpenCacheClean = {
                     showCacheDialog = true
                     viewModel.refreshCacheOverview()
@@ -1051,6 +1167,66 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    remoteModelEditorTarget?.let { target ->
+        RemoteModelConfigurationSheet(
+            initialConnectionId = target.connectionId,
+            initialProviderId = target.providerId,
+            initialModelId = target.modelId,
+            config = config,
+            apiTestState = apiTestState,
+            onDismiss = {
+                remoteModelEditorTarget = null
+            },
+            onClearTest = viewModel::clearApiTestState,
+            onVisibleDraftChange = viewModel::setApiTestVisibleDraft,
+            onTest = { connection ->
+                viewModel.testApiConnectionDraft(connection, replacingModelId = target.modelId)
+            },
+            onCancelTest = viewModel::cancelApiTest,
+            onDelete = { connectionId, modelIds ->
+                pendingSheetRemoteModelDelete = PendingRemoteModelDelete(
+                    connectionId = connectionId,
+                    modelIds = modelIds,
+                )
+            },
+        )
+    }
+
+    pendingSheetRemoteModelDelete?.let { pending ->
+        val modelLabel = pending.modelIds.joinToString("、")
+        AlertDialog(
+            onDismissRequest = { pendingSheetRemoteModelDelete = null },
+            shape = RoundedCornerShape(8.dp),
+            containerColor = MaterialTheme.colorScheme.background,
+            titleContentColor = MaterialTheme.colorScheme.onBackground,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            tonalElevation = 0.dp,
+            title = { Text("删除模型？") },
+            text = { Text("将删除 $modelLabel 的配置和能力检测记录，删除后需要重新添加并测试。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (pending.modelIds.isNotEmpty()) {
+                            viewModel.save(
+                                removeRemoteModels(config, pending.connectionId, pending.modelIds),
+                            )
+                        }
+                        pendingSheetRemoteModelDelete = null
+                        remoteModelEditorTarget = null
+                        viewModel.clearApiTestState()
+                    },
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingSheetRemoteModelDelete = null }) {
+                    Text("取消")
+                }
+            },
+        )
     }
 
     pendingMemoryDeleteId?.let { memoryId ->
@@ -1076,12 +1252,65 @@ fun SettingsScreen(
         )
     }
 
+    if (showPairingManagementDialog && pairedConnector != null) {
+        AlertDialog(
+            onDismissRequest = { showPairingManagementDialog = false },
+            title = { Text("取消设备配对？") },
+            text = {
+                Text("手机会立即清除配对并恢复未配对状态。若电脑离线，电脑端可能暂时保留此设备的授权记录。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showPairingManagementDialog = false
+                        viewModel.cancelDevicePairing()
+                    },
+                ) {
+                    Text("取消配对", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPairingManagementDialog = false }) {
+                    Text("返回")
+                }
+            },
+        )
+    }
+
     if (showCacheDialog) {
         CacheCleanDialog(
             state = cacheOverviewState,
             onRefresh = viewModel::refreshCacheOverview,
             onClean = viewModel::clearCache,
             onDismiss = { showCacheDialog = false },
+        )
+    }
+
+    if (showDiagnosticExportDialog) {
+        AlertDialog(
+            onDismissRequest = { showDiagnosticExportDialog = false },
+            title = { Text("导出诊断记录？") },
+            text = {
+                Text(
+                    "将生成一份本地文本，包含设备与版本、模型状态、最近 5 个对话内容、最近任务步骤和崩溃记录。" +
+                        "API Key、Bearer 凭据和网址查询参数会自动脱敏；请在系统分享面板中确认接收方。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDiagnosticExportDialog = false
+                        viewModel.exportDiagnosticReport()
+                    },
+                ) {
+                    Text("生成并分享")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiagnosticExportDialog = false }) {
+                    Text("取消")
+                }
+            },
         )
     }
 
@@ -1263,16 +1492,20 @@ private fun AiServiceOverviewContent(
     localModelStates: List<LocalModelFileState>,
     onSelectRemoteModel: (AiModelPurpose, RemoteModelCandidate) -> Unit,
     onSelectLocalModel: (LocalModelPreset) -> Unit,
+    onClearLocalModel: () -> Unit,
     onOpenModelSettings: () -> Unit,
 ) {
-    val chatRef = config.resolvedChatModelRef()
-    val chatConnection = config.connection(chatRef.connectionId)
-    val visionRef = config.resolvedVisionModelRef()
+    val chatRef = config.configuredChatModelRef()
+    val chatConnection = chatRef?.let { config.connection(it.connectionId) }
+    val visionRef = config.configuredVisionModelRef()
     val visionConnection = visionRef?.let { config.connection(it.connectionId) }
-    val imageRef = config.resolvedImageModelRef()
+    val imageRef = config.configuredImageModelRef()
     val imageConnection = imageRef?.let { config.connection(it.connectionId) }
     val resolvedVisionModel = visionRef?.modelId.orEmpty()
     val resolvedImageModel = imageRef?.modelId.orEmpty()
+    val chatOptions = configuredRemoteModelCandidates(config, AiModelPurpose.Chat)
+    val visionOptions = configuredRemoteModelCandidates(config, AiModelPurpose.Vision)
+    val imageOptions = configuredRemoteModelCandidates(config, AiModelPurpose.ImageGeneration)
     val selectedLocal = LocalModelCatalog.get(localModelId)
     val selectedLocalState = localModelStates.firstOrNull { it.modelId == localModelId }
     val installedLocalModels = LocalModelCatalog.models.filter { item ->
@@ -1283,13 +1516,13 @@ private fun AiServiceOverviewContent(
     SettingGroup {
         ModelPurposeRow(
             purpose = "聊天",
-            modelName = chatRef.modelId.ifBlank { "未配置" },
+            modelName = chatRef?.modelId ?: "未配置",
             connected = connectionConfigurationStatus(chatConnection) == "已连接",
-            options = configuredRemoteModelCandidates(config, AiModelPurpose.Chat),
-            selectedKey = chatRef.selectorKey(),
+            options = chatOptions,
+            selectedKey = chatRef?.selectorKey(),
             optionKey = RemoteModelCandidate::selectorKey,
             optionName = { it.model.name },
-            optionSource = { it.connection.name },
+            optionSource = { remoteModelCapabilitySummary(it.connection.modelCapabilities.getValue(it.model.id)) },
             optionIsFree = { it.model.isFree },
             onSelect = { onSelectRemoteModel(AiModelPurpose.Chat, it) },
         )
@@ -1298,11 +1531,11 @@ private fun AiServiceOverviewContent(
             purpose = "识图",
             modelName = resolvedVisionModel.ifBlank { "未配置" },
             connected = connectionConfigurationStatus(visionConnection) == "已连接",
-            options = configuredRemoteModelCandidates(config, AiModelPurpose.Vision),
+            options = visionOptions,
             selectedKey = visionRef?.selectorKey(),
             optionKey = RemoteModelCandidate::selectorKey,
             optionName = { it.model.name },
-            optionSource = { it.connection.name },
+            optionSource = { remoteModelCapabilitySummary(it.connection.modelCapabilities.getValue(it.model.id)) },
             optionIsFree = { it.model.isFree },
             onSelect = { onSelectRemoteModel(AiModelPurpose.Vision, it) },
         )
@@ -1311,18 +1544,18 @@ private fun AiServiceOverviewContent(
             purpose = "图片生成",
             modelName = resolvedImageModel.ifBlank { "未配置" },
             connected = connectionConfigurationStatus(imageConnection) == "已连接",
-            options = configuredRemoteModelCandidates(config, AiModelPurpose.ImageGeneration),
+            options = imageOptions,
             selectedKey = imageRef?.selectorKey(),
             optionKey = RemoteModelCandidate::selectorKey,
             optionName = { it.model.name },
-            optionSource = { it.connection.name },
+            optionSource = { remoteModelCapabilitySummary(it.connection.modelCapabilities.getValue(it.model.id)) },
             optionIsFree = { it.model.isFree },
             onSelect = { onSelectRemoteModel(AiModelPurpose.ImageGeneration, it) },
         )
         GroupDivider()
         ModelPurposeRow(
             purpose = "本地模型",
-            modelName = selectedLocal?.id ?: "未配置",
+            modelName = selectedLocal?.name ?: "未配置",
             connected = selectedLocalState?.installed == true,
             options = installedLocalModels,
             selectedKey = localModelId,
@@ -1331,6 +1564,7 @@ private fun AiServiceOverviewContent(
             optionSource = ::localModelTaskLabel,
             optionIsFree = { false },
             onSelect = onSelectLocalModel,
+            onClear = onClearLocalModel,
         )
     }
 
@@ -1344,26 +1578,17 @@ private fun AiServiceOverviewContent(
 private fun AiServiceOtherSettingsContent(
     config: ApiConfig,
     backgroundExecutionEnabled: Boolean,
-    onOfflineFallbackChange: (Boolean) -> Unit,
-    onDynamicLocalRoutingChange: (Boolean) -> Unit,
+    onDynamicModelRoutingChange: (Boolean) -> Unit,
     onHighRiskConfirmationChange: (Boolean) -> Unit,
     onBackgroundExecutionChange: (Boolean) -> Unit,
-    onPhoneToolsChange: (Boolean) -> Unit,
 ) {
     SectionHeader("其他设置")
     SettingGroup {
         SwitchSettingRow(
-            title = "自动切换本地模型",
-            description = "网络不佳时候自动切换",
-            checked = config.offlineFallbackEnabled,
-            onCheckedChange = onOfflineFallbackChange,
-        )
-        GroupDivider()
-        SwitchSettingRow(
-            title = "动态使用本地模型",
-            description = "简单文字优先本地，复杂任务继续使用远程模型",
+            title = "动态选择使用模型",
+            description = "根据任务难度，在已配置的模型中自动选择模型",
             checked = config.dynamicLocalRoutingEnabled,
-            onCheckedChange = onDynamicLocalRoutingChange,
+            onCheckedChange = onDynamicModelRoutingChange,
         )
         GroupDivider()
         SwitchSettingRow(
@@ -1378,13 +1603,6 @@ private fun AiServiceOtherSettingsContent(
             description = "定时自动化可由系统在后台拉起执行",
             checked = backgroundExecutionEnabled,
             onCheckedChange = onBackgroundExecutionChange,
-        )
-        GroupDivider()
-        SwitchSettingRow(
-            title = "手机工具",
-            description = "在用户确认后，允许程序操作手机",
-            checked = config.phoneToolsEnabled,
-            onCheckedChange = onPhoneToolsChange,
         )
     }
 }
@@ -1401,6 +1619,7 @@ private fun <T> ModelPurposeRow(
     optionSource: (T) -> String,
     optionIsFree: (T) -> Boolean,
     onSelect: (T) -> Unit,
+    onClear: (() -> Unit)? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box(modifier = Modifier.fillMaxWidth()) {
@@ -1414,7 +1633,7 @@ private fun <T> ModelPurposeRow(
             Text(
                 text = purpose,
                 color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 15.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
             )
@@ -1422,14 +1641,14 @@ private fun <T> ModelPurposeRow(
             Text(
                 text = buildAnnotatedString {
                     append(modelName)
-                    if (!connected) {
+                    if (!connected && modelName != "未配置") {
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.error)) {
                             append("（未连接）")
                         }
                     }
                 },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.End,
@@ -1442,6 +1661,20 @@ private fun <T> ModelPurposeRow(
                 collapsedDescription = "展开模型列表",
                 expandedDescription = "收起模型列表",
             ) {
+                if (onClear != null) {
+                    DropdownMenuItem(
+                        text = { Text("不配置") },
+                        onClick = {
+                            expanded = false
+                            onClear()
+                        },
+                        trailingIcon = {
+                            if (selectedKey.isNullOrBlank()) {
+                                Icon(Icons.Outlined.Check, contentDescription = "当前未配置")
+                            }
+                        },
+                    )
+                }
                 if (options.isEmpty()) {
                     DropdownMenuItem(
                         text = { Text("暂无已配置模型", color = MaterialTheme.colorScheme.onSurfaceVariant) },
@@ -1462,7 +1695,7 @@ private fun <T> ModelPurposeRow(
                                     Text(
                                         text = optionSource(option),
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontSize = 11.sp,
+                                        fontSize = 12.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
@@ -1508,16 +1741,23 @@ private fun configuredRemoteModelCandidates(
         ?: AiProviderCatalog.getProvider(AiProviderCatalog.CUSTOM_PROVIDER_ID)
         ?: return@flatMap emptyList()
     connection.modelIds.mapNotNull { modelId ->
-        val model = AiProviderCatalog.getModel(connection.providerId, modelId)
+        val savedCapabilities = connection.modelCapabilities[modelId] ?: return@mapNotNull null
+        val catalogModel = AiProviderCatalog.getModel(connection.providerId, modelId)
             ?: AiModelPreset(
                 id = modelId,
                 name = modelId,
                 description = "手动添加的模型",
                 isFree = AiProviderCatalog.isFreeModel(connection.providerId, modelId),
                 supportsTools = connection.toolsSupported,
-                supportsVision = true,
-                supportsImageGeneration = true,
+                supportsVision = false,
+                supportsImageGeneration = false,
             )
+        val model = catalogModel.copy(
+            supportsChat = savedCapabilities.supportsChatModel(),
+            supportsTools = savedCapabilities.supportsTools,
+            supportsVision = savedCapabilities.supportsVision,
+            supportsImageGeneration = savedCapabilities.supportsImageGeneration,
+        )
         val supportsPurpose = when (purpose) {
             AiModelPurpose.Chat -> model.supportsChat
             AiModelPurpose.Vision -> model.supportsVision
@@ -1530,56 +1770,22 @@ private fun configuredRemoteModelCandidates(
 
 @Composable
 private fun ModelSettingsNavigationRow(onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "模型接口",
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f),
-        )
-        Icon(
-            Icons.Outlined.ChevronRight,
-            contentDescription = "打开模型接口",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
-            modifier = Modifier.size(17.dp),
-        )
-    }
+    OverviewSettingRow(
+        title = "模型接口",
+        description = "",
+        onClick = onClick,
+    )
 }
 
 @Composable
 private fun ModelSettingsContent(
     config: ApiConfig,
     localModelStates: List<LocalModelFileState>,
-    onOpenProvider: (String) -> Unit,
+    apiTestState: ApiTestUiState,
+    onOpenLocalModels: () -> Unit,
+    onOpenRemoteModel: (ApiConnection, String) -> Unit,
+    onAddRemoteModel: () -> Unit,
 ) {
-    ModelProviderSection(
-        title = "官方 API",
-        providers = AiProviderCatalog.providers.filter { it.kind == AiProviderKind.Official },
-        config = config,
-        onOpenProvider = onOpenProvider,
-    )
-    val customProvider = AiProviderCatalog.getProvider(AiProviderCatalog.CUSTOM_PROVIDER_ID)
-    if (customProvider != null) {
-        SectionHeader("自定义")
-        SettingGroup {
-            val savedModels = config.connectionForProvider(customProvider.id)?.modelIds.orEmpty()
-            AiProviderRow(
-                providerId = customProvider.id,
-                name = "中转站",
-                detail = if (savedModels.isNotEmpty()) "${savedModels.size} 个已配置模型" else "OpenAI 兼容接口",
-                status = providerConfigurationStatus(customProvider, config),
-                onClick = { onOpenProvider(customProvider.id) },
-            )
-        }
-    }
-
     SectionHeader("本地模型")
     SettingGroup {
         val installedCount = localModelStates.count(LocalModelFileState::installed)
@@ -1588,9 +1794,816 @@ private fun ModelSettingsContent(
             name = "本地模型",
             detail = if (installedCount > 0) "$installedCount 个已安装" else "设备本地运行",
             status = if (installedCount > 0) "本地" else "未安装",
-            onClick = { onOpenProvider(LOCAL_PROVIDER_ID) },
+            onClick = onOpenLocalModels,
         )
     }
+
+    SectionHeader("远端模型")
+    SettingGroup {
+        val configuredModels = config.resolvedConnections().flatMap { connection ->
+            connection.modelIds.map { modelId -> connection to modelId }
+        }
+        configuredModels.forEachIndexed { index, (connection, modelId) ->
+            if (index > 0) GroupDivider(horizontalPadding = 14.dp)
+            RemoteModelConfigurationRow(
+                connection = connection,
+                modelId = modelId,
+                apiTestState = apiTestState,
+                onClick = { onOpenRemoteModel(connection, modelId) },
+            )
+        }
+        if (configuredModels.isNotEmpty()) GroupDivider(horizontalPadding = 14.dp)
+        CompactActionRow(
+            title = "+ 添加",
+            description = "添加模型 API 配置",
+            enabled = true,
+            onClick = onAddRemoteModel,
+        )
+    }
+}
+
+@Composable
+private fun RemoteModelConfigurationRow(
+    connection: ApiConnection,
+    modelId: String,
+    apiTestState: ApiTestUiState,
+    onClick: () -> Unit,
+) {
+    val modelName = AiProviderCatalog.getModel(connection.providerId, modelId)?.name ?: modelId
+    val status = remoteModelTestStatus(connection, modelId, apiTestState)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = modelName,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = status,
+                color = if (status == "测试中") {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(
+            Icons.Outlined.ChevronRight,
+            contentDescription = "编辑模型配置",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+            modifier = Modifier.size(17.dp),
+        )
+    }
+}
+
+internal fun remoteModelTestStatus(
+    connection: ApiConnection,
+    modelId: String,
+    state: ApiTestUiState,
+): String {
+    val targetsModel = state.targetConnection?.let { target ->
+        target.id == connection.id && modelId in target.modelIds
+    } == true
+    if (targetsModel) {
+        if (state.isTesting) return "测试中"
+        val testedCapabilities = state.testedConnection?.modelCapabilities?.get(modelId)
+        if (testedCapabilities != null) {
+            val savedSignature = connection.verifiedModelSignatures[modelId]
+            val testedSignature = state.testedConnection.verifiedModelSignatures[modelId]
+            val isSaved = connection.modelCapabilities[modelId] == testedCapabilities &&
+                savedSignature != null && savedSignature == testedSignature
+            return remoteModelCapabilitySummary(testedCapabilities) +
+                if (isSaved) "" else "，待保存"
+        }
+        if (state.success == false) return "测试失败"
+    }
+    val observedKey = apiTestModelKey(connection.id, modelId)
+    state.observedModelCapabilities[observedKey]
+        ?.let { observed ->
+            return remoteModelCapabilitySummary(observed) +
+                if (connection.modelCapabilities[modelId] == observed) "" else "，待保存"
+        }
+    if (observedKey in state.observedFailedModels) return "测试失败"
+    return connection.modelCapabilities[modelId]
+        ?.let(::remoteModelCapabilitySummary)
+        ?: "待测试能力"
+}
+
+internal fun remoteModelCapabilitySummary(capabilities: ApiModelCapabilities): String {
+    return buildList {
+        if (capabilities.supportsChatModel()) add("聊天")
+        if (capabilities.supportsTools) add("工具调用")
+        if (capabilities.supportsVision) add("识图")
+        if (capabilities.supportsImageGeneration) add("生图")
+    }.ifEmpty { listOf("能力未知") }.joinToString("、")
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RemoteModelConfigurationSheet(
+    initialConnectionId: String?,
+    initialProviderId: String,
+    initialModelId: String?,
+    config: ApiConfig,
+    apiTestState: ApiTestUiState,
+    onDismiss: () -> Unit,
+    onClearTest: () -> Unit,
+    onVisibleDraftChange: (ApiConnection?) -> Unit,
+    onTest: (ApiConnection) -> Unit,
+    onCancelTest: () -> Unit,
+    onDelete: (String, List<String>) -> Unit,
+) {
+    val selectedProvider = AiProviderCatalog.getProvider(initialProviderId)
+        ?: AiProviderCatalog.getProvider(AiProviderCatalog.CUSTOM_PROVIDER_ID)
+        ?: AiProviderCatalog.defaultProvider
+    val editorKey = "$initialConnectionId::$initialProviderId::$initialModelId"
+    val editingExistingModel = initialModelId != null
+    val savedConnection = if (editingExistingModel) {
+        initialConnectionId?.let(config::connection)
+            ?: config.connectionForProvider(initialProviderId)
+    } else {
+        null
+    }
+    val quickModelIds = config.resolvedConnections()
+        .flatMap(ApiConnection::modelIds)
+        .distinct()
+    var apiUrl by remember(editorKey) { mutableStateOf("") }
+    var apiKey by remember(editorKey) { mutableStateOf("") }
+    var workspaceId by remember(editorKey) { mutableStateOf("") }
+    var modelIdDrafts by remember(editorKey) { mutableStateOf(listOf("")) }
+    var pendingModelIdDeleteIndex by remember(editorKey) { mutableStateOf<Int?>(null) }
+    var confirmDiscard by remember(editorKey) { mutableStateOf(false) }
+    var confirmCancelTest by remember(editorKey) { mutableStateOf(false) }
+    var keyVisible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(editorKey) {
+        apiUrl = savedConnection?.apiUrl?.takeIf(String::isNotBlank)
+            ?: selectedProvider.apiUrl.takeUnless { selectedProvider.id == AiProviderCatalog.CUSTOM_PROVIDER_ID }
+                .orEmpty()
+        apiKey = savedConnection?.apiKey.orEmpty()
+        workspaceId = savedConnection?.workspaceId.orEmpty()
+        modelIdDrafts = initialRemoteModelIdDrafts(initialModelId)
+        pendingModelIdDeleteIndex = null
+        confirmDiscard = false
+        confirmCancelTest = false
+        keyVisible = false
+    }
+
+    val draftModelIds = normalizeRemoteModelIds(modelIdDrafts)
+    val requiresKey = !AiProviderCatalog.allowsBlankApiKey(apiUrl)
+    val canTest = apiUrl.isNotBlank() && draftModelIds.isNotEmpty() && (!requiresKey || apiKey.isNotBlank())
+    val draftConnection = ApiConnection(
+        id = savedConnection?.id
+            ?: initialConnectionId
+            ?: connectionIdForProvider(selectedProvider.id),
+        providerId = selectedProvider.id,
+        name = savedConnection?.name ?: selectedProvider.name,
+        apiUrl = apiUrl.trim(),
+        apiKey = apiKey.trim(),
+        modelIds = draftModelIds,
+        workspaceId = workspaceId.trim(),
+    )
+    val testTargetsDraft = apiTestState.targetConnection?.let { target ->
+        sameRemoteModelDraft(target, draftConnection)
+    } == true && apiTestState.replacingModelId == initialModelId
+    val isTestingDraft = testTargetsDraft && apiTestState.isTesting
+    val testedConnection = apiTestState.testedConnection.takeIf { testTargetsDraft }
+    val editorMode = remoteModelSheetMode(
+        draft = draftConnection,
+        savedConnection = savedConnection,
+        editingModelId = initialModelId,
+        testState = apiTestState,
+    )
+    val shouldConfirmDismiss = shouldConfirmRemoteModelSheetDismiss(
+        mode = editorMode,
+        apiUrl = apiUrl,
+        apiKey = apiKey,
+        requiresApiKey = requiresKey,
+    )
+    val currentShouldConfirmDismiss by rememberUpdatedState(shouldConfirmDismiss)
+    val sheetScope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { targetValue ->
+            val allowTransition = shouldAllowRemoteModelSheetTransition(
+                targetValue = targetValue,
+                shouldConfirmDismiss = currentShouldConfirmDismiss,
+            )
+            if (!allowTransition) confirmDiscard = true
+            allowTransition
+        },
+    )
+
+    val keepSheetVisible = {
+        if (!sheetState.isVisible) {
+            sheetScope.launch { sheetState.show() }
+        }
+    }
+    val showDiscardConfirmation = {
+        confirmDiscard = true
+        keepSheetVisible()
+    }
+    val requestDismiss = {
+        if (currentShouldConfirmDismiss) showDiscardConfirmation() else onDismiss()
+    }
+
+    LaunchedEffect(draftConnection) {
+        onVisibleDraftChange(draftConnection)
+    }
+    DisposableEffect(editorKey) {
+        onDispose { onVisibleDraftChange(null) }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = requestDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground,
+        tonalElevation = 0.dp,
+        properties = ModalBottomSheetProperties(
+            shouldDismissOnBackPress = !currentShouldConfirmDismiss,
+        ),
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .padding(top = 10.dp, bottom = 8.dp)
+                    .size(width = 38.dp, height = 4.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)),
+            )
+        },
+    ) {
+        BackHandler(
+            enabled = currentShouldConfirmDismiss && !confirmDiscard && !confirmCancelTest,
+        ) {
+            showDiscardConfirmation()
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.72f)
+                .imePadding()
+                .padding(bottom = 18.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (editingExistingModel) "配置模型" else "添加模型",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+            ) {
+                SectionHeader("接口地址")
+                CompactInput(
+                    label = "",
+                    value = apiUrl,
+                    placeholder = "例如 https://api.example.com/v1",
+                    enabled = !isTestingDraft,
+                    multiline = true,
+                ) {
+                    apiUrl = it
+                    onClearTest()
+                }
+                SectionHeader("API Key")
+                CompactInput(
+                    label = "",
+                    value = apiKey,
+                    placeholder = if (requiresKey) "填写 API Key" else "可选",
+                    enabled = !isTestingDraft,
+                    visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { keyVisible = !keyVisible },
+                            enabled = !isTestingDraft,
+                        ) {
+                            Icon(
+                                if (keyVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                                contentDescription = if (keyVisible) "隐藏" else "显示",
+                            )
+                        }
+                    },
+                ) {
+                    apiKey = it
+                    onClearTest()
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp, bottom = 7.dp, start = 3.dp, end = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Model ID",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (!editingExistingModel) {
+                        Text(
+                            "添加",
+                            color = if (isTestingDraft) {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clickable(enabled = !isTestingDraft) {
+                                    modelIdDrafts = modelIdDrafts + ""
+                                    onClearTest()
+                                }
+                                .padding(horizontal = 4.dp, vertical = 5.dp),
+                        )
+                    }
+                }
+                modelIdDrafts.forEachIndexed { index, modelId ->
+                    OutlinedTextField(
+                        value = modelId,
+                        onValueChange = { value ->
+                            modelIdDrafts = modelIdDrafts.toMutableList().also { drafts ->
+                                drafts[index] = value.take(200)
+                            }
+                            onClearTest()
+                        },
+                        enabled = !isTestingDraft,
+                        placeholder = { Text("例如 gpt-4o-mini") },
+                        singleLine = true,
+                        trailingIcon = if (!editingExistingModel && index > 0) {
+                            {
+                            IconButton(
+                                enabled = !isTestingDraft,
+                                onClick = {
+                                    if (modelId.isBlank()) {
+                                        modelIdDrafts = modelIdDrafts.filterIndexed { itemIndex, _ -> itemIndex != index }
+                                        onClearTest()
+                                    } else {
+                                        pendingModelIdDeleteIndex = index
+                                    }
+                                },
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Delete,
+                                    contentDescription = "删除 Model ID",
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                            }
+                        } else {
+                            null
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = themedFieldColors(),
+                    )
+                }
+                val availableQuickModelIds = quickModelIds.filterNot { quickId ->
+                    modelIdDrafts.any { it.trim() == quickId }
+                }
+                if (!editingExistingModel && availableQuickModelIds.isNotEmpty()) {
+                    val quickModelIdScrollState = rememberScrollState()
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(32.dp)
+                            .padding(bottom = 4.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(quickModelIdScrollState),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            availableQuickModelIds.forEach { quickId ->
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                                        .border(
+                                            1.dp,
+                                            MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
+                                            RoundedCornerShape(8.dp),
+                                        )
+                                        .clickable(enabled = !isTestingDraft) {
+                                            modelIdDrafts = applyRemoteModelQuickId(modelIdDrafts, quickId)
+                                            onClearTest()
+                                        }
+                                        .padding(horizontal = 9.dp, vertical = 6.dp),
+                                ) {
+                                    Text(
+                                        text = quickId,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                        if (quickModelIdScrollState.canScrollBackward) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.CenterStart)
+                                    .fillMaxHeight()
+                                    .width(24.dp)
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            colors = listOf(
+                                                MaterialTheme.colorScheme.background,
+                                                Color.Transparent,
+                                            ),
+                                        ),
+                                    ),
+                            )
+                        }
+                        if (quickModelIdScrollState.canScrollForward) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .fillMaxHeight()
+                                    .width(24.dp)
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            colors = listOf(
+                                                Color.Transparent,
+                                                MaterialTheme.colorScheme.background,
+                                            ),
+                                        ),
+                                    ),
+                            )
+                        }
+                    }
+                }
+                when (editorMode) {
+                    RemoteModelSheetMode.Verified -> StatusText("已测试通过并保存", true)
+                    RemoteModelSheetMode.Testing -> StatusText(
+                        apiTestState.message ?: "正在测试模型...",
+                        null,
+                    )
+                    RemoteModelSheetMode.Draft -> if (testTargetsDraft) {
+                        StatusText(apiTestState.message, apiTestState.success)
+                    }
+                }
+                val displayedCapabilities = testedConnection ?: savedConnection
+                draftModelIds.forEach { modelId ->
+                    displayedCapabilities?.modelCapabilities?.get(modelId)?.let { capabilities ->
+                        Text(
+                            "$modelId：${remoteModelCapabilitySummary(capabilities)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                when (editorMode) {
+                    RemoteModelSheetMode.Draft -> Button(
+                        onClick = { onTest(draftConnection) },
+                        enabled = canTest && !apiTestState.isTesting,
+                        modifier = Modifier.weight(1f).height(46.dp),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text("测试连接")
+                    }
+                    RemoteModelSheetMode.Testing -> Button(
+                        onClick = { confirmCancelTest = true },
+                        modifier = Modifier.weight(1f).height(46.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError,
+                        ),
+                    ) {
+                        Text("取消")
+                    }
+                    RemoteModelSheetMode.Verified -> {
+                        Button(
+                            onClick = { onTest(draftConnection) },
+                            enabled = canTest && !apiTestState.isTesting,
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text("重新测试")
+                        }
+                        Button(
+                            onClick = { onDelete(draftConnection.id, draftModelIds) },
+                            enabled = draftModelIds.isNotEmpty() && !apiTestState.isTesting,
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        ) {
+                            Text("删除")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            shape = RoundedCornerShape(8.dp),
+            containerColor = MaterialTheme.colorScheme.background,
+            titleContentColor = MaterialTheme.colorScheme.onBackground,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            tonalElevation = 0.dp,
+            title = { Text("退出配置？") },
+            text = { Text("当前配置尚未测试通过，退出后本次填写的内容不会保存。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDiscard = false
+                        onClearTest()
+                        onDismiss()
+                    },
+                ) {
+                    Text("退出", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        confirmDiscard = false
+                        keepSheetVisible()
+                    },
+                ) {
+                    Text("继续配置")
+                }
+            },
+        )
+    }
+
+    if (confirmCancelTest) {
+        AlertDialog(
+            onDismissRequest = { confirmCancelTest = false },
+            shape = RoundedCornerShape(8.dp),
+            containerColor = MaterialTheme.colorScheme.background,
+            titleContentColor = MaterialTheme.colorScheme.onBackground,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            tonalElevation = 0.dp,
+            title = { Text("取消测试？") },
+            text = { Text("取消后将停止当前模型测试，本次配置不会保存。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmCancelTest = false
+                        onCancelTest()
+                    },
+                ) {
+                    Text("取消测试", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmCancelTest = false }) {
+                    Text("继续测试")
+                }
+            },
+        )
+    }
+
+    pendingModelIdDeleteIndex?.let { index ->
+        val modelId = modelIdDrafts.getOrNull(index).orEmpty()
+        AlertDialog(
+            onDismissRequest = { pendingModelIdDeleteIndex = null },
+            shape = RoundedCornerShape(8.dp),
+            containerColor = MaterialTheme.colorScheme.background,
+            titleContentColor = MaterialTheme.colorScheme.onBackground,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            tonalElevation = 0.dp,
+            title = {
+                Text(
+                    "删除 Model ID？",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            },
+            text = {
+                Text(
+                    "将从当前配置草稿中移除 $modelId。",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        modelIdDrafts = modelIdDrafts.filterIndexed { itemIndex, _ -> itemIndex != index }
+                        pendingModelIdDeleteIndex = null
+                        onClearTest()
+                    },
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingModelIdDeleteIndex = null }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+}
+
+internal fun normalizeRemoteModelIds(values: List<String>): List<String> = values
+    .map { it.trim().take(200) }
+    .filter { it.isNotBlank() && it.none(Char::isISOControl) }
+    .distinct()
+
+internal fun initialRemoteModelIdDrafts(editingModelId: String?): List<String> =
+    listOf(editingModelId.orEmpty())
+
+internal fun applyRemoteModelQuickId(drafts: List<String>, modelId: String): List<String> {
+    if (drafts.any { it.trim() == modelId }) return drafts
+    val blankIndex = drafts.indexOfFirst(String::isBlank)
+    return if (blankIndex >= 0) {
+        drafts.toMutableList().also { it[blankIndex] = modelId }
+    } else {
+        drafts + modelId
+    }
+}
+
+internal enum class RemoteModelSheetMode {
+    Draft,
+    Testing,
+    Verified,
+}
+
+internal fun remoteModelSheetMode(
+    draft: ApiConnection,
+    savedConnection: ApiConnection?,
+    editingModelId: String?,
+    testState: ApiTestUiState,
+): RemoteModelSheetMode {
+    val testTargetsDraft = testState.targetConnection?.let { target ->
+        sameRemoteModelDraft(target, draft)
+    } == true && testState.replacingModelId == editingModelId
+    if (testTargetsDraft && testState.isTesting) return RemoteModelSheetMode.Testing
+    if (testTargetsDraft && testState.success == true && testState.saved) {
+        return RemoteModelSheetMode.Verified
+    }
+    return if (isSavedRemoteModelDraftVerified(savedConnection, draft, editingModelId)) {
+        RemoteModelSheetMode.Verified
+    } else {
+        RemoteModelSheetMode.Draft
+    }
+}
+
+internal fun shouldConfirmRemoteModelSheetDismiss(
+    mode: RemoteModelSheetMode,
+    apiUrl: String,
+    apiKey: String,
+    requiresApiKey: Boolean,
+): Boolean = mode == RemoteModelSheetMode.Draft &&
+    apiUrl.isNotBlank() &&
+    (!requiresApiKey || apiKey.isNotBlank())
+
+@OptIn(ExperimentalMaterial3Api::class)
+internal fun shouldAllowRemoteModelSheetTransition(
+    targetValue: SheetValue,
+    shouldConfirmDismiss: Boolean,
+): Boolean = targetValue != SheetValue.Hidden || !shouldConfirmDismiss
+
+private fun isSavedRemoteModelDraftVerified(
+    savedConnection: ApiConnection?,
+    draft: ApiConnection,
+    editingModelId: String?,
+): Boolean {
+    val modelId = editingModelId ?: return false
+    val saved = savedConnection ?: return false
+    if (draft.modelIds != listOf(modelId) || modelId !in saved.modelIds) return false
+    if (
+        saved.id != draft.id ||
+        saved.providerId != draft.providerId ||
+        saved.apiUrl.trim().trimEnd('/') != draft.apiUrl.trim().trimEnd('/') ||
+        saved.apiKey != draft.apiKey ||
+        saved.workspaceId.trim() != draft.workspaceId.trim()
+    ) return false
+    val expectedSignature = AiProviderCatalog.verificationSignature(
+        ApiConfig(
+            providerId = draft.providerId,
+            apiUrl = draft.apiUrl,
+            apiKey = draft.apiKey,
+            model = modelId,
+        ),
+    )
+    val savedSignature = saved.verifiedModelSignatures[modelId]
+        ?: saved.verifiedSignature.takeIf { saved.modelIds.firstOrNull() == modelId }
+    return savedSignature == expectedSignature
+}
+
+internal fun sameRemoteModelDraft(first: ApiConnection, second: ApiConnection): Boolean =
+    first.id == second.id &&
+        first.providerId == second.providerId &&
+        first.apiUrl.trim().trimEnd('/') == second.apiUrl.trim().trimEnd('/') &&
+        first.apiKey == second.apiKey &&
+        normalizeRemoteModelIds(first.modelIds) == normalizeRemoteModelIds(second.modelIds) &&
+        first.workspaceId.trim() == second.workspaceId.trim()
+
+internal fun removeRemoteModel(
+    config: ApiConfig,
+    connectionId: String,
+    modelId: String,
+): ApiConfig {
+    val connection = config.connection(connectionId) ?: return config
+    if (modelId !in connection.modelIds) return config
+
+    val remainingModels = connection.modelIds.filterNot { it == modelId }
+    val removedChat = config.resolvedChatModelRef() == ModelReference(connectionId, modelId)
+    val removedVision = config.resolvedVisionModelRef() == ModelReference(connectionId, modelId)
+    val removedImage = config.resolvedImageModelRef() == ModelReference(connectionId, modelId)
+    val trimmedConnection = connection.copy(
+        modelIds = remainingModels,
+        toolsSupported = remainingModels.any { remainingId ->
+            connection.modelCapabilities[remainingId]?.supportsTools == true
+        },
+        verifiedSignature = remainingModels.firstNotNullOfOrNull { remainingId ->
+            connection.verifiedModelSignatures[remainingId]?.takeIf(String::isNotBlank)
+        }.orEmpty(),
+        modelCapabilities = connection.modelCapabilities - modelId,
+        verifiedModelSignatures = connection.verifiedModelSignatures - modelId,
+    )
+    var next = if (remainingModels.isEmpty()) {
+        config.removeConnection(connectionId)
+    } else {
+        config.saveConnection(trimmedConnection)
+    }.copy(
+        visionModel = if (removedVision) "" else config.visionModel,
+        imageModel = if (removedImage) "" else config.imageModel,
+        visionModelRef = config.visionModelRef.takeUnless { removedVision },
+        imageModelRef = config.imageModelRef.takeUnless { removedImage },
+    )
+
+    if (!removedChat) return next
+
+    val sameConnectionFallback = remainingModels.firstOrNull { remainingId ->
+        trimmedConnection.modelCapabilities[remainingId]?.supportsChatModel() == true
+    } ?: remainingModels.firstOrNull()
+    if (sameConnectionFallback != null) {
+        return next.selectChatModel(ModelReference(connectionId, sameConnectionFallback))
+    }
+
+    next = next.copy(
+        providerId = "",
+        apiUrl = "",
+        apiKey = "",
+        model = "",
+        toolsEnabled = false,
+        verifiedSignature = "",
+        chatModelRef = null,
+    )
+    val otherFallback = next.configuredConnections().firstNotNullOfOrNull { candidate ->
+        candidate.modelIds.firstOrNull { candidateId ->
+            candidate.modelCapabilities[candidateId]?.supportsChatModel() == true
+        }?.let { candidateId -> ModelReference(candidate.id, candidateId) }
+    }
+    return otherFallback?.let(next::selectChatModel) ?: next
+}
+
+internal fun removeRemoteModels(
+    config: ApiConfig,
+    connectionId: String,
+    modelIds: List<String>,
+): ApiConfig = normalizeRemoteModelIds(modelIds).fold(config) { current, modelId ->
+    removeRemoteModel(current, connectionId, modelId)
 }
 
 @Composable
@@ -1809,7 +2822,7 @@ private fun CompactEmptyRow(text: String) {
     Text(
         text = text,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontSize = 13.sp,
+        fontSize = 12.sp,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 14.dp),
     )
 }
@@ -1842,7 +2855,7 @@ private fun ModelPickerRow(
             Text(
                 text = "$providerName · $status",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 11.sp,
+                fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -1899,12 +2912,12 @@ private fun AiProviderRow(
             Text(
                 detail,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 11.sp,
+                fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
         Icon(
             Icons.Outlined.ChevronRight,
             contentDescription = null,
@@ -2114,9 +3127,12 @@ private fun modelCapabilityLabels(model: AiModelPreset): List<String> = buildLis
 private fun SettingsOverviewContent(
     regularNotificationsEnabled: Boolean,
     islandNotificationsEnabled: Boolean,
-    memoryCount: Int,
     onNotificationModeChange: (TaskNotificationMode) -> Unit,
     onOpenMemory: () -> Unit,
+    pairedConnector: PairedConnector?,
+    onOpenDevicePairing: () -> Unit,
+    onManageDevicePairing: () -> Unit,
+    onOpenPhoneAgent: () -> Unit,
 ) {
     var notificationMenuExpanded by remember { mutableStateOf(false) }
     val notificationMode = when {
@@ -2128,6 +3144,15 @@ private fun SettingsOverviewContent(
         TaskNotificationMode.Regular -> "常规通知"
         TaskNotificationMode.Island -> "岛通知"
         TaskNotificationMode.Disabled -> "不启用"
+    }
+
+    SectionHeader("屏幕助手")
+    SettingGroup {
+        OverviewSettingRow(
+            title = "配置功能",
+            description = "",
+            onClick = onOpenPhoneAgent,
+        )
     }
 
     SectionHeader("通知")
@@ -2177,9 +3202,56 @@ private fun SettingsOverviewContent(
     SettingGroup {
         OverviewSettingRow(
             title = "自定义记忆",
-            description = if (memoryCount == 0) "未添加" else "已保存 $memoryCount 条",
+            description = "",
             onClick = onOpenMemory,
         )
+    }
+
+    SectionHeader("设备配对")
+    SettingGroup {
+        DevicePairingSettingRow(
+            connector = pairedConnector,
+            onOpenPairing = onOpenDevicePairing,
+            onManage = onManageDevicePairing,
+        )
+    }
+}
+
+@Composable
+private fun DevicePairingSettingRow(
+    connector: PairedConnector?,
+    onOpenPairing: () -> Unit,
+    onManage: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = if (connector == null) onOpenPairing else onManage)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = connector?.let {
+                "已配对 ${it.connectorDeviceId.takeLast(4).uppercase()}（${it.displayName}）"
+            } ?: "远端电脑配置",
+            color = MaterialTheme.colorScheme.onSurface,
+        fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        if (connector == null) {
+            Icon(
+                Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
+                modifier = Modifier.size(19.dp),
+            )
+        } else {
+            TextButton(onClick = onManage) { Text("管理") }
+        }
     }
 }
 
@@ -2192,13 +3264,13 @@ private fun SettingsSecondaryContent(
     SettingGroup {
         OverviewSettingRow(
             title = "权限",
-            description = "相机、文件、通知等系统权限",
+            description = "",
             onClick = onOpenPermission,
         )
         GroupDivider()
         OverviewSettingRow(
             title = "关于",
-            description = "版本、更新、日志和缓存清理",
+            description = "",
             onClick = onOpenAbout,
         )
     }
@@ -2214,25 +3286,36 @@ private fun OverviewSettingRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 14.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 title,
                 color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 16.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (description.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    description,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         Spacer(Modifier.width(8.dp))
         Icon(
             Icons.Outlined.ChevronRight,
-            contentDescription = null,
+            contentDescription = "打开设置项",
             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
-            modifier = Modifier.size(19.dp),
+            modifier = Modifier.size(18.dp),
         )
     }
 }
@@ -2399,7 +3482,7 @@ private fun MemoryItemRow(
             Text(
                 item.label,
                 color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 15.sp,
+        fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -2464,8 +3547,8 @@ private fun OfficialChannelRow(
                 Text(
                     title,
                     color = titleColor,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -2507,12 +3590,11 @@ private fun OfficialChannelRow(
 @Composable
 private fun LocalModelFallbackContent(
     models: List<LocalModelPreset>,
-    selectedModelId: String,
     states: List<LocalModelFileState>,
     downloadStates: Map<String, LocalModelDownloadState>,
-    onSelect: (LocalModelPreset) -> Unit,
     onDownload: (LocalModelPreset) -> Unit,
     onPauseDownload: (LocalModelPreset) -> Unit,
+    onCancelDownload: (LocalModelPreset) -> Unit,
     onDelete: (LocalModelPreset) -> Unit,
 ) {
     SettingGroup {
@@ -2522,10 +3604,9 @@ private fun LocalModelFallbackContent(
                 item = item,
                 state = states.firstOrNull { it.modelId == item.id },
                 downloadState = downloadStates[item.id],
-                selected = item.id == selectedModelId,
-                onClick = { onSelect(item) },
                 onDownload = { onDownload(item) },
                 onPauseDownload = { onPauseDownload(item) },
+                onCancelDownload = { onCancelDownload(item) },
                 onDelete = { onDelete(item) },
             )
         }
@@ -2537,10 +3618,9 @@ private fun LocalModelManagementRow(
     item: LocalModelPreset,
     state: LocalModelFileState?,
     downloadState: LocalModelDownloadState?,
-    selected: Boolean,
-    onClick: () -> Unit,
     onDownload: () -> Unit,
     onPauseDownload: () -> Unit,
+    onCancelDownload: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val downloadActive = downloadState?.status in setOf(
@@ -2548,17 +3628,12 @@ private fun LocalModelManagementRow(
         LocalModelDownloadStatus.Downloading,
         LocalModelDownloadStatus.Verifying,
     )
-    val hasPartialDownload = (downloadState?.downloadedBytes ?: 0L) > 0L
+    val downloadCompleted = downloadState?.status == LocalModelDownloadStatus.Completed
+    val hasPartialDownload = !downloadCompleted && (downloadState?.downloadedBytes ?: 0L) > 0L
     val hasLocalFile = state?.state != null && state.state != LocalModelInstallState.NotInstalled
-    val isSelected = selected && state?.installed == true
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = state?.installed == true, onClick = onClick)
-            .background(
-                if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.09f)
-                else Color.Transparent,
-            )
             .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2595,8 +3670,6 @@ private fun LocalModelManagementRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Spacer(Modifier.width(10.dp))
-            ModelSelectionIndicator(selected = isSelected)
         }
         localModelStateDescription(state)?.let { description ->
             Spacer(Modifier.height(8.dp))
@@ -2607,16 +3680,19 @@ private fun LocalModelManagementRow(
                 lineHeight = 15.sp,
             )
         }
-        if (downloadState != null && (downloadActive || hasPartialDownload || downloadState.message != null)) {
+        val visibleDownloadState = downloadState?.takeIf(::shouldShowLocalModelDownloadProgress)
+        if (visibleDownloadState != null) {
             Spacer(Modifier.height(6.dp))
             LinearProgressIndicator(
-                progress = { downloadState.progress },
+                progress = { visibleDownloadState.progress },
                 modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.onSurface,
+                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                localModelDownloadDescription(downloadState),
-                color = if (downloadState.status == LocalModelDownloadStatus.Failed) {
+                localModelDownloadDescription(visibleDownloadState),
+                color = if (visibleDownloadState.status == LocalModelDownloadStatus.Failed) {
                     MaterialTheme.colorScheme.error
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
@@ -2631,22 +3707,31 @@ private fun LocalModelManagementRow(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (state?.installed != true) {
-                OutlinedButton(
-                    onClick = if (downloadActive) onPauseDownload else onDownload,
-                    shape = RoundedCornerShape(8.dp),
-                ) {
-                    Icon(
-                        imageVector = if (downloadActive) Icons.Outlined.Pause else Icons.Outlined.Download,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(5.dp))
-                    Text(if (downloadActive) "暂停" else if (hasPartialDownload) "继续" else "下载")
+            if (state?.installed != true && !downloadCompleted) {
+                if (downloadActive) {
+                    TextButton(onClick = onPauseDownload) {
+                        Text("暂停")
+                    }
+                    TextButton(onClick = onCancelDownload) {
+                        Text("取消", color = MaterialTheme.colorScheme.error)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onDownload,
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(if (hasPartialDownload) "继续" else "下载")
+                    }
                 }
                 Spacer(Modifier.width(8.dp))
             }
-            if (hasLocalFile || hasPartialDownload) {
+            if (!downloadActive && (hasLocalFile || hasPartialDownload)) {
                 Spacer(Modifier.width(4.dp))
                 IconButton(onClick = onDelete) {
                     Icon(
@@ -2688,10 +3773,26 @@ private fun localModelDownloadDescription(state: LocalModelDownloadState): Strin
         LocalModelDownloadStatus.Checking -> state.message ?: "正在检查下载条件"
         LocalModelDownloadStatus.Downloading -> "正在下载：$progress"
         LocalModelDownloadStatus.Paused -> "已暂停：$progress"
+        LocalModelDownloadStatus.Cancelled -> "已取消"
         LocalModelDownloadStatus.Verifying -> state.message ?: "正在校验文件"
         LocalModelDownloadStatus.Completed -> state.message ?: "下载完成"
         LocalModelDownloadStatus.Failed -> state.message ?: "下载失败，可继续重试"
     }
+}
+
+internal fun shouldShowLocalModelDownloadProgress(state: LocalModelDownloadState?): Boolean {
+    if (
+        state == null ||
+        state.status == LocalModelDownloadStatus.Completed ||
+        state.status == LocalModelDownloadStatus.Cancelled ||
+        state.status == LocalModelDownloadStatus.Idle
+    ) return false
+    val active = state.status in setOf(
+        LocalModelDownloadStatus.Checking,
+        LocalModelDownloadStatus.Downloading,
+        LocalModelDownloadStatus.Verifying,
+    )
+    return active || state.downloadedBytes > 0L || state.message != null
 }
 
 private fun formatLocalModelSize(bytes: Long): String {
@@ -2815,7 +3916,7 @@ private fun OrchestrationSlotRow(
             Text(
                 title,
                 color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 15.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
             )
             Spacer(Modifier.height(2.dp))
@@ -2919,8 +4020,8 @@ private fun ModelPresetRow(
                 Text(
                     item.name,
                     color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
@@ -3107,8 +4208,8 @@ private fun ApiHintRow(
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 11.dp),
     ) {
-        Text(title, color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(3.dp))
+        Text(title, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(2.dp))
         Text(
             description,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3118,13 +4219,14 @@ private fun ApiHintRow(
     }
 }
 
-private fun officialEntryUrl(provider: AiProviderPreset): String = when (provider.id) {
+internal fun officialEntryUrl(provider: AiProviderPreset): String = when (provider.id) {
     "openrouter" -> "https://openrouter.ai/settings/keys"
     "openai" -> "https://platform.openai.com/api-keys"
     "gemini" -> "https://aistudio.google.com/app/apikey"
     "qwen" -> "https://bailian.console.aliyun.com/"
     "siliconflow" -> "https://cloud.siliconflow.cn/account/ak"
     "deepseek" -> "https://platform.deepseek.com/api_keys"
+    "kimi" -> "https://platform.moonshot.cn/console/api-keys"
     "mimo" -> "https://platform.xiaomimimo.com/"
     else -> "https://platform.openai.com/docs/api-reference/chat"
 }
@@ -3180,10 +4282,12 @@ private fun AppearanceSettingsContent(
     selectedStyle: InterfaceStyle,
     liquidGlassTransparency: Float,
     selectedColor: Long,
+    selectedFontSize: FontSizePreference,
     onModeChange: (ThemeMode) -> Unit,
     onStyleChange: (InterfaceStyle) -> Unit,
     onLiquidGlassTransparencyChange: (Float) -> Unit,
     onAccentColorChange: (Long) -> Unit,
+    onFontSizeChange: (FontSizePreference) -> Unit,
 ) {
     SettingGroup {
         ThemeModeSelectionRow(
@@ -3191,22 +4295,31 @@ private fun AppearanceSettingsContent(
             onModeChange = onModeChange,
         )
         GroupDivider()
-        InterfaceStyleSelectionRow(
-            selectedStyle = selectedStyle,
-            onStyleChange = onStyleChange,
+        FontSizeSelectionRow(
+            selectedFontSize = selectedFontSize,
+            onFontSizeChange = onFontSizeChange,
         )
-        if (LIQUID_GLASS_STYLE_VISIBLE && selectedStyle == InterfaceStyle.LIQUID_GLASS) {
+        if (INTERFACE_STYLE_SETTING_VISIBLE) {
             GroupDivider()
-            LiquidGlassTransparencyRow(
-                transparency = liquidGlassTransparency,
-                onTransparencyChange = onLiquidGlassTransparencyChange,
+            InterfaceStyleSelectionRow(
+                selectedStyle = selectedStyle,
+                onStyleChange = onStyleChange,
+            )
+            if (LIQUID_GLASS_STYLE_VISIBLE && selectedStyle == InterfaceStyle.LIQUID_GLASS) {
+                GroupDivider()
+                LiquidGlassTransparencyRow(
+                    transparency = liquidGlassTransparency,
+                    onTransparencyChange = onLiquidGlassTransparencyChange,
+                )
+            }
+        }
+        if (ACCENT_COLOR_SETTING_VISIBLE) {
+            GroupDivider()
+            AccentColorSelectionRow(
+                selectedColor = selectedColor,
+                onAccentColorChange = onAccentColorChange,
             )
         }
-        GroupDivider()
-        AccentColorSelectionRow(
-            selectedColor = selectedColor,
-            onAccentColorChange = onAccentColorChange,
-        )
     }
 }
 
@@ -3217,11 +4330,11 @@ private fun InterfaceStyleSelectionRow(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val visibleSelectedStyle = selectedStyle.takeUnless {
-        it == InterfaceStyle.LIQUID_GLASS && !LIQUID_GLASS_STYLE_VISIBLE
+        it == InterfaceStyle.MATERIAL3 ||
+            (it == InterfaceStyle.LIQUID_GLASS && !LIQUID_GLASS_STYLE_VISIBLE)
     } ?: InterfaceStyle.ACRYLIC
     val options = buildList {
         add(InterfaceStyle.ACRYLIC to "亚克力")
-        add(InterfaceStyle.MATERIAL3 to "Material3")
         if (LIQUID_GLASS_STYLE_VISIBLE) {
             add(InterfaceStyle.LIQUID_GLASS to "液态玻璃")
         }
@@ -3252,6 +4365,43 @@ private fun InterfaceStyleSelectionRow(
 }
 
 @Composable
+private fun FontSizeSelectionRow(
+    selectedFontSize: FontSizePreference,
+    onFontSizeChange: (FontSizePreference) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val options = listOf(
+        FontSizePreference.SMALL to "小",
+        FontSizePreference.MEDIUM to "中",
+        FontSizePreference.LARGE to "大",
+        FontSizePreference.EXTRA_LARGE to "超大",
+    )
+    SelectionSettingRow(
+        title = "字体大小",
+        value = options.first { it.first == selectedFontSize }.second,
+        expanded = expanded,
+        onClick = { expanded = true },
+        onDismiss = { expanded = false },
+        menuContent = {
+            options.forEach { (fontSize, label) ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    trailingIcon = {
+                        if (fontSize == selectedFontSize) {
+                            Icon(Icons.Outlined.Check, contentDescription = "当前字体大小")
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        onFontSizeChange(fontSize)
+                    },
+                )
+            }
+        },
+    )
+}
+
+@Composable
 private fun LiquidGlassTransparencyRow(
     transparency: Float,
     onTransparencyChange: (Float) -> Unit,
@@ -3270,14 +4420,14 @@ private fun LiquidGlassTransparencyRow(
             Text(
                 text = "透明度",
                 color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 15.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.weight(1f),
             )
             Text(
                 text = "${(transparency * 100).toInt()}%",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
             )
             IconButton(
                 onClick = {
@@ -3500,20 +4650,20 @@ private fun SelectionSettingRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 14.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             title,
             color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
+            fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.weight(1f),
         )
         Text(
             value,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 13.sp,
+            fontSize = 12.sp,
         )
         Spacer(Modifier.width(6.dp))
         SettingsDropdownArrow(
@@ -3800,6 +4950,8 @@ private fun CompactInput(
     visualTransformation: VisualTransformation = VisualTransformation.None,
     trailingIcon: @Composable (() -> Unit)? = null,
     readOnly: Boolean = false,
+    enabled: Boolean = true,
+    multiline: Boolean = false,
     onValueChange: (String) -> Unit,
 ) {
     if (label.isNotBlank()) {
@@ -3815,11 +4967,19 @@ private fun CompactInput(
         value = value,
         onValueChange = onValueChange,
         modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        placeholder = {
+            Text(
+                placeholder,
+                maxLines = if (multiline) Int.MAX_VALUE else 1,
+                overflow = if (multiline) TextOverflow.Clip else TextOverflow.Ellipsis,
+            )
+        },
         colors = themedFieldColors(),
         shape = RoundedCornerShape(8.dp),
-        singleLine = true,
+        singleLine = !multiline,
+        maxLines = if (multiline) Int.MAX_VALUE else 1,
         readOnly = readOnly,
+        enabled = enabled,
         visualTransformation = visualTransformation,
         trailingIcon = trailingIcon,
     )
@@ -3876,7 +5036,18 @@ private fun SwitchSettingRow(
             }
         }
         Spacer(Modifier.width(12.dp))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                checkedTrackColor = MaterialTheme.colorScheme.primary,
+                checkedBorderColor = MaterialTheme.colorScheme.primary,
+                uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                uncheckedTrackColor = Color.Transparent,
+                uncheckedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.55f),
+            ),
+        )
     }
 }
 
@@ -3906,7 +5077,7 @@ private fun CompactActionRow(
             Text(
                 text = description,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.55f),
-                fontSize = 11.sp,
+                fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -3993,6 +5164,7 @@ private fun StatusText(
 @Composable
 private fun AboutSettingsContent(
     appVersion: String,
+    onExportDiagnostic: () -> Unit,
     onOpenCacheClean: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
@@ -4023,10 +5195,44 @@ private fun AboutSettingsContent(
     SectionHeader("本机")
     SettingGroup {
         ActionSettingRow(
+            title = "导出诊断记录",
+            description = "生成用于排查问题的脱敏文本，并打开系统分享",
+            onClick = onExportDiagnostic,
+        )
+        GroupDivider()
+        ActionSettingRow(
             title = "清除缓存",
             description = "查看临时缓存、运行缓存和崩溃记录后再清理",
             onClick = onOpenCacheClean,
         )
+    }
+}
+
+private fun shareDiagnosticReport(context: Context, file: File) {
+    if (!file.isFile) {
+        Toast.makeText(context, "诊断记录不存在", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        file,
+    )
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_SUBJECT, "Mason 诊断记录")
+        clipData = ClipData.newRawUri("Mason 诊断记录", uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching {
+        context.startActivity(Intent.createChooser(intent, "分享 Mason 诊断记录"))
+    }.onFailure { error ->
+        Toast.makeText(
+            context,
+            "打开分享面板失败：${error.message ?: error.javaClass.simpleName}",
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 }
 
@@ -4202,6 +5408,10 @@ private fun themedFieldColors() = OutlinedTextFieldDefaults.colors(
     cursorColor = MaterialTheme.colorScheme.primary,
     focusedLabelColor = MaterialTheme.colorScheme.primary,
     unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+    disabledBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.30f),
+    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+    disabledPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.54f),
 )
 
 private fun Long.toRgbHex(): String = "#%06X".format((this and 0xFFFFFF).toInt())

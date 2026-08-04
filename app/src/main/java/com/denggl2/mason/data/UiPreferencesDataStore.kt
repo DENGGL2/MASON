@@ -29,6 +29,7 @@ class UiPreferencesDataStore @Inject constructor(
         val KEY_NOTIFICATION_DELIVERY_MODE = stringPreferencesKey("notification_delivery_mode")
         val KEY_REGULAR_NOTIFICATIONS_ENABLED = booleanPreferencesKey("regular_notifications_enabled")
         val KEY_ISLAND_NOTIFICATIONS_ENABLED = booleanPreferencesKey("island_notifications_enabled")
+        val KEY_FONT_SIZE = stringPreferencesKey("font_size")
     }
 
     val preferences: Flow<UiPreferences> = context.uiPreferencesStore.data.map { prefs ->
@@ -49,6 +50,9 @@ class UiPreferencesDataStore @Inject constructor(
                     legacyEnabled = prefs[KEY_NOTIFICATION_ISLAND_ENABLED],
                 ),
             islandNotificationsEnabled = prefs[KEY_ISLAND_NOTIFICATIONS_ENABLED] ?: false,
+            fontSize = prefs[KEY_FONT_SIZE]
+                ?.let { value -> FontSizePreference.entries.firstOrNull { it.name == value } }
+                ?: FontSizePreference.MEDIUM,
         )
     }
 
@@ -85,6 +89,12 @@ class UiPreferencesDataStore @Inject constructor(
     suspend fun updateIslandNotificationsEnabled(enabled: Boolean) {
         context.uiPreferencesStore.edit { prefs ->
             prefs[KEY_ISLAND_NOTIFICATIONS_ENABLED] = enabled
+        }
+    }
+
+    suspend fun updateFontSize(fontSize: FontSizePreference) {
+        context.uiPreferencesStore.edit { prefs ->
+            prefs[KEY_FONT_SIZE] = fontSize.name
         }
     }
 }

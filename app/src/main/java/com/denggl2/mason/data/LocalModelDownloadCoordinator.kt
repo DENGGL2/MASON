@@ -20,6 +20,7 @@ class LocalModelDownloadCoordinator @Inject constructor(
     private val activeLock = Any()
     private var activeModelId: String? = null
     private var activeJob: Job? = null
+    private var requestedStopStatus: LocalModelDownloadStatus? = null
 
     init {
         refreshStates()
@@ -54,11 +55,15 @@ class LocalModelDownloadCoordinator @Inject constructor(
                 check(activeJob?.isActive != true) { "已有模型正在下载" }
                 activeModelId = modelId
                 activeJob = job
+                requestedStopStatus = null
             }
             downloader.download(model, ::updateState)
             requireNotNull(_states.value[modelId])
         } catch (_: CancellationException) {
-            downloader.stateFor(model).also(::updateState)
+            val stopStatus = synchronized(activeLock) {
+                requestedStopStatus ?: LocalModelDownloadStatus.Paused
+            }
+            stoppedDownloadState(downloader.stateFor(model), stopStatus).also(::updateState)
         } catch (e: Exception) {
             downloader.stateFor(model)
                 .copy(
@@ -71,14 +76,32 @@ class LocalModelDownloadCoordinator @Inject constructor(
                 if (activeJob === job) {
                     activeJob = null
                     activeModelId = null
+                    requestedStopStatus = null
                 }
             }
         }
     }
 
+    suspend fun pauseAndJoin(modelId: String) {
+        stopAndJoin(modelId, LocalModelDownloadStatus.Paused)
+    }
+
     suspend fun cancelAndJoin(modelId: String) {
+        stopAndJoin(modelId, LocalModelDownloadStatus.Cancelled)
+        downloader.resetPartialDownload(modelId)
+        LocalModelCatalog.get(modelId)?.let { model ->
+            updateState(downloader.stateFor(model))
+        }
+    }
+
+    private suspend fun stopAndJoin(
+        modelId: String,
+        status: LocalModelDownloadStatus,
+    ) {
         val job = synchronized(activeLock) {
-            activeJob?.takeIf { activeModelId == modelId }
+            activeJob?.takeIf { activeModelId == modelId }?.also {
+                requestedStopStatus = status
+            }
         }
         job?.cancelAndJoin()
     }
@@ -91,4 +114,20 @@ class LocalModelDownloadCoordinator @Inject constructor(
     private fun updateState(state: LocalModelDownloadState) {
         _states.value = _states.value + (state.modelId to state)
     }
+}
+
+internal fun stoppedDownloadState(
+    diskState: LocalModelDownloadState,
+    status: LocalModelDownloadStatus,
+): LocalModelDownloadState {
+    require(status == LocalModelDownloadStatus.Paused || status == LocalModelDownloadStatus.Cancelled)
+    return diskState.copy(
+        status = status,
+        downloadedBytes = if (status == LocalModelDownloadStatus.Cancelled) 0L else diskState.downloadedBytes,
+        message = when (status) {
+            LocalModelDownloadStatus.Paused -> "已暂停，可继续下载"
+            LocalModelDownloadStatus.Cancelled -> null
+            else -> error("不支持的下载停止状态")
+        },
+    )
 }

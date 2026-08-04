@@ -53,4 +53,81 @@ class NotificationDeliveryPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun phoneAgentIslandRequiresAllSystemCapabilities() {
+        assertFalse(
+            shouldUsePromotedNotificationIsland(
+                sdkInt = 36,
+                notificationsEnabled = true,
+                postNotificationPermissionGranted = true,
+                promotedAllowed = false,
+            ),
+        )
+        assertFalse(
+            shouldUsePromotedNotificationIsland(
+                sdkInt = 36,
+                notificationsEnabled = false,
+                postNotificationPermissionGranted = true,
+                promotedAllowed = true,
+            ),
+        )
+        assertTrue(
+            shouldUsePromotedNotificationIsland(
+                sdkInt = 36,
+                notificationsEnabled = true,
+                postNotificationPermissionGranted = true,
+                promotedAllowed = true,
+            ),
+        )
+    }
+
+    @Test
+    fun phoneAgentFallsBackBelowAndroid16() {
+        assertFalse(
+            shouldUsePromotedNotificationIsland(
+                sdkInt = 35,
+                notificationsEnabled = true,
+                postNotificationPermissionGranted = true,
+                promotedAllowed = true,
+            ),
+        )
+    }
+
+    @Test
+    fun foregroundNotificationsAreSuppressedExceptForExplicitPreview() {
+        assertTrue(shouldSuppressSystemNotification(appForeground = true, allowForeground = false))
+        assertFalse(shouldSuppressSystemNotification(appForeground = true, allowForeground = true))
+        assertFalse(shouldSuppressSystemNotification(appForeground = false, allowForeground = false))
+    }
+
+    @Test
+    fun android12DoesNotRequestPostNotificationPermission() {
+        assertFalse(
+            shouldRequestPostNotificationPermission(
+                sdkInt = 32,
+                permissionGranted = false,
+            ),
+        )
+    }
+
+    @Test
+    fun android13RequestsMissingPostNotificationPermission() {
+        assertTrue(
+            shouldRequestPostNotificationPermission(
+                sdkInt = 33,
+                permissionGranted = false,
+            ),
+        )
+    }
+
+    @Test
+    fun grantedPostNotificationPermissionIsNotRequestedAgain() {
+        assertFalse(
+            shouldRequestPostNotificationPermission(
+                sdkInt = 36,
+                permissionGranted = true,
+            ),
+        )
+    }
 }

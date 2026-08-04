@@ -17,7 +17,21 @@ data class McpServerConfig(
     // Kept only to migrate schema v1 configurations into encrypted storage.
     val bearerToken: String = "",
     val enabled: Boolean = true,
+    val toolPolicies: Map<String, McpToolPolicy> = emptyMap(),
 )
+
+@Serializable
+data class McpToolPolicy(
+    val enabled: Boolean = true,
+    val approvalPolicy: McpToolApprovalPolicy = McpToolApprovalPolicy.DEFAULT,
+)
+
+@Serializable
+enum class McpToolApprovalPolicy {
+    DEFAULT,
+    ALWAYS_ASK,
+    ALLOW_WITHOUT_ASK,
+}
 
 @Serializable
 enum class McpAuthType {
@@ -41,7 +55,7 @@ data class A2aAgentConfig(
 data class IntegrationConfigSnapshot(
     val mcpServers: List<McpServerConfig> = emptyList(),
     val a2aAgents: List<A2aAgentConfig> = emptyList(),
-    val schemaVersion: Int = 2,
+    val schemaVersion: Int = 3,
 )
 
 enum class IntegrationConnectionPhase {

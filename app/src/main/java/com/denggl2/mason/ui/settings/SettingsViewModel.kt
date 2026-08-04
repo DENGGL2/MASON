@@ -1,9 +1,12 @@
 package com.denggl2.mason.ui.settings
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.os.StatFs
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.denggl2.mason.crashguard.data.CrashDao
@@ -11,9 +14,15 @@ import com.denggl2.mason.automation.AutomationScheduler
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
 import com.denggl2.mason.data.ApiConnection
+import com.denggl2.mason.data.ApiModelCapabilities
+import com.denggl2.mason.data.configuredChatModelRef
+import com.denggl2.mason.data.connection
 import com.denggl2.mason.data.connectionIdForProvider
 import com.denggl2.mason.data.connectionForProvider
 import com.denggl2.mason.data.saveConnection
+import com.denggl2.mason.data.selectChatModel
+import com.denggl2.mason.data.selectInitialImageModel
+import com.denggl2.mason.data.ModelReference
 import com.denggl2.mason.data.AutomationPreferences
 import com.denggl2.mason.data.AutomationPreferencesDataStore
 import com.denggl2.mason.data.AiProviderCatalog
@@ -41,11 +50,18 @@ import com.denggl2.mason.llm.ModelInvocation
 import com.denggl2.mason.llm.ModelModality
 import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.agent.ToolGrantStore
+import com.denggl2.mason.agent.TaskRunStore
 import com.denggl2.mason.model.LocalModelEngineRegistry
 import com.denggl2.mason.sync.SyncManager
+import com.denggl2.mason.sync.remote.PairedConnector
+import com.denggl2.mason.sync.remote.PairedConnectorStore
+import com.denggl2.mason.sync.remote.PinnedConnectorClient
+import com.denggl2.mason.sync.security.AndroidDeviceIdentityStore
+import com.denggl2.mason.tool.NotificationTool
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -56,6 +72,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
 
@@ -63,8 +82,14 @@ data class ApiTestUiState(
     val isTesting: Boolean = false,
     val message: String? = null,
     val success: Boolean? = null,
+    val saved: Boolean = false,
     val capabilityWarning: String? = null,
     val capabilities: List<ApiCapabilityCheck> = emptyList(),
+    val targetConnection: ApiConnection? = null,
+    val testedConnection: ApiConnection? = null,
+    val replacingModelId: String? = null,
+    val observedModelCapabilities: Map<String, ApiModelCapabilities> = emptyMap(),
+    val observedFailedModels: Set<String> = emptySet(),
 )
 
 data class ModelRefreshUiState(
@@ -95,6 +120,11 @@ data class LocalModelTestUiState(
     val success: Boolean? = null,
 )
 
+private const val DIAGNOSTIC_CONVERSATION_LIMIT = 5
+private const val DIAGNOSTIC_MESSAGE_LIMIT = 20
+private const val DIAGNOSTIC_TASK_LIMIT = 10
+private const val DIAGNOSTIC_CRASH_LIMIT = 10
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val configDataStore: ApiConfigDataStore,
@@ -102,6 +132,7 @@ class SettingsViewModel @Inject constructor(
     private val chatClient: ChatClient,
     private val modelRepository: AiModelRepository,
     private val syncManager: SyncManager,
+    private val connectorStore: PairedConnectorStore,
     private val crashDao: CrashDao,
     private val userMemoryStore: UserMemoryStore,
     private val officialChannelStore: OfficialChannelPreferencesDataStore,
@@ -111,6 +142,9 @@ class SettingsViewModel @Inject constructor(
     private val automationPreferencesStore: AutomationPreferencesDataStore,
     private val automationScheduler: AutomationScheduler,
     private val toolGrantStore: ToolGrantStore,
+    private val taskRunStore: TaskRunStore,
+    private val apiTestRuntime: ApiTestRuntime,
+    private val notificationTool: NotificationTool,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -126,14 +160,18 @@ class SettingsViewModel @Inject constructor(
     val automationPreferences: StateFlow<AutomationPreferences> = automationPreferencesStore.preferences
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AutomationPreferences())
 
+    val pairedConnector: StateFlow<PairedConnector?> = connectorStore.connector
+
     private val _alwaysAllowedTools = MutableStateFlow(toolGrantStore.listAlwaysAllowed())
     val alwaysAllowedTools = _alwaysAllowedTools.asStateFlow()
 
     private val _toastEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val toastEvent = _toastEvent.asSharedFlow()
 
-    private val _apiTestState = MutableStateFlow(ApiTestUiState())
-    val apiTestState = _apiTestState.asStateFlow()
+    private val _diagnosticExportEvent = MutableSharedFlow<File>(extraBufferCapacity = 1)
+    val diagnosticExportEvent = _diagnosticExportEvent.asSharedFlow()
+
+    val apiTestState = apiTestRuntime.state
 
     private val _modelRefreshState = MutableStateFlow(ModelRefreshUiState())
     val modelRefreshState = _modelRefreshState.asStateFlow()
@@ -164,16 +202,111 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun previewTaskNotification(island: Boolean) {
+        viewModelScope.launch {
+            val args = mapOf(
+                "title" to if (island) "岛通知已选择" else "常规通知已启用",
+                "text" to if (island && Build.VERSION.SDK_INT < 36) {
+                    "当前系统使用常规通知，Android 16 可显示岛通知"
+                } else {
+                    "Mason 会在后台任务状态变化时通知你"
+                },
+                NotificationTool.EXTRA_ALLOW_FOREGROUND to "true",
+                NotificationTool.EXTRA_PREVIEW_MODE to if (island) {
+                    NotificationTool.PREVIEW_MODE_ISLAND
+                } else {
+                    NotificationTool.PREVIEW_MODE_REGULAR
+                },
+                NotificationTool.EXTRA_LIVE_UPDATE to island.toString(),
+                NotificationTool.EXTRA_LIVE_UPDATE_PROGRESS to "35",
+                NotificationTool.EXTRA_LIVE_UPDATE_SHORT_TEXT to if (island) "岛通知" else "",
+            )
+            val result = notificationTool.execute(args)
+            if (!result.success) {
+                _toastEvent.emit(result.error ?: "通知发送失败")
+                return@launch
+            }
+            if (island && result.data["live_update_requested"] == "true") {
+                delay(3_000L)
+                val finalResult = notificationTool.execute(
+                    args + mapOf(
+                        NotificationTool.EXTRA_LIVE_UPDATE_PROGRESS to "100",
+                        NotificationTool.EXTRA_LIVE_UPDATE_FINAL to "true",
+                        NotificationTool.EXTRA_LIVE_UPDATE_SHORT_TEXT to "完成",
+                    ),
+                )
+                if (!finalResult.success) {
+                    _toastEvent.emit(finalResult.error ?: "通知发送失败")
+                }
+            }
+        }
+    }
+
     fun saveConnection(connection: ApiConnection) {
         viewModelScope.launch {
-            configDataStore.updateConfig(config.value.saveConnection(connection))
+            val current = config.value
+            val updated = current.saveConnection(connection)
+            val next = if (current.configuredChatModelRef() == null && connection.modelIds.isNotEmpty()) {
+                updated.selectChatModel(ModelReference(connection.id, connection.modelIds.first()))
+            } else {
+                updated
+            }
+            configDataStore.updateConfig(next)
         }
+    }
+
+    fun saveTestedConnection(): Boolean {
+        val testState = apiTestRuntime.current
+        if (testState.success != true) return false
+        val tested = testState.testedConnection ?: return false
+        viewModelScope.launch {
+            persistTestedConnection(tested, testState.replacingModelId)
+        }
+        return true
+    }
+
+    private suspend fun persistTestedConnection(
+        tested: ApiConnection,
+        replacingModelId: String?,
+    ): ApiConnection {
+        val current = config.value
+        val merged = mergeTestedConnection(
+            existing = current.connection(tested.id),
+            tested = tested,
+            replacingModelId = replacingModelId,
+        )
+        val updated = current.saveConnection(merged)
+        val withChatDefault = if (
+            current.configuredChatModelRef() == null && merged.modelIds.isNotEmpty()
+        ) {
+            updated.selectChatModel(ModelReference(merged.id, merged.modelIds.first()))
+        } else {
+            updated
+        }
+        configDataStore.updateConfig(withChatDefault.selectInitialImageModel(merged))
+        return merged
+    }
+
+    fun setApiTestVisibleDraft(connection: ApiConnection?) {
+        apiTestRuntime.setVisibleDraft(connection)
     }
 
     fun revokeToolGrant(toolName: String) {
         toolGrantStore.revoke(toolName)
         _alwaysAllowedTools.value = toolGrantStore.listAlwaysAllowed()
         _toastEvent.tryEmit("已撤销 $toolName 的永久授权")
+    }
+
+    fun cancelDevicePairing() {
+        val connector = connectorStore.load() ?: return
+        connectorStore.clear()
+        _toastEvent.tryEmit("已取消设备配对")
+        viewModelScope.launch {
+            runCatching {
+                val deviceId = syncManager.getLocalDeviceId()
+                PinnedConnectorClient(connector, AndroidDeviceIdentityStore()).revoke(deviceId)
+            }
+        }
     }
 
     fun setBackgroundAutomationEnabled(enabled: Boolean) {
@@ -231,6 +364,10 @@ class SettingsViewModel @Inject constructor(
 
     fun pauseLocalModelDownload(modelId: String) {
         LocalModelDownloadService.pause(context, modelId)
+    }
+
+    fun cancelLocalModelDownload(modelId: String) {
+        LocalModelDownloadService.cancel(context, modelId)
     }
 
     fun deleteLocalModel(modelId: String) {
@@ -382,7 +519,13 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun clearApiTestState() {
-        _apiTestState.value = ApiTestUiState()
+        apiTestRuntime.clearCompletedState()
+    }
+
+    fun cancelApiTest() {
+        if (!apiTestRuntime.cancelActiveTest()) {
+            _toastEvent.tryEmit("当前没有正在进行的模型测试")
+        }
     }
 
     fun saveMemory(
@@ -442,12 +585,16 @@ class SettingsViewModel @Inject constructor(
 
     fun testApi(config: ApiConfig) {
         validateApiConfig(config)?.let { message ->
-            _apiTestState.value = ApiTestUiState(message = message, success = false)
+            apiTestRuntime.current = ApiTestUiState(message = message, success = false)
             return
         }
 
-        viewModelScope.launch {
-            _apiTestState.value = ApiTestUiState(isTesting = true, message = "正在测试连接...")
+        if (!apiTestRuntime.launch { runId ->
+            if (!apiTestRuntime.update(
+                    runId,
+                    ApiTestUiState(isTesting = true, message = "正在测试连接..."),
+                )
+            ) return@launch
             val result = chatClient.testConnection(
                 apiUrl = config.apiUrl,
                 apiKey = config.apiKey,
@@ -462,6 +609,7 @@ class SettingsViewModel @Inject constructor(
                         ?.let { put("X-DashScope-WorkSpace", it) }
                 },
             )
+            if (!apiTestRuntime.isActive(runId)) return@launch
             if (result.success) {
                 val verifiedSignature = AiProviderCatalog.verificationSignature(config)
                 val connectionId = connectionIdForProvider(config.providerId)
@@ -485,6 +633,8 @@ class SettingsViewModel @Inject constructor(
                             toolsSupported = config.toolsEnabled,
                             verifiedSignature = verifiedSignature,
                             workspaceId = existing?.workspaceId.orEmpty(),
+                            modelCapabilities = existing?.modelCapabilities.orEmpty(),
+                            verifiedModelSignatures = existing?.verifiedModelSignatures.orEmpty(),
                         ),
                     ),
                 )
@@ -500,13 +650,148 @@ class SettingsViewModel @Inject constructor(
                     },
                 )
             }
-            _apiTestState.value = ApiTestUiState(
+            apiTestRuntime.update(runId, ApiTestUiState(
                 isTesting = false,
-                message = result.message,
+                message = if (result.success) "已测试通过并保存" else result.message,
                 success = result.success,
+                saved = result.success,
                 capabilityWarning = result.capabilityWarning,
                 capabilities = result.capabilities,
+            ))
+        }) {
+            _toastEvent.tryEmit("已有模型测试正在运行")
+        }
+    }
+
+    fun testApiConnectionDraft(
+        connection: ApiConnection,
+        replacingModelId: String? = null,
+    ) {
+        val modelIds = connection.modelIds.map(String::trim).filter(String::isNotBlank).distinct()
+        val targetConnection = connection.copy(modelIds = modelIds)
+        val firstModel = modelIds.firstOrNull().orEmpty()
+        val validationConfig = ApiConfig(
+            providerId = connection.providerId,
+            apiUrl = connection.apiUrl,
+            apiKey = connection.apiKey,
+            model = firstModel,
+            toolsEnabled = true,
+        )
+        validateApiConfig(validationConfig)?.let { message ->
+            apiTestRuntime.current = ApiTestUiState(
+                message = message,
+                success = false,
+                targetConnection = targetConnection,
+                replacingModelId = replacingModelId,
             )
+            return
+        }
+
+        val priorState = apiTestRuntime.current
+
+        if (!apiTestRuntime.launch { runId ->
+            if (!apiTestRuntime.update(runId, ApiTestUiState(
+                isTesting = true,
+                message = "正在测试模型...",
+                targetConnection = targetConnection,
+                replacingModelId = replacingModelId,
+                observedModelCapabilities = priorState.observedModelCapabilities,
+                observedFailedModels = priorState.observedFailedModels,
+            ))) return@launch
+            val capabilitiesByModel = linkedMapOf<String, ApiModelCapabilities>()
+            val signatures = linkedMapOf<String, String>()
+            val resultMessages = mutableListOf<String>()
+            var allConnectionsSucceeded = true
+            var lastCapabilities = emptyList<ApiCapabilityCheck>()
+            val succeededModelKeys = linkedSetOf<String>()
+            val failedModelKeys = linkedSetOf<String>()
+
+            modelIds.forEach { modelId ->
+                val draftConfig = validationConfig.copy(
+                    model = modelId,
+                    visionModel = modelId,
+                    imageModel = modelId,
+                )
+                val result = chatClient.testConnection(
+                    apiUrl = connection.apiUrl,
+                    apiKey = connection.apiKey,
+                    model = modelId,
+                    visionModel = modelId,
+                    imageModel = modelId,
+                    requiresApiKey = AiProviderCatalog.requiresApiKey(draftConfig),
+                    testTools = true,
+                    additionalHeaders = buildMap {
+                        connection.workspaceId.takeIf(String::isNotBlank)
+                            ?.let { put("X-DashScope-WorkSpace", it) }
+                    },
+                )
+                if (!apiTestRuntime.isActive(runId)) return@launch
+                allConnectionsSucceeded = allConnectionsSucceeded && result.success
+                lastCapabilities = result.capabilities
+                resultMessages += "$modelId：${result.message}"
+                capabilitiesByModel[modelId] = ApiModelCapabilities(
+                    supportsChat = result.capabilities.any { it.label == "聊天" && it.success },
+                    supportsTools = result.capabilities.any { it.label == "工具调用" && it.success },
+                    supportsVision = result.capabilities.any { it.label == "识图" && it.success },
+                    supportsImageGeneration = result.capabilities.any { it.label == "生图" && it.success },
+                )
+                if (result.success) {
+                    signatures[modelId] = AiProviderCatalog.verificationSignature(draftConfig)
+                    succeededModelKeys += apiTestModelKey(connection.id, modelId)
+                } else {
+                    failedModelKeys += apiTestModelKey(connection.id, modelId)
+                }
+            }
+
+            val tested = connection.copy(
+                modelIds = modelIds,
+                toolsSupported = capabilitiesByModel.values.any(ApiModelCapabilities::supportsTools),
+                verifiedSignature = signatures[firstModel].orEmpty(),
+                modelCapabilities = capabilitiesByModel,
+                verifiedModelSignatures = signatures,
+            )
+            if (!apiTestRuntime.isActive(runId)) return@launch
+            if (allConnectionsSucceeded) {
+                persistTestedConnection(tested, replacingModelId)
+            }
+            if (!apiTestRuntime.isActive(runId)) return@launch
+            val completedState = ApiTestUiState(
+                message = if (allConnectionsSucceeded) {
+                    "已测试通过并保存"
+                } else {
+                    resultMessages.joinToString("\n")
+                },
+                success = allConnectionsSucceeded,
+                saved = allConnectionsSucceeded,
+                capabilities = lastCapabilities,
+                targetConnection = tested,
+                testedConnection = tested,
+                replacingModelId = replacingModelId,
+                observedModelCapabilities = priorState.observedModelCapabilities +
+                    capabilitiesByModel.filterKeys { modelId ->
+                        apiTestModelKey(connection.id, modelId) in succeededModelKeys
+                    }.mapKeys { (modelId, _) -> apiTestModelKey(connection.id, modelId) },
+                observedFailedModels = (priorState.observedFailedModels - succeededModelKeys) + failedModelKeys,
+            )
+            if (!apiTestRuntime.update(runId, completedState)) return@launch
+            if (apiTestRuntime.shouldNotifyCompletion(tested)) {
+                notificationTool.execute(
+                    mapOf(
+                        "title" to if (allConnectionsSucceeded) "模型测试完成" else "模型测试未通过",
+                        "text" to if (allConnectionsSucceeded) {
+                            tested.modelIds.joinToString("、") + " 已测试通过并保存"
+                        } else {
+                            "返回 Mason 查看模型测试结果"
+                        },
+                        NotificationTool.EXTRA_LIVE_UPDATE to "true",
+                        NotificationTool.EXTRA_LIVE_UPDATE_PROGRESS to "100",
+                        NotificationTool.EXTRA_LIVE_UPDATE_FINAL to "true",
+                        NotificationTool.EXTRA_LIVE_UPDATE_SHORT_TEXT to "完成",
+                    ),
+                )
+            }
+        }) {
+            _toastEvent.tryEmit("已有模型测试正在运行")
         }
     }
 
@@ -553,10 +838,26 @@ class SettingsViewModel @Inject constructor(
         workspaceId: String = "",
     ) {
         viewModelScope.launch {
+            if (apiUrl.isBlank()) {
+                _modelRefreshState.value = ModelRefreshUiState(
+                    providerId = providerId,
+                    message = "无法刷新，请先填写接口地址",
+                    success = false,
+                )
+                return@launch
+            }
+            if (!AiProviderCatalog.allowsBlankApiKey(apiUrl) && apiKey.isBlank()) {
+                _modelRefreshState.value = ModelRefreshUiState(
+                    providerId = providerId,
+                    message = "无法刷新，请先填写 API Key",
+                    success = false,
+                )
+                return@launch
+            }
             _modelRefreshState.value = ModelRefreshUiState(
                 isRefreshing = true,
                 providerId = providerId,
-                message = "正在拉取远程模型...",
+                message = "正在刷新模型信息...",
             )
             val result = modelRepository.fetchModels(apiUrl, apiKey, workspaceId)
             _modelRefreshState.value = result.fold(
@@ -579,7 +880,7 @@ class SettingsViewModel @Inject constructor(
                 onFailure = { error ->
                     ModelRefreshUiState(
                         providerId = providerId,
-                        message = "拉取失败: ${error.message ?: error.javaClass.simpleName}",
+                        message = remoteModelRefreshErrorMessage(error),
                         success = false,
                     )
                 },
@@ -606,6 +907,70 @@ class SettingsViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 _toastEvent.emit("导出失败：${e.message}")
+            }
+        }
+    }
+
+    fun exportDiagnosticReport() {
+        viewModelScope.launch {
+            try {
+                val reportFile = withContext(Dispatchers.IO) {
+                    val memory = ActivityManager.MemoryInfo()
+                    (context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)
+                        ?.getMemoryInfo(memory)
+                    val currentConfig = config.value
+                    val conversations = syncManager.getConversationsSnapshot()
+                        .sortedByDescending { it.updatedAt }
+                        .take(DIAGNOSTIC_CONVERSATION_LIMIT)
+                        .map { conversation ->
+                            DiagnosticConversation(
+                                id = conversation.id,
+                                title = conversation.title,
+                                updatedAt = conversation.updatedAt,
+                                messages = syncManager.getMessagesSnapshot(conversation.id)
+                                    .takeLast(DIAGNOSTIC_MESSAGE_LIMIT)
+                                    .map { message ->
+                                        DiagnosticMessage(
+                                            role = message.role,
+                                            content = message.content,
+                                            timestamp = message.timestamp,
+                                            toolCallName = message.toolCallName,
+                                        )
+                                    },
+                            )
+                        }
+                    val report = buildDiagnosticReport(
+                        DiagnosticReportInput(
+                            generatedAt = System.currentTimeMillis(),
+                            appVersion = appVersion,
+                            device = DiagnosticDeviceInfo(
+                                manufacturer = Build.MANUFACTURER,
+                                model = Build.MODEL,
+                                androidVersion = Build.VERSION.RELEASE,
+                                sdk = Build.VERSION.SDK_INT,
+                                supportedAbis = Build.SUPPORTED_ABIS.toList(),
+                                locale = Locale.getDefault().toLanguageTag(),
+                                totalMemoryBytes = memory.totalMem,
+                                availableMemoryBytes = memory.availMem,
+                                availableStorageBytes = StatFs(context.filesDir.absolutePath).availableBytes,
+                            ),
+                            config = currentConfig,
+                            localModels = localModelStore.states(LocalModelCatalog.models),
+                            conversations = conversations,
+                            taskRuns = taskRunStore.list().take(DIAGNOSTIC_TASK_LIMIT),
+                            crashes = crashDao.getAll().take(DIAGNOSTIC_CRASH_LIMIT),
+                        ),
+                    )
+                    val reportDir = File(context.cacheDir, "diagnostics")
+                    check(reportDir.exists() || reportDir.mkdirs()) { "无法创建诊断目录" }
+                    val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                    File(reportDir, "mason-diagnostic-$timestamp.txt").apply {
+                        writeText(report, Charsets.UTF_8)
+                    }
+                }
+                _diagnosticExportEvent.emit(reportFile)
+            } catch (error: Exception) {
+                _toastEvent.emit("生成诊断记录失败：${error.message ?: error.javaClass.simpleName}")
             }
         }
     }
@@ -741,5 +1106,42 @@ class SettingsViewModel @Inject constructor(
                 file.delete()
             }
         }
+    }
+}
+
+internal fun mergeTestedConnection(
+    existing: ApiConnection?,
+    tested: ApiConnection,
+    replacingModelId: String?,
+): ApiConnection {
+    if (existing == null) return tested
+    val replacedIds = replacingModelId?.let(::setOf).orEmpty()
+    val retainedModelIds = existing.modelIds.filterNot(replacedIds::contains)
+    val mergedCapabilities = (existing.modelCapabilities - replacedIds) + tested.modelCapabilities
+    val mergedSignatures = (existing.verifiedModelSignatures - replacedIds) + tested.verifiedModelSignatures
+    return tested.copy(
+        modelIds = (retainedModelIds + tested.modelIds).distinct(),
+        toolsSupported = mergedCapabilities.values.any(ApiModelCapabilities::supportsTools),
+        verifiedSignature = tested.verifiedSignature.ifBlank { existing.verifiedSignature },
+        modelCapabilities = mergedCapabilities,
+        verifiedModelSignatures = mergedSignatures,
+    )
+}
+
+internal fun apiTestModelKey(connectionId: String, modelId: String): String =
+    "$connectionId::$modelId"
+
+internal fun remoteModelRefreshErrorMessage(error: Throwable): String {
+    val detail = error.message.orEmpty()
+    return when {
+        Regex("""\b(401|403)\b""").containsMatchIn(detail) ->
+            "无法刷新，API Key 无效或没有访问权限"
+        Regex("""\b404\b""").containsMatchIn(detail) ->
+            "无法刷新，该服务商不支持获取模型列表"
+        detail.contains("timeout", ignoreCase = true) || detail.contains("超时") ->
+            "无法刷新，连接服务商超时"
+        detail.contains("Unable to resolve host", ignoreCase = true) ->
+            "无法刷新，请检查网络连接"
+        else -> "无法刷新：${detail.ifBlank { error.javaClass.simpleName }.take(120)}"
     }
 }

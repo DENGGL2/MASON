@@ -48,6 +48,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <uses-feature
         android:name="android.hardware.camera"
@@ -113,6 +114,10 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".phoneagent.PhoneAgentStopReceiver"
+            android:exported="false" />
+
         <service
             android:name=".automation.MasonNotificationListenerService"
             android:exported="true"
@@ -128,6 +133,19 @@
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
+
+        <service
+            android:name=".phoneagent.MasonAccessibilityService"
+            android:exported="false"
+            android:label="Mason 屏幕助手"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/phone_agent_accessibility_service" />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

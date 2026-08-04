@@ -60,6 +60,58 @@ class ChatClientMultimodalProtocolTest {
 
         assertEquals("识别完成", (responses.single() as ChatResponse.TextChunk).text)
     }
+
+    @Test
+    fun connectionTestAcceptsAnImageOnlyModel() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"chat unsupported"}"""))
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"vision unsupported"}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"data":[{"url":"https://example.invalid/image.png"}]}""",
+        ))
+
+        val result = client.testConnection(
+            apiUrl = server.url("/v1").toString().trimEnd('/'),
+            apiKey = "",
+            model = "image-only-model",
+            visionModel = "image-only-model",
+            imageModel = "image-only-model",
+            requiresApiKey = false,
+            testTools = false,
+        )
+
+        assertTrue(result.success)
+        assertFalse(result.capabilities.first { it.label == "聊天" }.success)
+        assertTrue(result.capabilities.first { it.label == "生图" }.success)
+        assertEquals("/v1/chat/completions", server.takeRequest().path)
+        assertEquals("/v1/chat/completions", server.takeRequest().path)
+        assertEquals("/v1/images/generations", server.takeRequest().path)
+    }
+
+    @Test
+    fun connectionTestExplainsHttpFailuresBeforeShowingCodeAndBody() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"bad request body"}"""))
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":{"message":"model not found"}}"""))
+        server.enqueue(MockResponse().setResponseCode(429).setBody("""{"error":"quota exceeded"}"""))
+
+        val result = client.testConnection(
+            apiUrl = server.url("/v1").toString().trimEnd('/'),
+            apiKey = "",
+            model = "unavailable-model",
+            visionModel = "unavailable-model",
+            imageModel = "unavailable-model",
+            requiresApiKey = false,
+            testTools = false,
+        )
+
+        assertFalse(result.success)
+        assertTrue(result.message.contains("可能原因：请求参数、Model ID、接口协议或当前模型能力不匹配"))
+        assertTrue(result.message.contains("HTTP 400"))
+        assertTrue(result.message.contains("接口返回：bad request body"))
+        assertTrue(result.message.contains("HTTP 404"))
+        assertTrue(result.message.contains("接口返回：model not found"))
+        assertTrue(result.message.contains("HTTP 429"))
+        assertTrue(result.message.contains("接口返回：quota exceeded"))
+    }
 }
 
 private class FakeApiConfigProvider(

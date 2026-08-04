@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -22,6 +23,10 @@ data class McpToolDescriptor(
     val title: String,
     val description: String,
     val inputSchema: JsonObject,
+    val readOnlyHint: Boolean? = null,
+    val destructiveHint: Boolean? = null,
+    val idempotentHint: Boolean? = null,
+    val openWorldHint: Boolean? = null,
 )
 
 data class McpDiscoveryResult(
@@ -154,11 +159,16 @@ class McpClient @Inject internal constructor(
     private fun parseTool(element: JsonElement): McpToolDescriptor? {
         val value = element as? JsonObject ?: return null
         val name = value["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
+        val annotations = value["annotations"] as? JsonObject
         return McpToolDescriptor(
             remoteName = name,
             title = value["title"]?.jsonPrimitive?.contentOrNull ?: name,
             description = value["description"]?.jsonPrimitive?.contentOrNull ?: "MCP tool $name",
             inputSchema = value["inputSchema"] as? JsonObject ?: buildJsonObject { put("type", "object") },
+            readOnlyHint = annotations?.get("readOnlyHint")?.jsonPrimitive?.booleanOrNull,
+            destructiveHint = annotations?.get("destructiveHint")?.jsonPrimitive?.booleanOrNull,
+            idempotentHint = annotations?.get("idempotentHint")?.jsonPrimitive?.booleanOrNull,
+            openWorldHint = annotations?.get("openWorldHint")?.jsonPrimitive?.booleanOrNull,
         )
     }
 

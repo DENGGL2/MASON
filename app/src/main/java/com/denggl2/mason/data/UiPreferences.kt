@@ -14,6 +14,13 @@ enum class InterfaceStyle {
     LIQUID_GLASS,
 }
 
+enum class FontSizePreference(val scale: Float) {
+    SMALL(0.9f),
+    MEDIUM(1f),
+    LARGE(1.15f),
+    EXTRA_LARGE(1.3f),
+}
+
 data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val interfaceStyle: InterfaceStyle = InterfaceStyle.ACRYLIC,
@@ -21,6 +28,7 @@ data class UiPreferences(
     val accentColor: Long = DEFAULT_ACCENT_COLOR,
     val regularNotificationsEnabled: Boolean = false,
     val islandNotificationsEnabled: Boolean = false,
+    val fontSize: FontSizePreference = FontSizePreference.MEDIUM,
 )
 
 data class AccentPreset(

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MASON Motion Study</title>
+  <style>
+    :root { background: #ececea; color: #171717; font-family: Arial, sans-serif; }
+    body { margin: 0; padding: 28px; }
+    main { max-width: 1080px; margin: 0 auto; }
+    h1 { margin: 0 0 22px; font-size: 18px; font-weight: 600; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; }
+    figure { margin: 0; }
+    .screen { position: relative; aspect-ratio: 1; overflow: hidden; background: #030304; }
+    .stage { position: absolute; left: 50%; top: 50%; width: 58%; aspect-ratio: 1; transform: translate(-50%, -50%); }
+    .part { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; will-change: transform; }
+    figcaption { margin-top: 8px; font-size: 14px; }
+    .tilt-mouth { animation: tilted-mouth 6.8s cubic-bezier(.22, 1, .36, 1) infinite; }
+    .surprise-left { animation: surprise-left 6.8s cubic-bezier(.34, 1.56, .64, 1) infinite; }
+    .surprise-right { animation: surprise-right 6.8s cubic-bezier(.34, 1.56, .64, 1) infinite; }
+    .surprise-mouth { animation: surprise-mouth 6.8s cubic-bezier(.22, 1, .36, 1) infinite; }
+    .smile-mouth { animation: smile-mouth 6.8s cubic-bezier(.34, 1.56, .64, 1) infinite; }
+    .smile-eyes { animation: smile-eyes 6.8s cubic-bezier(.22, 1, .36, 1) infinite; }
+    .frown-mouth { animation: frown-mouth 6.8s cubic-bezier(.22, 1, .36, 1) infinite; }
+    .frown-eyes { animation: frown-eyes 6.8s cubic-bezier(.34, 1.56, .64, 1) infinite; }
+    .question-stem { animation: question-stem 6.8s cubic-bezier(.34, 1.56, .64, 1) infinite; }
+    .question-dots { animation: question-dots 6.8s cubic-bezier(.22, 1, .36, 1) infinite; }
+    @keyframes tilted-mouth {
+      0%, 32%, 100% { transform: translateX(0) rotate(0); }
+      36% { transform: translateX(-3%) rotate(-2deg); }
+      44% { transform: translateX(13%) rotate(3deg); }
+      52% { transform: translateX(-2%) rotate(-.5deg); }
+      58% { transform: translateX(0) rotate(0); }
+    }
+    @keyframes surprise-left {
+      0%, 34%, 100% { transform: translateY(0) rotate(0); }
+      40% { transform: translateY(-12%) rotate(-8deg); }
+      47% { transform: translateY(3%) rotate(3deg); }
+      54% { transform: translateY(0) rotate(0); }
+    }
+    @keyframes surprise-right {
+      0%, 35%, 100% { transform: translateY(0) rotate(0); }
+      41% { transform: translateY(-9%) rotate(7deg); }
+      48% { transform: translateY(3%) rotate(-2deg); }
+      55% { transform: translateY(0) rotate(0); }
+    }
+    @keyframes surprise-mouth {
+      0%, 37%, 100% { transform: scale(.98); }
+      43% { transform: translateY(7%) scale(1.1); }
+      51% { transform: translateY(-1%) scale(.99); }
+      58% { transform: scale(.98); }
+    }
+    @keyframes smile-mouth {
+      0%, 30%, 100% { transform: translateY(0) scaleY(1); }
+      36% { transform: translateY(5%) scaleY(.92); }
+      45% { transform: translateY(-9%) scaleY(1.11); }
+      53% { transform: translateY(1%) scaleY(.99); }
+      60% { transform: translateY(0) scaleY(1); }
+    }
+    @keyframes smile-eyes {
+      0%, 34%, 100% { transform: translateY(0); }
+      41% { transform: translateY(-4%); }
+      49% { transform: translateY(1%); }
+      57% { transform: translateY(0); }
+    }
+    @keyframes frown-mouth {
+      0%, 32%, 100% { transform: translateY(0) scaleX(1); }
+      39% { transform: translateY(7%) scaleX(.93); }
+      48% { transform: translateY(2%) scaleX(1.02); }
+      57% { transform: translateY(0) scaleX(1); }
+    }
+    @keyframes frown-eyes {
+      0%, 31%, 100% { transform: translateY(0); }
+      39% { transform: translateY(-3%); }
+      47% { transform: translateY(1%); }
+      55% { transform: translateY(0); }
+    }
+    @keyframes question-stem {
+      0%, 30%, 100% { transform: translateY(0) rotate(0); }
+      36% { transform: translateY(6%) rotate(-2deg); }
+      45% { transform: translateY(-14%) rotate(3deg); }
+      54% { transform: translateY(2%) rotate(-1deg); }
+      62% { transform: translateY(0) rotate(0); }
+    }
+    @keyframes question-dots {
+      0%, 39%, 100% { transform: translateY(0) scale(1); }
+      47% { transform: translateY(-3%) scale(1.06); }
+      55% { transform: translateY(0) scale(1); }
+    }
+    @media (prefers-reduced-motion: reduce) { .part { animation: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Empty-State Motion Study</h1>
+    <section class="grid">
+      <figure><div class="screen"><div class="stage"><img class="part" src="green-expression-assets-v3/tilted-mouth-part-0.png"><img class="part" src="green-expression-assets-v3/tilted-mouth-part-1.png"><img class="part tilt-mouth" src="green-expression-assets-v3/tilted-mouth-part-2.png"></div></div><figcaption>Tilted mouth</figcaption></figure>
+      <figure><div class="screen"><div class="stage"><img class="part surprise-left" src="green-expression-assets-v3/x-eyes-part-0.png"><img class="part surprise-right" src="green-expression-assets-v3/x-eyes-part-1.png"><img class="part surprise-mouth" src="green-expression-assets-v3/x-eyes-part-2.png"></div></div><figcaption>X eyes</figcaption></figure>
+      <figure><div class="screen"><div class="stage"><img class="part smile-eyes" src="green-expression-assets-v3/square-eye-smile-part-0.png"><img class="part smile-eyes" src="green-expression-assets-v3/square-eye-smile-part-1.png"><img class="part smile-mouth" src="green-expression-assets-v3/square-eye-smile-part-2.png"></div></div><figcaption>Square eye smile</figcaption></figure>
+      <figure><div class="screen"><div class="stage"><img class="part frown-eyes" src="green-expression-assets-v3/frown-part-0.png"><img class="part frown-eyes" src="green-expression-assets-v3/frown-part-1.png"><img class="part frown-mouth" src="green-expression-assets-v3/frown-part-2.png"></div></div><figcaption>Frown</figcaption></figure>
+      <figure><div class="screen"><div class="stage"><img class="part question-stem" src="green-expression-assets-v3/question-marks-part-0.png"><img class="part question-dots" src="green-expression-assets-v3/question-marks-part-1.png"><img class="part question-dots" src="green-expression-assets-v3/question-marks-part-2.png"></div></div><figcaption>Question marks</figcaption></figure>
+    </section>
+  </main>
+</body>
+</html>

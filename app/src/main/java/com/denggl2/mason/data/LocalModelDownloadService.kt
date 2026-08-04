@@ -11,7 +11,9 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.denggl2.mason.AppForegroundState
 import com.denggl2.mason.MainActivity
+import com.denggl2.mason.R
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,7 +42,11 @@ class LocalModelDownloadService : Service() {
         val modelId = intent?.getStringExtra(EXTRA_MODEL_ID)
         when (intent?.action) {
             ACTION_PAUSE -> {
-                if (modelId == currentModelId) downloadJob?.cancel()
+                stopDownload(modelId, cancel = false)
+                return START_NOT_STICKY
+            }
+            ACTION_CANCEL -> {
+                stopDownload(modelId, cancel = true)
                 return START_NOT_STICKY
             }
             ACTION_START -> {
@@ -112,6 +118,17 @@ class LocalModelDownloadService : Service() {
         }
     }
 
+    private fun stopDownload(modelId: String?, cancel: Boolean) {
+        if (modelId.isNullOrBlank() || modelId != currentModelId) return
+        serviceScope.launch {
+            if (cancel) {
+                coordinator.cancelAndJoin(modelId)
+            } else {
+                coordinator.pauseAndJoin(modelId)
+            }
+        }
+    }
+
     private fun updateProgressNotification(model: LocalModelPreset, state: LocalModelDownloadState) {
         val now = System.currentTimeMillis()
         if (now - lastNotificationAt < 750L) return
@@ -123,10 +140,12 @@ class LocalModelDownloadService : Service() {
     }
 
     private fun notifyFinal(model: LocalModelPreset, state: LocalModelDownloadState) {
+        if (!shouldPostDownloadFinalNotification(AppForegroundState.isForeground, state.status)) return
         val notification = when (state.status) {
             LocalModelDownloadStatus.Completed -> buildNotification(model, state, active = false)
             LocalModelDownloadStatus.Failed -> buildNotification(model, state, active = false)
             LocalModelDownloadStatus.Paused -> buildNotification(model, state, active = false)
+            LocalModelDownloadStatus.Cancelled -> null
             else -> null
         }
         if (notification != null) {
@@ -149,6 +168,7 @@ class LocalModelDownloadService : Service() {
             LocalModelDownloadStatus.Completed -> "${model.name} 已可用"
             LocalModelDownloadStatus.Failed -> "${model.name} 下载失败"
             LocalModelDownloadStatus.Paused -> "${model.name} 已暂停"
+            LocalModelDownloadStatus.Cancelled -> "${model.name} 已重置"
             LocalModelDownloadStatus.Verifying -> "正在校验 ${model.name}"
             else -> "正在下载 ${model.name}"
         }
@@ -157,15 +177,12 @@ class LocalModelDownloadService : Service() {
                 "${formatDownloadBytes(current.downloadedBytes)} / ${formatDownloadBytes(current.totalBytes)}"
             LocalModelDownloadStatus.Completed -> "文件校验通过，可离线使用"
             LocalModelDownloadStatus.Paused -> "打开 Mason 可继续下载"
+            LocalModelDownloadStatus.Cancelled -> "未完成文件已清理"
             LocalModelDownloadStatus.Verifying -> "正在进行 SHA-256 校验"
             else -> "正在连接模型源"
         }
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(if (current.status == LocalModelDownloadStatus.Completed) {
-                android.R.drawable.stat_sys_download_done
-            } else {
-                android.R.drawable.stat_sys_download
-            })
+            .setSmallIcon(R.drawable.ic_notification_mason)
             .setContentTitle(title)
             .setContentText(text)
             .setContentIntent(openAppPendingIntent())
@@ -183,7 +200,12 @@ class LocalModelDownloadService : Service() {
             builder.addAction(
                 android.R.drawable.ic_media_pause,
                 "暂停",
-                pausePendingIntent(model.id),
+                commandPendingIntent(ACTION_PAUSE, model.id),
+            )
+            builder.addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "取消",
+                commandPendingIntent(ACTION_CANCEL, model.id),
             )
         }
         return builder.build()
@@ -198,10 +220,10 @@ class LocalModelDownloadService : Service() {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
-    private fun pausePendingIntent(modelId: String): PendingIntent = PendingIntent.getService(
+    private fun commandPendingIntent(action: String, modelId: String): PendingIntent = PendingIntent.getService(
         this,
-        modelId.hashCode(),
-        commandIntent(this, ACTION_PAUSE, modelId),
+        "$action:$modelId".hashCode(),
+        commandIntent(this, action, modelId),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
@@ -224,6 +246,7 @@ class LocalModelDownloadService : Service() {
     companion object {
         private const val ACTION_START = "com.denggl2.mason.action.START_LOCAL_MODEL_DOWNLOAD"
         private const val ACTION_PAUSE = "com.denggl2.mason.action.PAUSE_LOCAL_MODEL_DOWNLOAD"
+        private const val ACTION_CANCEL = "com.denggl2.mason.action.CANCEL_LOCAL_MODEL_DOWNLOAD"
         private const val EXTRA_MODEL_ID = "model_id"
         private const val CHANNEL_ID = "local_model_downloads"
         private const val NOTIFICATION_ID = 4104
@@ -242,6 +265,10 @@ class LocalModelDownloadService : Service() {
             context.startService(commandIntent(context, ACTION_PAUSE, modelId))
         }
 
+        fun cancel(context: Context, modelId: String) {
+            context.startService(commandIntent(context, ACTION_CANCEL, modelId))
+        }
+
         fun clearNotification(context: Context) {
             context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
         }
@@ -253,3 +280,12 @@ class LocalModelDownloadService : Service() {
             }
     }
 }
+
+internal fun shouldPostDownloadFinalNotification(
+    appForeground: Boolean,
+    status: LocalModelDownloadStatus,
+): Boolean = !appForeground && status in setOf(
+    LocalModelDownloadStatus.Completed,
+    LocalModelDownloadStatus.Failed,
+    LocalModelDownloadStatus.Paused,
+)

@@ -39,6 +39,14 @@ import com.denggl2.mason.tool.StorageTool
 import com.denggl2.mason.tool.SystemSettingTool
 import com.denggl2.mason.tool.ToolRegistry
 import com.denggl2.mason.tool.WifiTool
+import com.denggl2.mason.phoneagent.PhoneClickNodeTool
+import com.denggl2.mason.phoneagent.PhoneGlobalActionTool
+import com.denggl2.mason.phoneagent.PhoneObserveTool
+import com.denggl2.mason.phoneagent.PhoneScreenshotTool
+import com.denggl2.mason.phoneagent.PhoneScrollTool
+import com.denggl2.mason.phoneagent.PhoneSetTextTool
+import com.denggl2.mason.phoneagent.PhoneSwipeTool
+import com.denggl2.mason.phoneagent.PhoneTapTool
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -90,6 +98,14 @@ object ToolModule {
         storageTool: StorageTool,
         processTool: ProcessTool,
         batteryOptimizationTool: BatteryOptimizationTool,
+        phoneObserveTool: PhoneObserveTool,
+        phoneScreenshotTool: PhoneScreenshotTool,
+        phoneClickNodeTool: PhoneClickNodeTool,
+        phoneTapTool: PhoneTapTool,
+        phoneSwipeTool: PhoneSwipeTool,
+        phoneScrollTool: PhoneScrollTool,
+        phoneSetTextTool: PhoneSetTextTool,
+        phoneGlobalActionTool: PhoneGlobalActionTool,
     ): ToolRegistry {
         return ToolRegistry().apply {
             registerAll(setOf(
@@ -131,6 +147,14 @@ object ToolModule {
                 storageTool,
                 processTool,
                 batteryOptimizationTool,
+                phoneObserveTool,
+                phoneScreenshotTool,
+                phoneClickNodeTool,
+                phoneTapTool,
+                phoneSwipeTool,
+                phoneScrollTool,
+                phoneSetTextTool,
+                phoneGlobalActionTool,
             ))
         }
     }

@@ -12,6 +12,14 @@ data class ModelReference(
 }
 
 @Serializable
+data class ApiModelCapabilities(
+    val supportsChat: Boolean = false,
+    val supportsTools: Boolean = false,
+    val supportsVision: Boolean = false,
+    val supportsImageGeneration: Boolean = false,
+)
+
+@Serializable
 data class ApiConnection(
     val id: String,
     val providerId: String,
@@ -22,21 +30,33 @@ data class ApiConnection(
     val toolsSupported: Boolean = true,
     val verifiedSignature: String = "",
     val workspaceId: String = "",
+    val modelCapabilities: Map<String, ApiModelCapabilities> = emptyMap(),
+    val verifiedModelSignatures: Map<String, String> = emptyMap(),
 ) {
     fun supportsModel(modelId: String): Boolean = modelId in modelIds
+
+    fun capabilitiesFor(modelId: String): ApiModelCapabilities {
+        return modelCapabilities[modelId] ?: ApiModelCapabilities(
+            supportsChat = true,
+            supportsTools = toolsSupported,
+            supportsVision = AiProviderCatalog.getModel(providerId, modelId)?.supportsVision == true,
+            supportsImageGeneration = AiProviderCatalog.getModel(providerId, modelId)
+                ?.supportsImageGeneration == true,
+        )
+    }
 }
 
 data class ApiConfig(
-    val providerId: String = AiProviderCatalog.DEFAULT_PROVIDER_ID,
-    val apiUrl: String = AiProviderCatalog.defaultProvider.apiUrl,
+    val providerId: String = "",
+    val apiUrl: String = "",
     val apiKey: String = "",
-    val model: String = AiProviderCatalog.defaultProvider.defaultModel,
+    val model: String = "",
     val visionModel: String = "",
     val imageModel: String = "",
     val localModel: String = "",
     val localModelDirectEnabled: Boolean = false,
     val offlineFallbackEnabled: Boolean = false,
-    val toolsEnabled: Boolean = AiProviderCatalog.defaultProvider.toolsEnabledByDefault,
+    val toolsEnabled: Boolean = false,
     val requireToolConfirmation: Boolean = true,
     val verifiedSignature: String = "",
     val connections: List<ApiConnection> = emptyList(),
@@ -44,13 +64,15 @@ data class ApiConfig(
     val visionModelRef: ModelReference? = null,
     val imageModelRef: ModelReference? = null,
     val dynamicLocalRoutingEnabled: Boolean = false,
-    val phoneToolsEnabled: Boolean = true,
+    val phoneToolsEnabled: Boolean = false,
 )
 
 fun ApiConfig.resolvedConnections(): List<ApiConnection> {
-    val legacy = legacyConnection()
-    if (connections.isEmpty()) return listOf(legacy)
-    return if (connections.any { it.id == legacy.id }) {
+    val legacy = legacyConnection().takeIf {
+        providerId.isNotBlank() && apiUrl.isNotBlank() && model.isNotBlank()
+    }
+    if (connections.isEmpty()) return listOfNotNull(legacy)
+    return if (legacy == null || connections.any { it.id == legacy.id }) {
         connections
     } else {
         connections + legacy
@@ -66,6 +88,54 @@ fun ApiConfig.connectionForProvider(providerId: String): ApiConnection? =
 fun ApiConfig.resolvedChatModelRef(): ModelReference =
     chatModelRef?.takeIf { it.isValid }
         ?: ModelReference(connectionIdForProvider(providerId), model)
+
+fun ApiConfig.configuredChatModelRef(): ModelReference? {
+    return configuredModelReference(resolvedChatModelRef(), ApiModelCapabilities::supportsChatModel)
+}
+
+fun ApiConfig.configuredChatModelRefs(): List<ModelReference> {
+    val selected = configuredChatModelRef()
+    val candidates = configuredConnections().flatMap { connection ->
+        connection.modelIds.mapNotNull { modelId ->
+            val capabilities = connection.modelCapabilities[modelId] ?: return@mapNotNull null
+            ModelReference(connection.id, modelId).takeIf { capabilities.supportsChatModel() }
+        }
+    }
+    return (listOfNotNull(selected) + candidates).distinct()
+}
+
+fun ApiConfig.configuredVisionModelRef(): ModelReference? =
+    resolvedVisionModelRef()?.let { reference ->
+        configuredModelReference(reference, ApiModelCapabilities::supportsVision)
+    }
+
+fun ApiConfig.configuredImageModelRef(): ModelReference? {
+    val selected = resolvedImageModelRef()
+    if (selected != null) {
+        return configuredModelReference(selected, ApiModelCapabilities::supportsImageGeneration)
+    }
+    return configuredConnections().firstNotNullOfOrNull { connection ->
+        connection.modelIds.firstOrNull { modelId ->
+            connection.modelCapabilities[modelId]?.supportsImageGeneration == true
+        }?.let { modelId -> ModelReference(connection.id, modelId) }
+    }
+}
+
+private fun ApiConfig.configuredModelReference(
+    reference: ModelReference,
+    supportsPurpose: (ApiModelCapabilities) -> Boolean,
+): ModelReference? {
+    if (!reference.isValid) return null
+    val connection = configuredConnections().firstOrNull { it.id == reference.connectionId }
+        ?: return null
+    val capabilities = connection.modelCapabilities[reference.modelId] ?: return null
+    return reference.takeIf {
+        connection.supportsModel(it.modelId) && supportsPurpose(capabilities)
+    }
+}
+
+fun ApiModelCapabilities.supportsChatModel(): Boolean =
+    supportsChat || supportsTools || supportsVision || !supportsImageGeneration
 
 fun ApiConfig.resolvedVisionModelRef(): ModelReference? =
     visionModelRef?.takeIf { it.isValid }
@@ -92,13 +162,36 @@ fun ApiConfig.upsertConnection(connection: ApiConnection): ApiConfig = copy(
 
 fun ApiConfig.saveConnection(connection: ApiConnection): ApiConfig {
     val updated = upsertConnection(connection)
-    if (resolvedChatModelRef().connectionId != connection.id) return updated
+    val activeChatReference = resolvedChatModelRef()
+    if (activeChatReference.connectionId != connection.id) return updated
+    val activeChatSignature = connection.verifiedModelSignatures[activeChatReference.modelId]
+        ?: connection.verifiedSignature.takeIf {
+            connection.modelIds.singleOrNull() == activeChatReference.modelId
+        }
+        ?: verifiedSignature.takeIf {
+            providerId == connection.providerId &&
+                apiUrl.trimEnd('/') == connection.apiUrl.trimEnd('/') &&
+                apiKey == connection.apiKey &&
+                model == activeChatReference.modelId
+        }
+        .orEmpty()
     return updated.copy(
         providerId = connection.providerId,
         apiUrl = connection.apiUrl,
         apiKey = connection.apiKey,
         toolsEnabled = connection.toolsSupported,
-        verifiedSignature = connection.verifiedSignature,
+        verifiedSignature = activeChatSignature,
+    )
+}
+
+fun ApiConfig.selectInitialImageModel(connection: ApiConnection): ApiConfig {
+    if (resolvedImageModelRef() != null) return this
+    val modelId = connection.modelIds.firstOrNull { candidate ->
+        connection.modelCapabilities[candidate]?.supportsImageGeneration == true
+    } ?: return this
+    return copy(
+        imageModel = modelId,
+        imageModelRef = ModelReference(connection.id, modelId),
     )
 }
 
@@ -111,18 +204,21 @@ fun ApiConfig.removeConnection(connectionId: String): ApiConfig = copy(
 
 fun ApiConfig.selectChatModel(reference: ModelReference): ApiConfig {
     val selectedConnection = connection(reference.connectionId) ?: return this
+    val capabilities = selectedConnection.capabilitiesFor(reference.modelId)
     return copy(
         providerId = selectedConnection.providerId,
         apiUrl = selectedConnection.apiUrl,
         apiKey = selectedConnection.apiKey,
         model = reference.modelId,
-        toolsEnabled = selectedConnection.toolsSupported,
-        verifiedSignature = selectedConnection.verifiedSignature,
+        toolsEnabled = capabilities.supportsTools,
+        verifiedSignature = selectedConnection.verifiedModelSignatures[reference.modelId]
+            ?: selectedConnection.verifiedSignature,
         chatModelRef = reference,
     )
 }
 
 fun ApiConfig.withActiveConnection(): ApiConfig {
+    if (providerId.isBlank() || apiUrl.isBlank() || model.isBlank()) return this
     val activeId = connectionIdForProvider(providerId)
     val existing = connections.firstOrNull { it.id == activeId }
     val active = ApiConnection(
@@ -140,6 +236,8 @@ fun ApiConfig.withActiveConnection(): ApiConfig {
         toolsSupported = toolsEnabled,
         verifiedSignature = verifiedSignature,
         workspaceId = existing?.workspaceId.orEmpty(),
+        modelCapabilities = existing?.modelCapabilities.orEmpty(),
+        verifiedModelSignatures = existing?.verifiedModelSignatures.orEmpty(),
     )
     val selectedRef = chatModelRef?.takeIf { it.isValid }
         ?: ModelReference(activeId, model)

@@ -4,6 +4,8 @@ import com.denggl2.mason.tool.ParameterDef
 import com.denggl2.mason.tool.Tool
 import com.denggl2.mason.tool.ToolRegistry
 import com.denggl2.mason.tool.ToolResult
+import com.denggl2.mason.tool.ToolApprovalHint
+import com.denggl2.mason.tool.ToolSecurityHints
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -53,7 +55,10 @@ class McpToolManager @Inject constructor(
         updateState(server.id, connecting(server.name))
         return runCatching {
             val result = client.discoverTools(server)
-            val tools = result.tools.map { McpRemoteTool(server, it, client) }
+            val tools = result.tools.mapNotNull { descriptor ->
+                val policy = server.toolPolicies[descriptor.remoteName] ?: McpToolPolicy()
+                McpRemoteTool(server, descriptor, client, policy).takeIf { policy.enabled }
+            }
             updateState(
                 server.id,
                 IntegrationConnectionState(
@@ -109,6 +114,7 @@ private class McpRemoteTool(
     private val server: McpServerConfig,
     private val descriptor: McpToolDescriptor,
     private val client: McpClient,
+    private val policy: McpToolPolicy,
 ) : Tool {
     override val name: String = McpToolManager.MCP_TOOL_PREFIX +
         server.id.integrationNamespace() + "__" + descriptor.remoteName.integrationNamespace()
@@ -119,6 +125,17 @@ private class McpRemoteTool(
     override val description: String = "${server.name} / ${descriptor.title}: ${descriptor.description}"
     override val inputSchema: JsonObject = descriptor.inputSchema
     override val parameters: Map<String, ParameterDef> = descriptor.inputSchema.toParameterDefs()
+    override val securityHints: ToolSecurityHints = ToolSecurityHints(
+        readOnlyHint = descriptor.readOnlyHint,
+        destructiveHint = descriptor.destructiveHint,
+        idempotentHint = descriptor.idempotentHint,
+        openWorldHint = descriptor.openWorldHint,
+        approvalHint = when (policy.approvalPolicy) {
+            McpToolApprovalPolicy.DEFAULT -> ToolApprovalHint.Default
+            McpToolApprovalPolicy.ALWAYS_ASK -> ToolApprovalHint.AlwaysAsk
+            McpToolApprovalPolicy.ALLOW_WITHOUT_ASK -> ToolApprovalHint.AllowWithoutAsk
+        },
+    )
 
     override suspend fun execute(args: Map<String, String>): ToolResult = client.callTool(
         server = server,

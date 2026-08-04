@@ -32,7 +32,7 @@ object LocalModelCatalog {
         LocalModelPreset(
             id = "gemma-4-e2b-it-litert",
             name = "Gemma 4 E2B",
-            description = "轻量端侧文本模型，适合离线问答、草稿和简单任务拆解。",
+            description = "Google 开源轻量小模型，兼顾速度和内存占用，适合离线问答、草稿与简单任务。",
             estimatedSizeGb = 2.4f,
             expectedSizeBytes = 2_588_147_712L,
             recommendedRamGb = 6,
@@ -49,7 +49,7 @@ object LocalModelCatalog {
         LocalModelPreset(
             id = "gemma-4-e4b-it-litert",
             name = "Gemma 4 E4B",
-            description = "更强的端侧文本模型，适合性能更好的手机，回答质量更高。",
+            description = "Google 开源端侧模型，能力强于 E2B，适合内存更充足的手机和更复杂的离线问答。",
             estimatedSizeGb = 3.4f,
             expectedSizeBytes = 3_659_530_240L,
             recommendedRamGb = 8,
@@ -69,7 +69,7 @@ object LocalModelCatalog {
         LocalModelPreset(
             id = "minicpm5-1b-q4-k-m-gguf",
             name = "MiniCPM5 1B",
-            description = "轻量中文端侧模型，适合离线问答、草稿和简单任务拆解。",
+            description = "OpenBMB 开源中文小模型，体积较小，适合离线中文问答、草稿与简单任务。",
             estimatedSizeGb = 0.64f,
             expectedSizeBytes = 688_065_920L,
             recommendedRamGb = 4,

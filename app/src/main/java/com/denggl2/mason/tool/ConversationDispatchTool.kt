@@ -8,6 +8,7 @@ import com.denggl2.mason.agent.createTaskRun
 import com.denggl2.mason.agent.stripTaskRunMarkers
 import com.denggl2.mason.agent.withSteps
 import com.denggl2.mason.data.stripArtifactMarkers
+import com.denggl2.mason.data.stripModelParticipationMarkers
 import com.denggl2.mason.integration.stripCapabilityRequirementMarkers
 import com.denggl2.mason.llm.ChatResponse
 import com.denggl2.mason.llm.model.ChatMessage
@@ -302,7 +303,7 @@ private fun cleanConversationQuery(value: String): String = value.trim()
     .trim()
 
 private fun visibleConversationContent(content: String): String = stripCapabilityRequirementMarkers(
-    stripTaskRunMarkers(stripArtifactMarkers(content)),
+    stripTaskRunMarkers(stripArtifactMarkers(stripModelParticipationMarkers(content))),
 )
 
 private fun TaskRun.runningForDispatch(): TaskRun = withSteps(steps.map { step ->

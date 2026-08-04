@@ -1,17 +1,25 @@
 package com.denggl2.mason.data
 
 import android.content.Context
-import android.net.Uri
+import android.util.Base64
+import android.util.Base64InputStream
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.ByteArrayOutputStream
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.URI
 import java.net.InetAddress
 import java.text.SimpleDateFormat
@@ -40,6 +48,7 @@ class ArtifactStore @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val httpClient = OkHttpClient()
+    private val streamWriteMutex = Mutex()
 
     suspend fun saveArtifactsAndAnnotate(
         content: String,
@@ -74,23 +83,17 @@ class ArtifactStore @Inject constructor(
         bytes: ByteArray,
         mimeType: String,
         createdAt: Long = System.currentTimeMillis(),
-    ): ArtifactMetadata = withContext(Dispatchers.IO) {
+    ): ArtifactMetadata {
         require(bytes.isNotEmpty()) { "产出内容不能为空" }
-        val relativePath = sanitizeRelativePath(fileName).ifBlank { "generated-image.png" }
-        val root = File(context.filesDir, "artifacts")
-        val target = uniqueFile(File(root, relativePath))
-        val canonicalRoot = root.canonicalFile
-        val canonicalTarget = target.canonicalFile
-        require(canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) { "产出路径不安全" }
-        target.parentFile?.mkdirs()
-        target.writeBytes(bytes)
-        ArtifactMetadata(
-            name = target.name,
-            path = target.absolutePath,
-            mimeType = mimeType,
-            bytes = target.length(),
-            createdAt = createdAt,
-        )
+        return ByteArrayInputStream(bytes).use { input ->
+            saveStreamArtifact(
+                fileName = fileName,
+                input = input,
+                mimeType = mimeType,
+                maxBytes = bytes.size.toLong(),
+                createdAt = createdAt,
+            )
+        }
     }
 
     suspend fun saveRemoteImageArtifact(
@@ -105,25 +108,30 @@ class ArtifactStore @Inject constructor(
             val body = requireNotNull(response.body) { "图片下载结果为空" }
             val contentLength = body.contentLength()
             require(contentLength < 0 || contentLength <= MAX_REMOTE_IMAGE_BYTES) { "生成图片超过 25 MB" }
-            val bytes = body.byteStream().use { input ->
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                var total = 0
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    total += count
-                    require(total <= MAX_REMOTE_IMAGE_BYTES) { "生成图片超过 25 MB" }
-                    output.write(buffer, 0, count)
-                }
-                output.toByteArray()
+            body.byteStream().use { input ->
+                saveImageStreamArtifact(
+                    fileName = "generated-image-$createdAt",
+                    input = input,
+                    declaredMimeType = response.header("Content-Type"),
+                    maxBytes = MAX_REMOTE_IMAGE_BYTES.toLong(),
+                    createdAt = createdAt,
+                )
             }
-            val mimeType = detectImageMimeType(bytes, response.header("Content-Type"))
-                ?: error("远程地址返回的不是支持的图片")
-            saveBinaryArtifact(
-                fileName = "generated-image-$createdAt.${mimeType.imageExtension()}",
-                bytes = bytes,
-                mimeType = mimeType,
+        }
+    }
+
+    suspend fun saveGeneratedImageBase64Artifact(
+        encoded: String,
+        declaredMimeType: String? = null,
+        createdAt: Long = System.currentTimeMillis(),
+    ): ArtifactMetadata {
+        require(encoded.isNotBlank()) { "生图模型返回内容为空" }
+        return Base64InputStream(AsciiCharSequenceInputStream(encoded), Base64.DEFAULT).use { decoded ->
+            saveImageStreamArtifact(
+                fileName = "generated-image-$createdAt",
+                input = decoded,
+                declaredMimeType = declaredMimeType,
+                maxBytes = MAX_REMOTE_IMAGE_BYTES.toLong(),
                 createdAt = createdAt,
             )
         }
@@ -140,6 +148,91 @@ class ArtifactStore @Inject constructor(
             mimeType = mimeType,
             createdAt = createdAt,
         )
+    }
+
+    private suspend fun saveImageStreamArtifact(
+        fileName: String,
+        input: InputStream,
+        declaredMimeType: String?,
+        maxBytes: Long,
+        createdAt: Long,
+    ): ArtifactMetadata {
+        val staged = saveStreamArtifact(
+            fileName = "$fileName.part",
+            input = input,
+            mimeType = "application/octet-stream",
+            maxBytes = maxBytes,
+            createdAt = createdAt,
+        )
+        val stagedFile = File(staged.path)
+        try {
+            val mimeType = detectImageMimeType(stagedFile.readHeader(), declaredMimeType)
+                ?: error("生图结果不是支持的图片")
+            return moveStagedArtifact(
+                stagedFile = stagedFile,
+                finalName = "$fileName.${mimeType.imageExtension()}",
+                mimeType = mimeType,
+                createdAt = createdAt,
+            )
+        } catch (error: Throwable) {
+            if (stagedFile.exists()) stagedFile.delete()
+            throw error
+        }
+    }
+
+    private suspend fun saveStreamArtifact(
+        fileName: String,
+        input: InputStream,
+        mimeType: String,
+        maxBytes: Long,
+        createdAt: Long,
+    ): ArtifactMetadata = withContext(Dispatchers.IO) {
+        streamWriteMutex.withLock {
+            val relativePath = sanitizeRelativePath(fileName).ifBlank { "artifact.bin" }
+            val root = File(context.filesDir, "artifacts")
+            val target = uniqueFile(File(root, relativePath))
+            val canonicalRoot = root.canonicalFile
+            val canonicalTarget = target.canonicalFile
+            require(canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) { "产出路径不安全" }
+            target.parentFile?.mkdirs()
+            val temporary = File.createTempFile(".mason-artifact-", ".part", target.parentFile)
+            try {
+                FileOutputStream(temporary).buffered().use { output ->
+                    copyArtifactStream(input, output, maxBytes)
+                }
+                require(temporary.length() > 0L) { "产出内容不能为空" }
+                require(temporary.renameTo(target)) { "产出文件登记失败" }
+                ArtifactMetadata(
+                    name = target.name,
+                    path = target.absolutePath,
+                    mimeType = mimeType,
+                    bytes = target.length(),
+                    createdAt = createdAt,
+                )
+            } finally {
+                if (temporary.exists()) temporary.delete()
+            }
+        }
+    }
+
+    private suspend fun moveStagedArtifact(
+        stagedFile: File,
+        finalName: String,
+        mimeType: String,
+        createdAt: Long,
+    ): ArtifactMetadata = withContext(Dispatchers.IO) {
+        streamWriteMutex.withLock {
+            val root = File(context.filesDir, "artifacts")
+            val target = uniqueFile(File(root, sanitizeRelativePath(finalName)))
+            require(stagedFile.renameTo(target)) { "产出文件登记失败" }
+            ArtifactMetadata(
+                name = target.name,
+                path = target.absolutePath,
+                mimeType = mimeType,
+                bytes = target.length(),
+                createdAt = createdAt,
+            )
+        }
     }
 
     fun metadataForExistingFile(path: String?): ArtifactMetadata? {
@@ -273,6 +366,43 @@ private fun artifactMarkerRegex(): Regex =
     )
 
 private const val MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024
+
+internal suspend fun copyArtifactStream(
+    input: InputStream,
+    output: OutputStream,
+    maxBytes: Long,
+): Long {
+    require(maxBytes > 0L) { "产出大小限制必须大于 0" }
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var total = 0L
+    while (true) {
+        currentCoroutineContext().ensureActive()
+        val count = input.read(buffer)
+        if (count < 0) break
+        total += count
+        require(total <= maxBytes) { "产出文件超过 ${maxBytes / 1024 / 1024} MB" }
+        output.write(buffer, 0, count)
+    }
+    return total
+}
+
+internal class AsciiCharSequenceInputStream(
+    private val value: CharSequence,
+) : InputStream() {
+    private var index = 0
+
+    override fun read(): Int = if (index >= value.length) {
+        -1
+    } else {
+        value[index++].code.takeIf { it <= 0x7F } ?: error("Base64 内容包含非 ASCII 字符")
+    }
+}
+
+private fun File.readHeader(maxBytes: Int = 16): ByteArray = inputStream().use { input ->
+    val buffer = ByteArray(maxBytes)
+    val count = input.read(buffer)
+    if (count <= 0) ByteArray(0) else buffer.copyOf(count)
+}
 
 internal fun String.isPrivateArtifactHost(): Boolean {
     val host = lowercase().trim('[', ']')

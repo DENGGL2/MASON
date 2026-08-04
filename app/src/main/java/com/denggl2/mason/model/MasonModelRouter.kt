@@ -4,9 +4,10 @@ import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
 import com.denggl2.mason.data.connection
-import com.denggl2.mason.data.resolvedChatModelRef
-import com.denggl2.mason.data.resolvedImageModelRef
-import com.denggl2.mason.data.resolvedVisionModelRef
+import com.denggl2.mason.data.configuredChatModelRef
+import com.denggl2.mason.data.configuredChatModelRefs
+import com.denggl2.mason.data.configuredImageModelRef
+import com.denggl2.mason.data.configuredVisionModelRef
 import com.denggl2.mason.data.LocalModelCatalog
 import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelStore
@@ -60,13 +61,18 @@ class MasonModelRouter @Inject constructor(
         toolsEnabled: Boolean = true,
         includeMemory: Boolean = true,
         memoryScopeId: String? = null,
+        contribution: String? = null,
     ): RoutedModelResponse {
         val config = configStore.config.first()
         val context = ChatContextParser.parse(messages.lastOrNull { it.role == "user" }?.content.orEmpty())
         val attachmentResult = runCatching { attachmentResolver.resolve(context.attachments) }
-        val attachments = attachmentResult.getOrDefault(emptyList())
-        val modality = detectModelModality(context.userText, context.attachments, attachments)
-        val sanitizedMessages = sanitizeAttachmentMetadata(messages, context)
+        val resolvedAttachments = attachmentResult.getOrDefault(emptyList())
+        val attachments = resolvedAttachments.filter { it.inlineText.isNullOrBlank() }
+        val modality = detectModelModality(context.userText, context.attachments, resolvedAttachments)
+        val sanitizedMessages = appendInlineAttachmentText(
+            sanitizeAttachmentMetadata(messages, context),
+            resolvedAttachments,
+        )
         val preparedMessages = contextManager.prepare(
             messages = sanitizedMessages,
             query = context.userText,
@@ -83,28 +89,43 @@ class MasonModelRouter @Inject constructor(
             config = config,
             modality = modality,
             userText = context.userText,
-            hasAttachments = context.attachments.isNotEmpty(),
+            hasAttachments = attachments.isNotEmpty(),
             hasSkill = context.skillId != null,
             localReady = localReady,
             localEngineAvailable = selectedLocalEngine != null,
         )
+        val remoteSelection = if (modality == ModelModality.Text && !useLocal) {
+            selectConfiguredRemoteChatModel(
+                config = config,
+                userText = context.userText,
+                toolsRequested = toolsEnabled && config.phoneToolsEnabled,
+            )
+        } else {
+            null
+        }
         val remoteRef = when (modality) {
-            ModelModality.Text -> config.resolvedChatModelRef()
-            ModelModality.Vision -> config.resolvedVisionModelRef()
-            ModelModality.ImageGeneration -> config.resolvedImageModelRef()
+            ModelModality.Text -> remoteSelection?.reference ?: config.configuredChatModelRef()
+            ModelModality.Vision -> config.configuredVisionModelRef()
+            ModelModality.ImageGeneration -> config.configuredImageModelRef()
         }
         val selectedModel = if (useLocal) localModelId else remoteRef?.modelId.orEmpty()
         val selectedConnection = remoteRef?.let { config.connection(it.connectionId) }
-        val selectedPreset = selectedConnection?.let { connection ->
-            AiProviderCatalog.getModel(connection.providerId, selectedModel)
-        }
-        val modelSupportsTools = selectedConnection?.toolsSupported == true &&
-            (selectedPreset?.supportsTools != false)
+        val modelSupportsTools = selectedConnection
+            ?.modelCapabilities
+            ?.get(selectedModel)
+            ?.supportsTools == true
         val decision = ModelRouteDecision(
             engineId = if (useLocal) selectedLocalEngine?.id.orEmpty() else remoteEngine.id,
             modelId = selectedModel,
             modality = modality,
-            reason = routeReason(modality, useLocal, context.attachments.isNotEmpty(), config.dynamicLocalRoutingEnabled),
+            reason = routeReason(
+                modality = modality,
+                local = useLocal,
+                hasAttachments = context.attachments.isNotEmpty(),
+                dynamicLocalRoutingEnabled = config.dynamicLocalRoutingEnabled,
+                hasRemoteChatModel = remoteRef != null,
+                remoteReason = remoteSelection?.reason,
+            ),
             connectionId = if (useLocal) null else remoteRef?.connectionId,
             fallbackModelId = resolveLocalFallbackModelId(config, modality, useLocal, localReady),
         )
@@ -115,8 +136,13 @@ class MasonModelRouter @Inject constructor(
             modelId = selectedModel,
             connectionId = decision.connectionId,
             attachments = attachments,
-            toolsEnabled = toolsEnabled && config.phoneToolsEnabled && modelSupportsTools &&
-                modality == ModelModality.Text && !useLocal,
+            toolsEnabled = shouldEnableRemoteTools(
+                requested = toolsEnabled,
+                phoneToolsEnabled = config.phoneToolsEnabled,
+                modelSupportsTools = modelSupportsTools,
+                modality = modality,
+                useLocal = useLocal,
+            ),
         )
         val responses = when {
             attachmentResult.isFailure -> {
@@ -128,7 +154,15 @@ class MasonModelRouter @Inject constructor(
                 ModelModality.ImageGeneration -> "请先在设置中选择生图模型"
                 ModelModality.Text -> "请先在设置中选择聊天模型"
             }))
-            else -> invokeWithFallback(invocation, decision)
+            else -> invokeWithFallback(
+                invocation = invocation,
+                decision = decision,
+                contribution = contribution ?: when (modality) {
+                    ModelModality.Text -> "理解问题并生成回答"
+                    ModelModality.Vision -> "识别图片并生成回答"
+                    ModelModality.ImageGeneration -> "生成图片"
+                },
+            )
         }
         return RoutedModelResponse(decision, responses)
     }
@@ -140,6 +174,7 @@ class MasonModelRouter @Inject constructor(
     private fun invokeWithFallback(
         invocation: ModelInvocation,
         decision: ModelRouteDecision,
+        contribution: String,
     ): Flow<ChatResponse> = flow {
         var remoteFailed = false
         var remoteError: String? = null
@@ -156,6 +191,13 @@ class MasonModelRouter @Inject constructor(
             emit(ChatResponse.Error("所选模型无法处理当前请求"))
             return@flow
         }
+        emit(
+            ChatResponse.ModelExecutionStarted(
+                engineId = engine.id,
+                modelId = invocation.modelId,
+                contribution = contribution,
+            ),
+        )
         val primary = engine.invoke(invocation)
         try {
             withTimeout(invocation.timeoutMillis) {
@@ -212,6 +254,13 @@ class MasonModelRouter @Inject constructor(
                 emit(ChatResponse.Error("本地兜底模型运行时不可用"))
                 return@flow
             }
+            emit(
+                ChatResponse.ModelExecutionStarted(
+                    engineId = fallbackEngine.id,
+                    modelId = fallback.modelId,
+                    contribution = "远端失败后生成兜底回答",
+                ),
+            )
             fallbackEngine.invoke(fallback).collect { response ->
                 if (response is ChatResponse.Error) {
                     fallbackFailed = true
@@ -236,12 +285,16 @@ class MasonModelRouter @Inject constructor(
         local: Boolean,
         hasAttachments: Boolean,
         dynamicLocalRoutingEnabled: Boolean,
+        hasRemoteChatModel: Boolean,
+        remoteReason: String?,
     ): String = when {
+        local && !hasRemoteChatModel -> "未配置远程聊天模型，使用已安装的本地模型"
         local && dynamicLocalRoutingEnabled -> "简单文字请求，按难度动态使用本地模型"
         local -> "用户选择本地直连，且请求仅包含文字"
         modality == ModelModality.Vision -> "检测到图片附件，使用识图模型"
         modality == ModelModality.ImageGeneration -> "检测到生图请求，使用生图模型"
         hasAttachments -> "检测到文件附件，使用远程模型处理抽取文本"
+        remoteReason != null -> remoteReason
         else -> "使用当前远程主对话模型"
     }
 
@@ -254,6 +307,127 @@ class MasonModelRouter @Inject constructor(
             message = message,
         ))
     }
+}
+
+internal enum class ModelTaskDifficulty {
+    Simple,
+    Standard,
+    Complex,
+}
+
+internal fun shouldEnableRemoteTools(
+    requested: Boolean,
+    phoneToolsEnabled: Boolean,
+    modelSupportsTools: Boolean,
+    modality: ModelModality,
+    useLocal: Boolean,
+): Boolean = requested && phoneToolsEnabled && modelSupportsTools &&
+    modality == ModelModality.Text && !useLocal
+
+internal data class RemoteChatModelSelection(
+    val reference: com.denggl2.mason.data.ModelReference,
+    val reason: String,
+)
+
+internal fun selectConfiguredRemoteChatModel(
+    config: ApiConfig,
+    userText: String,
+    toolsRequested: Boolean,
+): RemoteChatModelSelection? {
+    val selected = config.configuredChatModelRef()
+    val allCandidates = config.configuredChatModelRefs()
+    if (allCandidates.isEmpty()) return null
+    if (!config.dynamicLocalRoutingEnabled) {
+        return selected?.let { RemoteChatModelSelection(it, "动态选择已关闭，使用当前聊天模型") }
+    }
+
+    val toolIntent = toolsRequested && isLikelyToolRequest(userText)
+    val capableCandidates = if (toolIntent) {
+        allCandidates.filter { reference ->
+            config.connection(reference.connectionId)
+                ?.modelCapabilities
+                ?.get(reference.modelId)
+                ?.supportsTools == true
+        }
+    } else {
+        allCandidates
+    }
+    val candidates = capableCandidates.ifEmpty { allCandidates }
+    val difficulty = classifyModelTaskDifficulty(userText)
+    val chosen = when (difficulty) {
+        ModelTaskDifficulty.Simple -> candidates.minWithOrNull(
+            compareBy<com.denggl2.mason.data.ModelReference> { modelRoutingStrength(config, it) }
+                .thenBy { if (it == selected) 0 else 1 },
+        )
+        ModelTaskDifficulty.Standard -> selected?.takeIf(candidates::contains) ?: candidates.first()
+        ModelTaskDifficulty.Complex -> candidates.maxWithOrNull(
+            compareBy<com.denggl2.mason.data.ModelReference> { modelRoutingStrength(config, it) }
+                .thenBy { if (it == selected) 1 else 0 },
+        )
+    } ?: return null
+    val reason = when {
+        toolIntent && chosen != selected -> "任务需要工具，自动选择支持工具的已配置模型"
+        difficulty == ModelTaskDifficulty.Simple && chosen != selected -> "任务较简单，自动选择轻量的已配置模型"
+        difficulty == ModelTaskDifficulty.Complex && chosen != selected -> "任务较复杂，自动选择能力更强的已配置模型"
+        else -> "根据任务难度，优先使用当前聊天模型"
+    }
+    return RemoteChatModelSelection(chosen, reason)
+}
+
+internal fun classifyModelTaskDifficulty(userText: String): ModelTaskDifficulty {
+    val text = userText.trim().lowercase()
+    if (text.length > 1_200 || text.lines().size > 16) return ModelTaskDifficulty.Complex
+    val complexTerms = listOf(
+        "详细分析", "深入分析", "全面比较", "制定方案", "分步骤", "多个步骤",
+        "调研", "研究报告", "长文", "完整代码", "架构设计", "审查代码", "推理",
+        "analyze", "research", "compare", "step by step", "architecture", "review code",
+    )
+    if (complexTerms.any(text::contains)) return ModelTaskDifficulty.Complex
+    val simpleTerms = listOf(
+        "翻译", "改写", "润色", "总结一下", "一句话", "是什么", "什么意思",
+        "translate", "rewrite", "summarize", "what is", "define",
+    )
+    return if (
+        text.length <= 240 && text.lines().size <= 4 &&
+        (simpleTerms.any(text::contains) || text.length <= 48)
+    ) {
+        ModelTaskDifficulty.Simple
+    } else {
+        ModelTaskDifficulty.Standard
+    }
+}
+
+internal fun isLikelyToolRequest(userText: String): Boolean {
+    val text = userText.lowercase()
+    return listOf(
+        "联网", "搜索", "查询最新", "打开", "发送", "写入", "删除", "创建日程",
+        "短信", "电话", "联系人", "日历", "闹钟", "定位", "文件", "github", "mcp",
+        "search", "browse", "open", "send", "write", "delete", "calendar", "contact",
+    ).any(text::contains)
+}
+
+private fun modelRoutingStrength(
+    config: ApiConfig,
+    reference: com.denggl2.mason.data.ModelReference,
+): Int {
+    val connection = config.connection(reference.connectionId)
+    val preset = connection?.let { AiProviderCatalog.getModel(it.providerId, reference.modelId) }
+    val searchable = listOf(
+        reference.modelId,
+        preset?.name.orEmpty(),
+        preset?.description.orEmpty(),
+        preset?.modeLabel.orEmpty(),
+    ).joinToString(" ").lowercase()
+    val advanced = listOf(
+        "pro", "max", "opus", "reason", "thinking", "旗舰", "复杂", "推理",
+        "32b", "70b", "72b", "80b", "gpt-5", "k2.5",
+    )
+    if (advanced.any(searchable::contains)) return 2
+    val lightweight = listOf(
+        "flash", "turbo", "mini", "nano", "air", "lite", "轻量", "速度", "低成本",
+        "8b", "free", "免费",
+    )
+    return if (lightweight.any(searchable::contains) || preset?.isFree == true) 0 else 1
 }
 
 internal fun resolveSelectedLocalModelId(config: ApiConfig): String =
@@ -281,7 +455,8 @@ internal fun shouldUseLocalModel(
         modality != ModelModality.Text || hasAttachments || hasSkill ||
         !localReady || !localEngineAvailable
     ) return false
-    return config.localModelDirectEnabled ||
+    return config.configuredChatModelRef() == null ||
+        config.localModelDirectEnabled ||
         (config.dynamicLocalRoutingEnabled && isSimpleLocalRequest(userText))
 }
 
@@ -371,3 +546,32 @@ internal fun sanitizeAttachmentMetadata(
         set(lastUserIndex, original.copy(content = sanitized))
     }
 }
+
+internal fun appendInlineAttachmentText(
+    messages: List<ChatMessage>,
+    attachments: List<com.denggl2.mason.llm.ModelAttachment>,
+): List<ChatMessage> {
+    val documents = attachments.mapNotNull { attachment ->
+        attachment.inlineText?.takeIf(String::isNotBlank)?.let { text ->
+            "<attachment name=\"${attachment.name.replace('"', '_')}\">\n$text\n</attachment>"
+        }
+    }
+    if (documents.isEmpty()) return messages
+    val lastUserIndex = messages.indexOfLast { it.role == "user" }
+    if (lastUserIndex < 0) return messages
+    val original = messages[lastUserIndex]
+    val documentContext = documents.joinToString("\n\n").take(MAX_INLINE_DOCUMENT_CHARACTERS)
+    return messages.toMutableList().apply {
+        set(
+            lastUserIndex,
+            original.copy(
+                content = listOfNotNull(
+                    original.content?.takeIf(String::isNotBlank),
+                    "以下内容由 Mason 在本地从附件中提取：\n$documentContext",
+                ).joinToString("\n\n"),
+            ),
+        )
+    }
+}
+
+private const val MAX_INLINE_DOCUMENT_CHARACTERS = 240_000

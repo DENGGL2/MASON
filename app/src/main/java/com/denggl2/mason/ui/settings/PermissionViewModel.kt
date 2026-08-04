@@ -26,7 +26,14 @@ data class PermissionItem(
     val group: PermissionGroup,
     val isGranted: Boolean,
     val settingsIntent: Intent?,
+    val requestKind: PermissionRequestKind,
+    val guidance: String? = null,
 )
+
+enum class PermissionRequestKind {
+    Runtime,
+    AdvancedSettings,
+}
 
 enum class PermissionGroup(val label: String) {
     HARDWARE("硬件"),
@@ -107,6 +114,12 @@ class PermissionViewModel @Inject constructor(
                             PackageManager.PERMISSION_GRANTED
                     },
                     settingsIntent = appSettingsIntent(),
+                    requestKind = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        PermissionRequestKind.Runtime
+                    } else {
+                        PermissionRequestKind.AdvancedSettings
+                    },
+                    guidance = "通知权限可在系统的应用通知设置中开启。",
                 ),
                 PermissionItem(
                     permission = "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
@@ -115,6 +128,8 @@ class PermissionViewModel @Inject constructor(
                     isGranted = context.packageName in
                         NotificationManagerCompat.getEnabledListenerPackages(context),
                     settingsIntent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS),
+                    requestKind = PermissionRequestKind.AdvancedSettings,
+                    guidance = "系统不允许应用直接授予通知使用权。请在“设置 > 通知 > 设备和应用通知”中允许 Mason。",
                 ),
                 PermissionItem(
                     permission = "android.settings.MANAGE_OVERLAY_PERMISSION",
@@ -127,6 +142,8 @@ class PermissionViewModel @Inject constructor(
                         Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                         Uri.parse("package:${context.packageName}"),
                     ),
+                    requestKind = PermissionRequestKind.AdvancedSettings,
+                    guidance = "系统不提供普通授权弹窗。请在“特殊应用权限 > 显示在其他应用上层”中允许 Mason。",
                 ),
                 PermissionItem(
                     permission = "android.settings.USAGE_STATS_SETTINGS",
@@ -146,6 +163,8 @@ class PermissionViewModel @Inject constructor(
                         }
                     } else true,
                     settingsIntent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS),
+                    requestKind = PermissionRequestKind.AdvancedSettings,
+                    guidance = "系统不提供普通授权弹窗。请在“特殊应用权限 > 使用情况访问权限”中允许 Mason。",
                 ),
                 PermissionItem(
                     permission = Manifest.permission.WRITE_SETTINGS,
@@ -157,6 +176,8 @@ class PermissionViewModel @Inject constructor(
                     settingsIntent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
                         data = Uri.parse("package:${context.packageName}")
                     },
+                    requestKind = PermissionRequestKind.AdvancedSettings,
+                    guidance = "系统不提供普通授权弹窗。请在“特殊应用权限 > 修改系统设置”中允许 Mason。",
                 ),
                 PermissionItem(
                     permission = Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
@@ -167,6 +188,8 @@ class PermissionViewModel @Inject constructor(
                         pm.isIgnoringBatteryOptimizations(context.packageName)
                     } else true,
                     settingsIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                    requestKind = PermissionRequestKind.AdvancedSettings,
+                    guidance = "系统不提供普通授权弹窗。请在电池优化设置中将 Mason 设为不优化。",
                 ),
                 PermissionItem(
                     permission = Manifest.permission.SCHEDULE_EXACT_ALARM,
@@ -179,6 +202,8 @@ class PermissionViewModel @Inject constructor(
                     settingsIntent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                         data = Uri.parse("package:${context.packageName}")
                     },
+                    requestKind = PermissionRequestKind.AdvancedSettings,
+                    guidance = "系统不提供普通授权弹窗。请在“特殊应用权限 > 闹钟和提醒”中允许 Mason。",
                 ),
 
                 // ── 网络 ──
@@ -224,6 +249,7 @@ class PermissionViewModel @Inject constructor(
             group = group,
             isGranted = granted,
             settingsIntent = if (!granted) appSettingsIntent() else null,
+            requestKind = PermissionRequestKind.Runtime,
         )
     }
 

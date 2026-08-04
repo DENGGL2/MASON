@@ -3,6 +3,7 @@ package com.denggl2.mason.agent
 import android.content.Context
 import com.denggl2.mason.tool.ToolExecutor
 import com.denggl2.mason.tool.ToolResult
+import com.denggl2.mason.tool.ToolRegistry
 import com.denggl2.mason.integration.A2aToolManager
 import com.denggl2.mason.tool.INTERNAL_CONVERSATION_ID
 import com.denggl2.mason.tool.ConversationDispatchTool
@@ -121,6 +122,7 @@ class GovernedToolExecutor @Inject constructor(
     private val executor: ToolExecutor,
     private val grants: ToolGrantStore,
     private val auditStore: ToolAuditStore,
+    private val toolRegistry: ToolRegistry,
 ) {
     suspend fun execute(
         name: String,
@@ -173,7 +175,10 @@ class GovernedToolExecutor @Inject constructor(
         return result
     }
 
-    fun profile(name: String): ToolSecurityProfile = ToolPolicy.profileFor(name)
+    fun profile(name: String): ToolSecurityProfile = ToolPolicy.profileFor(
+        name,
+        toolRegistry.get(name)?.securityHints,
+    )
 
     private companion object {
         val trustedSources = setOf(ToolExecutionSource.System)

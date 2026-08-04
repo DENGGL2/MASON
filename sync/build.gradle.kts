@@ -33,11 +33,14 @@ dependencies {
 
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.okhttp)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(project(":codex-connector"))
     androidTestImplementation("junit:junit:4.13.2")
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.runner)

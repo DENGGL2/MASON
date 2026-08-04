@@ -5,6 +5,8 @@ import com.denggl2.mason.protocol.CodexThreadBinding
 import com.denggl2.mason.protocol.CommandEnvelope
 import com.denggl2.mason.protocol.CommandResult
 import com.denggl2.mason.protocol.ConversationEvent
+import com.denggl2.mason.protocol.Device
+import com.denggl2.mason.protocol.DevicePermission
 import com.denggl2.mason.protocol.MasonProtocolJson
 import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
@@ -18,14 +20,24 @@ import kotlin.concurrent.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.encodeToJsonElement
 
-const val CONNECTOR_STATE_SCHEMA_VERSION: Int = 1
+const val CONNECTOR_STATE_SCHEMA_VERSION: Int = 2
 
 @Serializable
 data class ConnectorStateSnapshot(
     val schemaVersion: Int = CONNECTOR_STATE_SCHEMA_VERSION,
     val deviceId: String,
+    val ownerId: String = "",
     val sessions: Map<String, ManagedSessionSnapshot> = emptyMap(),
     val commands: Map<String, StoredCommandExecution> = emptyMap(),
+    val pairedDevices: Map<String, PairedDeviceSnapshot> = emptyMap(),
+)
+
+@Serializable
+data class PairedDeviceSnapshot(
+    val device: Device,
+    val permissions: Set<DevicePermission>,
+    val publicKeyFingerprint: String,
+    val pairedAt: Long,
 )
 
 @Serializable
@@ -81,6 +93,7 @@ sealed interface CommandClaim {
 
 class ConnectorStateStore(
     statePath: Path,
+    private val newOwnerId: () -> String = { UUID.randomUUID().toString() },
     private val newDeviceId: () -> String = { UUID.randomUUID().toString() },
 ) {
     private val path = statePath.toAbsolutePath().normalize()
@@ -89,6 +102,9 @@ class ConnectorStateStore(
 
     val deviceId: String
         get() = lock.withLock { state.deviceId }
+
+    val ownerId: String
+        get() = lock.withLock { state.ownerId }
 
     fun snapshot(): ConnectorStateSnapshot = lock.withLock { state }
 
@@ -132,6 +148,42 @@ class ConnectorStateStore(
         state.sessions.values
             .map(ManagedSessionSnapshot::binding)
             .filter { it.ownership == CodexOwnership.MASON_MANAGED }
+    }
+
+    fun registerPairedDevice(pairedDevice: PairedDeviceSnapshot): PairedDeviceSnapshot = lock.withLock {
+        val device = pairedDevice.device
+        require(device.id.isNotBlank()) { "Paired device ID is required" }
+        require(device.ownerId == state.ownerId) { "Paired device owner does not match Connector owner" }
+        require(device.publicKey.isNotBlank()) { "Paired device public key is required" }
+        require(device.revokedAt == null) { "Cannot register an already revoked device" }
+        require(pairedDevice.permissions.isNotEmpty()) { "Paired device must have at least one permission" }
+
+        val existing = state.pairedDevices[device.id]
+        if (existing != null && existing.device.revokedAt == null) {
+            require(existing == pairedDevice) { "Device ${device.id} is already paired with different data" }
+            return existing
+        }
+
+        update(state.copy(pairedDevices = state.pairedDevices + (device.id to pairedDevice)))
+        pairedDevice
+    }
+
+    fun pairedDevice(deviceId: String): PairedDeviceSnapshot? = lock.withLock {
+        state.pairedDevices[deviceId]
+    }
+
+    fun activePairedDevices(): List<PairedDeviceSnapshot> = lock.withLock {
+        state.pairedDevices.values.filter { it.device.revokedAt == null }
+    }
+
+    fun revokeDevice(deviceId: String, revokedAt: Long): PairedDeviceSnapshot? = lock.withLock {
+        require(revokedAt >= 0) { "Revocation time cannot be negative" }
+        val existing = state.pairedDevices[deviceId] ?: return null
+        if (existing.device.revokedAt != null) return existing
+
+        val revoked = existing.copy(device = existing.device.copy(revokedAt = revokedAt))
+        update(state.copy(pairedDevices = state.pairedDevices + (deviceId to revoked)))
+        revoked
     }
 
     fun appendEvent(
@@ -273,17 +325,26 @@ class ConnectorStateStore(
 
     private fun loadOrCreate(): ConnectorStateSnapshot {
         if (!Files.exists(path)) {
-            return ConnectorStateSnapshot(deviceId = newDeviceId()).also(::write)
+            return ConnectorStateSnapshot(
+                deviceId = newDeviceId(),
+                ownerId = newOwnerId(),
+            ).also(::write)
         }
         val decoded = runCatching {
             MasonProtocolJson.decode<ConnectorStateSnapshot>(Files.readString(path, StandardCharsets.UTF_8))
         }.getOrElse { error ->
             throw IllegalStateException("Cannot read Connector state at $path", error)
         }
-        require(decoded.schemaVersion == CONNECTOR_STATE_SCHEMA_VERSION) {
-            "Unsupported Connector state schema: ${decoded.schemaVersion}"
+        return when (decoded.schemaVersion) {
+            1 -> decoded.copy(
+                schemaVersion = CONNECTOR_STATE_SCHEMA_VERSION,
+                ownerId = newOwnerId(),
+            ).also(::write)
+            CONNECTOR_STATE_SCHEMA_VERSION -> decoded.also {
+                require(it.ownerId.isNotBlank()) { "Connector owner ID is required" }
+            }
+            else -> error("Unsupported Connector state schema: ${decoded.schemaVersion}")
         }
-        return decoded
     }
 
     private fun update(next: ConnectorStateSnapshot) {

@@ -9,6 +9,7 @@ import com.denggl2.mason.protocol.ConversationEvent
 import com.denggl2.mason.protocol.ConversationEventType
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -107,6 +108,28 @@ class ConnectorStateStoreTest {
         kotlin.test.assertFailsWith<IllegalArgumentException> {
             store.register(binding().copy(conversationId = "conversation-2"))
         }
+    }
+
+    @Test
+    fun versionOneStateMigratesWithoutLosingConnectorIdentity() = withStatePath { path ->
+        Files.writeString(
+            path,
+            """{"schemaVersion":1,"deviceId":"device-1","sessions":{},"commands":{}}""",
+            StandardOpenOption.CREATE,
+            StandardOpenOption.TRUNCATE_EXISTING,
+        )
+
+        val migrated = ConnectorStateStore(
+            statePath = path,
+            newDeviceId = { "unexpected-device" },
+            newOwnerId = { "owner-1" },
+        )
+
+        assertEquals("device-1", migrated.deviceId)
+        assertEquals("owner-1", migrated.ownerId)
+        assertEquals(CONNECTOR_STATE_SCHEMA_VERSION, migrated.snapshot().schemaVersion)
+        assertEquals(emptyMap(), migrated.snapshot().pairedDevices)
+        assertEquals("owner-1", ConnectorStateStore(path).ownerId)
     }
 
     private fun binding() = CodexThreadBinding(

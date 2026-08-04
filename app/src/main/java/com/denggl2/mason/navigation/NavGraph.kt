@@ -1,5 +1,6 @@
 package com.denggl2.mason.navigation
 
+import android.net.Uri
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -26,14 +27,19 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.denggl2.mason.data.InterfaceStyle
+import com.denggl2.mason.data.FontSizePreference
 import com.denggl2.mason.data.ThemeMode
 import com.denggl2.mason.data.UiPreferences
 import com.denggl2.mason.ui.chat.ChatScreen
+import com.denggl2.mason.ui.pairing.DevicePairingScreen
+import com.denggl2.mason.ui.remote.RemoteConversationScreen
 import com.denggl2.mason.ui.collection.CollectionKind
 import com.denggl2.mason.ui.collection.CollectionListScreen
 import com.denggl2.mason.ui.integration.IntegrationsScreen
 import com.denggl2.mason.ui.settings.PermissionScreen
 import com.denggl2.mason.ui.settings.SettingsScreen
+import com.denggl2.mason.ui.phoneagent.PhoneAgentLogScreen
+import com.denggl2.mason.ui.phoneagent.PhoneAgentScreen
 import java.util.UUID
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -46,12 +52,24 @@ object Routes {
     const val SETTINGS_AI = "settings/ai"
     const val PERMISSION = "permission"
     const val INTEGRATIONS = "integrations"
+    const val DEVICE_PAIRING = "device_pairing"
+    const val PHONE_AGENT = "phone_agent"
+    const val PHONE_AGENT_LOGS = "phone_agent/logs"
+    const val REMOTE_CONVERSATION = "remote_conversation/{threadId}"
     const val COLLECTION = "collection/{kind}"
 
     fun chat(conversationId: Long) = "chat/$conversationId"
     fun newChat(fresh: Boolean = false, sessionId: String) = "chat_new/$fresh/$sessionId"
     fun collection(kind: CollectionKind) = "collection/${kind.routeName}"
+    fun remoteConversation(threadId: String) = "remote_conversation/${Uri.encode(threadId)}"
 }
+
+private const val FRESH_CONVERSATION_APPLIED_KEY = "freshConversationApplied"
+
+internal fun shouldApplyFreshConversation(
+    freshRequested: Boolean,
+    freshApplied: Boolean,
+): Boolean = freshRequested && !freshApplied
 
 @Composable
 fun MasonNavGraph(
@@ -65,11 +83,13 @@ fun MasonNavGraph(
     onAccentColorChange: (Long) -> Unit,
     onRegularNotificationsChange: (Boolean) -> Unit,
     onIslandNotificationsChange: (Boolean) -> Unit,
+    onFontSizeChange: (FontSizePreference) -> Unit,
 ) {
     val navController = rememberNavController()
     val startSessionId = remember { UUID.randomUUID().toString() }
     val startRoute = remember(startSessionId) {
-        Routes.newChat(fresh = true, sessionId = startSessionId)
+        // A cold start must be allowed to restore an unfinished task.
+        Routes.newChat(fresh = false, sessionId = startSessionId)
     }
     val conversationRoutes = remember { mutableStateMapOf<Long, String>() }
     val transitionScope = rememberCoroutineScope()
@@ -215,12 +235,26 @@ fun MasonNavGraph(
             val fresh = backStackEntry.arguments?.getBoolean("fresh") == true
             val sessionId = backStackEntry.arguments?.getString("sessionId").orEmpty()
             val route = Routes.newChat(fresh = fresh, sessionId = sessionId)
+            var shouldStartFresh by remember(backStackEntry) {
+                mutableStateOf(
+                    shouldApplyFreshConversation(
+                        freshRequested = fresh,
+                        freshApplied = backStackEntry.savedStateHandle
+                            .get<Boolean>(FRESH_CONVERSATION_APPLIED_KEY) == true,
+                    ),
+                )
+            }
             ChatScreen(
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToModelSettings = { navController.navigate(Routes.SETTINGS_AI) },
                 onNavigateToIntegrations = { navController.navigate(Routes.INTEGRATIONS) },
                 onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
                 onConversationSelected = ::navigateToConversation,
                 onNewChat = ::navigateToNewChat,
+                onDevicePairing = { navController.navigate(Routes.DEVICE_PAIRING) },
+                onRemoteConversationSelected = { threadId ->
+                    navController.navigate(Routes.remoteConversation(threadId))
+                },
                 drawerResetGeneration = drawerResetGeneration,
                 onConversationBound = { id ->
                     val previousId = backStackEntry.savedStateHandle.get<Long>("boundConversationId")
@@ -234,7 +268,11 @@ fun MasonNavGraph(
                         conversationRoutes[id] = route
                     }
                 },
-                startFresh = fresh,
+                startFresh = shouldStartFresh,
+                onStartFreshConsumed = {
+                    backStackEntry.savedStateHandle[FRESH_CONVERSATION_APPLIED_KEY] = true
+                    shouldStartFresh = false
+                },
                 onOpenWorkbench = { navController.navigate(Routes.collection(CollectionKind.ARTIFACTS)) },
                 notificationTaskCommand = notificationTaskCommand,
             )
@@ -251,10 +289,15 @@ fun MasonNavGraph(
         ) { backStackEntry ->
             ChatScreen(
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToModelSettings = { navController.navigate(Routes.SETTINGS_AI) },
                 onNavigateToIntegrations = { navController.navigate(Routes.INTEGRATIONS) },
                 onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
                 onConversationSelected = ::navigateToConversation,
                 onNewChat = ::navigateToNewChat,
+                onDevicePairing = { navController.navigate(Routes.DEVICE_PAIRING) },
+                onRemoteConversationSelected = { threadId ->
+                    navController.navigate(Routes.remoteConversation(threadId))
+                },
                 drawerResetGeneration = drawerResetGeneration,
                 onConversationBound = { id ->
                     val currentRoute = id?.let(Routes::chat)
@@ -284,6 +327,12 @@ fun MasonNavGraph(
                 onNavigateToIntegrations = {
                     navController.navigate(Routes.INTEGRATIONS)
                 },
+                onNavigateToDevicePairing = {
+                    navController.navigate(Routes.DEVICE_PAIRING)
+                },
+                onNavigateToPhoneAgent = {
+                    navController.navigate(Routes.PHONE_AGENT)
+                },
                 uiPreferences = uiPreferences,
                 onThemeModeChange = onThemeModeChange,
                 onInterfaceStyleChange = onInterfaceStyleChange,
@@ -291,17 +340,25 @@ fun MasonNavGraph(
                 onAccentColorChange = onAccentColorChange,
                 onRegularNotificationsChange = onRegularNotificationsChange,
                 onIslandNotificationsChange = onIslandNotificationsChange,
+                onFontSizeChange = onFontSizeChange,
             )
         }
 
         composable(Routes.SETTINGS_AI) {
             SettingsScreen(
                 onBack = { navController.popBackStack() },
+                openModelSettingsInitially = true,
                 onNavigateToPermission = {
                     navController.navigate(Routes.PERMISSION)
                 },
                 onNavigateToIntegrations = {
                     navController.navigate(Routes.INTEGRATIONS)
+                },
+                onNavigateToDevicePairing = {
+                    navController.navigate(Routes.DEVICE_PAIRING)
+                },
+                onNavigateToPhoneAgent = {
+                    navController.navigate(Routes.PHONE_AGENT)
                 },
                 uiPreferences = uiPreferences,
                 onThemeModeChange = onThemeModeChange,
@@ -310,6 +367,7 @@ fun MasonNavGraph(
                 onAccentColorChange = onAccentColorChange,
                 onRegularNotificationsChange = onRegularNotificationsChange,
                 onIslandNotificationsChange = onIslandNotificationsChange,
+                onFontSizeChange = onFontSizeChange,
             )
         }
 
@@ -321,6 +379,30 @@ fun MasonNavGraph(
 
         composable(Routes.INTEGRATIONS) {
             IntegrationsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.DEVICE_PAIRING) {
+            DevicePairingScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.PHONE_AGENT) {
+            PhoneAgentScreen(
+                onBack = { navController.popBackStack() },
+                onOpenLogs = { navController.navigate(Routes.PHONE_AGENT_LOGS) },
+            )
+        }
+
+        composable(Routes.PHONE_AGENT_LOGS) {
+            PhoneAgentLogScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route = Routes.REMOTE_CONVERSATION,
+            arguments = listOf(
+                navArgument("threadId") { type = NavType.StringType },
+            ),
+        ) {
+            RemoteConversationScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

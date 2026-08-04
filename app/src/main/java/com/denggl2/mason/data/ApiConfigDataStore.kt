@@ -55,26 +55,25 @@ class ApiConfigDataStore @Inject constructor(
     val config: Flow<ApiConfig> = context.dataStore.data
         .onStart { migrateLegacyApiKey() }
         .map { prefs ->
-        val storedUrl = prefs[KEY_API_URL]
+        val storedUrl = prefs[KEY_API_URL]?.takeIf(String::isNotBlank)
         val providerId = prefs[KEY_PROVIDER_ID]
+            ?.takeIf(String::isNotBlank)
             ?: storedUrl?.let(AiProviderCatalog::inferProviderId)
-            ?: AiProviderCatalog.DEFAULT_PROVIDER_ID
-        val provider = AiProviderCatalog.getProvider(providerId)
-            ?: AiProviderCatalog.defaultProvider
+        val provider = providerId?.let(AiProviderCatalog::getProvider)
         val storedModel = prefs[KEY_MODEL]
         val secrets = decodeSecrets(prefs[KEY_CONNECTION_SECRETS].orEmpty())
         val storedConnections = decodeConnections(prefs[KEY_CONNECTIONS].orEmpty()).map { item ->
             item.copy(apiKey = secrets[item.id].orEmpty())
         }
-        val activeConnectionId = connectionIdForProvider(provider.id)
+        val activeConnectionId = provider?.id?.let(::connectionIdForProvider)
 
         ApiConfig(
-            providerId = provider.id,
-            apiUrl = storedUrl ?: provider.apiUrl,
-            apiKey = secrets[activeConnectionId] ?: prefs[KEY_API_KEY].orEmpty(),
+            providerId = provider?.id.orEmpty(),
+            apiUrl = storedUrl ?: provider?.apiUrl.orEmpty(),
+            apiKey = activeConnectionId?.let(secrets::get) ?: prefs[KEY_API_KEY].orEmpty(),
             model = when (storedModel) {
-                "openrouter/free" -> provider.defaultModel
-                null -> provider.defaultModel
+                "openrouter/free" -> provider?.defaultModel.orEmpty()
+                null -> provider?.defaultModel.orEmpty()
                 else -> storedModel
             },
             visionModel = prefs[KEY_VISION_MODEL] ?: "",
@@ -82,7 +81,7 @@ class ApiConfigDataStore @Inject constructor(
             localModel = prefs[KEY_LOCAL_MODEL] ?: "",
             localModelDirectEnabled = prefs[KEY_LOCAL_MODEL_DIRECT_ENABLED] ?: false,
             offlineFallbackEnabled = prefs[KEY_OFFLINE_FALLBACK_ENABLED] ?: false,
-            toolsEnabled = prefs[KEY_TOOLS_ENABLED] ?: provider.toolsEnabledByDefault,
+            toolsEnabled = prefs[KEY_TOOLS_ENABLED] ?: provider?.toolsEnabledByDefault ?: false,
             requireToolConfirmation = prefs[KEY_REQUIRE_TOOL_CONFIRMATION] ?: true,
             verifiedSignature = prefs[KEY_VERIFIED_SIGNATURE] ?: "",
             connections = storedConnections,
@@ -90,7 +89,7 @@ class ApiConfigDataStore @Inject constructor(
             visionModelRef = decodeModelReference(prefs[KEY_VISION_MODEL_REF]),
             imageModelRef = decodeModelReference(prefs[KEY_IMAGE_MODEL_REF]),
             dynamicLocalRoutingEnabled = prefs[KEY_DYNAMIC_LOCAL_ROUTING] ?: false,
-            phoneToolsEnabled = prefs[KEY_PHONE_TOOLS_ENABLED] ?: true,
+            phoneToolsEnabled = prefs[KEY_PHONE_TOOLS_ENABLED] ?: false,
         )
     }
 

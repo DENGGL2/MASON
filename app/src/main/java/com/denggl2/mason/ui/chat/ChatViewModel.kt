@@ -15,7 +15,6 @@ import com.denggl2.mason.agent.ToolPolicy
 import com.denggl2.mason.agent.ToolRiskLevel
 import com.denggl2.mason.agent.annotateTaskRun
 import com.denggl2.mason.agent.extractTaskRunMarker
-import com.denggl2.mason.agent.stripTaskRunMarkers
 import com.denggl2.mason.agent.taskStepId
 import com.denggl2.mason.agent.updateStep
 import com.denggl2.mason.agent.withSteps
@@ -31,6 +30,7 @@ import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.ApiConfigDataStore
 import com.denggl2.mason.data.ModelReference
+import com.denggl2.mason.data.configuredChatModelRef
 import com.denggl2.mason.data.resolvedChatModelRef
 import com.denggl2.mason.data.ArtifactMetadata
 import com.denggl2.mason.data.ArtifactStore
@@ -40,6 +40,10 @@ import com.denggl2.mason.data.LocalModelFileState
 import com.denggl2.mason.data.LocalModelStore
 import com.denggl2.mason.data.ModelCapabilityHealthSnapshot
 import com.denggl2.mason.data.ModelCapabilityHealthStore
+import com.denggl2.mason.data.ModelContribution
+import com.denggl2.mason.data.annotateModelParticipation
+import com.denggl2.mason.data.extractModelParticipation
+import com.denggl2.mason.data.mergeModelContribution
 import com.denggl2.mason.data.InstalledSkill
 import com.denggl2.mason.data.SkillAutomationStore
 import com.denggl2.mason.llm.ChatResponse
@@ -68,7 +72,6 @@ import com.denggl2.mason.agent.GovernedToolExecutor
 import com.denggl2.mason.agent.ToolExecutionContext
 import com.denggl2.mason.agent.ToolExecutionSource
 import com.denggl2.mason.agent.ToolGrantStore
-import android.util.Base64
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -107,6 +110,7 @@ data class ChatUiState(
     val taskSteps: List<TaskStep> = emptyList(),
     val taskRun: TaskRun? = null,
     val pendingToolApproval: ToolApprovalRequest? = null,
+    val modelContributions: List<ModelContribution> = emptyList(),
 )
 
 private data class PendingToolBatch(
@@ -125,9 +129,33 @@ private data class AgentLoopResult(
 private enum class TaskNotificationEvent {
     Started,
     Completed,
+    Failed,
     Paused,
     Stopped,
     Cancelled,
+}
+
+private const val TASK_USER_CONTEXT_SEPARATOR = "\n---\nMason 附加上下文"
+
+internal fun shouldRecordTaskGoal(isResumingTask: Boolean): Boolean = !isResumingTask
+
+internal fun taskExecutionMessages(
+    messages: List<ChatMessage>,
+    goal: String,
+    timestamp: Long,
+): List<ChatMessage> {
+    val latestUserGoal = messages
+        .lastOrNull { it.role == "user" }
+        ?.content
+        .orEmpty()
+        .substringBefore(TASK_USER_CONTEXT_SEPARATOR)
+        .trim()
+        .take(500)
+    return if (latestUserGoal == goal) {
+        messages
+    } else {
+        messages + ChatMessage(role = "user", content = goal, timestamp = timestamp)
+    }
 }
 
 internal fun taskCompletionNotificationText(artifactPaths: List<String>): String {
@@ -136,6 +164,126 @@ internal fun taskCompletionNotificationText(artifactPaths: List<String>): String
         ?.name
         .orEmpty()
     return if (artifactName.isBlank()) "对话任务已处理完成" else "已生成：$artifactName"
+}
+
+internal fun canStartModelTask(
+    config: ApiConfig,
+    selectedLocalModelInstalled: Boolean,
+): Boolean =
+    config.configuredChatModelRef() != null ||
+        (
+            config.localModel.isNotBlank() &&
+                selectedLocalModelInstalled &&
+                (
+                    config.configuredChatModelRef() == null ||
+                        config.localModelDirectEnabled ||
+                        config.dynamicLocalRoutingEnabled
+                    )
+            )
+
+internal enum class AppBackgroundAction {
+    PersistRunningTask,
+    ReleaseLocalRuntime,
+}
+
+internal fun appBackgroundAction(
+    generationActive: Boolean,
+    hasActiveTask: Boolean,
+): AppBackgroundAction = if (generationActive && hasActiveTask) {
+    AppBackgroundAction.PersistRunningTask
+} else {
+    AppBackgroundAction.ReleaseLocalRuntime
+}
+
+internal fun buildLocalDeviceInfoToolCall(
+    content: String,
+    directLocalEnabled: Boolean,
+    phoneToolsEnabled: Boolean,
+    taskRunId: String,
+): ToolCall? {
+    if (!directLocalEnabled || !phoneToolsEnabled) return null
+
+    val normalized = content.trim().lowercase()
+    val chineseTarget = listOf(
+        "设备信息",
+        "手机信息",
+        "本机信息",
+        "设备参数",
+        "手机参数",
+        "设备型号",
+        "手机型号",
+    ).any(normalized::contains)
+    val chineseAction = listOf(
+        "检测",
+        "查看",
+        "获取",
+        "读取",
+        "查询",
+        "检查",
+        "显示",
+        "告诉我",
+        "是什么",
+    ).any(normalized::contains)
+    val englishIntent = Regex(
+        pattern = """\b(check|detect|get|inspect|show)\b.*\b(device|phone)\b.*\b(info|information|details|model)\b""",
+        option = RegexOption.IGNORE_CASE,
+    ).containsMatchIn(normalized)
+    if (!(chineseTarget && chineseAction) && !englishIntent) return null
+
+    return ToolCall(
+        id = "local-device-info-${taskRunId.ifBlank { "request" }}",
+        function = FunctionCall(
+            name = "get_device_info",
+            arguments = "{}",
+        ),
+    )
+}
+
+internal fun formatLocalDeviceInfoResult(result: ToolResult): String {
+    if (!result.success) {
+        return "设备信息读取失败：${result.error ?: "未知错误"}"
+    }
+
+    val data = result.data
+    val lines = buildList {
+        val deviceName = listOf(data["manufacturer"], data["brand"], data["model"])
+            .mapNotNull { it?.takeIf(String::isNotBlank) }
+            .distinct()
+            .joinToString(" ")
+        if (deviceName.isNotBlank()) add("设备：$deviceName")
+
+        val android = data["android_version"].orEmpty()
+        val sdk = data["sdk_level"].orEmpty()
+        if (android.isNotBlank() || sdk.isNotBlank()) {
+            add(
+                when {
+                    android.isNotBlank() && sdk.isNotBlank() -> "系统：Android $android（SDK $sdk）"
+                    android.isNotBlank() -> "系统：Android $android"
+                    else -> "系统：SDK $sdk"
+                },
+            )
+        }
+        data["security_patch"]?.takeIf(String::isNotBlank)?.let { add("安全补丁：$it") }
+        data["locale"]?.takeIf(String::isNotBlank)?.let { add("系统语言：$it") }
+
+        val display = listOf(data["resolution"], data["density_dpi"])
+            .mapNotNull { it?.takeIf(String::isNotBlank) }
+            .joinToString("，")
+        if (display.isNotBlank()) add("屏幕：$display")
+
+        val hardware = listOf(data["product"], data["device"], data["board"])
+            .mapNotNull { it?.takeIf(String::isNotBlank) }
+            .distinct()
+            .joinToString(" / ")
+        if (hardware.isNotBlank()) add("硬件标识：$hardware")
+        data["treble_support"]?.takeIf(String::isNotBlank)?.let { add("Treble：$it") }
+    }
+
+    return if (lines.isEmpty()) {
+        "已读取本机设备信息，但没有返回可显示的数据。"
+    } else {
+        "已检测到本机设备信息：\n${lines.joinToString("\n") { "- $it" }}"
+    }
 }
 
 @HiltViewModel
@@ -181,7 +329,7 @@ class ChatViewModel @Inject constructor(
     private var pendingRetryStepId: String? = null
     private var activeTaskRun: TaskRun? = null
     private var generationJob: Job? = null
-    private var resumedTaskRun: TaskRun? = null
+    private var interjectionJob: Job? = null
     private var latestTaskRecoveryJob: Job? = null
     private var historyLoadJob: Job? = null
     private var restoresLatestTask = true
@@ -233,7 +381,6 @@ class ChatViewModel @Inject constructor(
         pendingToolBatch = null
         pendingRetryStepId = null
         activeTaskRun = null
-        resumedTaskRun = null
         _uiState.value = ChatUiState()
     }
 
@@ -256,7 +403,7 @@ class ChatViewModel @Inject constructor(
                 val chatMessages = messages.map { msg ->
                     ChatMessage(
                         role = msg.role,
-                        content = msg.content?.let(::stripTaskRunMarkers),
+                        content = msg.content,
                         tool_call_id = msg.toolCallId,
                         name = msg.toolCallName,
                         timestamp = msg.timestamp,
@@ -298,6 +445,11 @@ class ChatViewModel @Inject constructor(
                     taskRun = taskRun,
                     taskSteps = taskRun?.steps.orEmpty(),
                     pendingToolApproval = restoredApproval ?: _uiState.value.pendingToolApproval,
+                    modelContributions = taskRun?.modelContributions
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: messages.asReversed().firstNotNullOfOrNull { message ->
+                            extractModelParticipation(message.content.orEmpty())?.contributions
+                        }.orEmpty(),
                 )
             }
         }
@@ -313,21 +465,50 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendMessage(content: String) {
-        if (content.isBlank() || generationJob?.isActive == true) return
+        if (content.isBlank() || interjectionJob?.isActive == true) return
+        generationJob?.takeIf { it.isActive }?.let { activeJob ->
+            interjectMessage(content, activeJob)
+            return
+        }
+        sendMessageWhenIdle(content)
+    }
+
+    private fun sendMessageWhenIdle(content: String, resumedRun: TaskRun? = null) {
+        val currentConfig = apiConfig.value
+        if (!canStartModelTask(currentConfig, isLocalModelInstalled(currentConfig.localModel))) return
         if (activeTaskRun?.agentExecution?.waitingForInput == true) {
             continueAgentWithUserInput(content)
             return
         }
+        if (
+            resumedRun == null &&
+            activeTaskRun?.status == TaskRunStatus.WaitingForUser &&
+            activeTaskRun?.agentExecution?.pendingApprovalCallId == null &&
+            isTaskContinuationCommand(content)
+        ) {
+            if (activeTaskRun?.agentExecution != null) {
+                continueAgentCheckpoint(null)
+            } else {
+                resumeCurrentTask()
+            }
+            return
+        }
 
         val startedAt = System.currentTimeMillis()
-        val taskRun = resumedTaskRun?.also { resumedTaskRun = null }
+        val isResumingTask = resumedRun != null
+        val shouldRecordUserMessage = shouldRecordTaskGoal(isResumingTask)
+        val taskRun = resumedRun
             ?: agentRuntime.begin(content, currentConversationId).copy(createdAt = startedAt, updatedAt = startedAt)
         activeTaskRun = taskRun
         var usageSeen = false
         var modelAnswered = false
         val userMessage = ChatMessage(role = "user", content = content, timestamp = startedAt)
         _uiState.value = _uiState.value.copy(
-            messages = _uiState.value.messages + userMessage,
+            messages = if (shouldRecordUserMessage) {
+                _uiState.value.messages + userMessage
+            } else {
+                _uiState.value.messages
+            },
             isStreaming = true,
             streamingContent = "",
             toolCallStatus = null,
@@ -338,35 +519,38 @@ class ChatViewModel @Inject constructor(
             taskSteps = taskRun.steps,
             taskRun = taskRun,
             pendingToolApproval = null,
+            modelContributions = taskRun.modelContributions,
         )
 
         launchGeneration {
-            // Ensure a conversation exists and save user message
-            currentConversationId?.let { conversationId ->
-                if (syncManager.getConversationTitle(conversationId) == null) {
-                    currentConversationId = null
-                    isFirstMessage = true
+            if (shouldRecordUserMessage) {
+                // Ensure a conversation exists and save a newly submitted user message.
+                currentConversationId?.let { conversationId ->
+                    if (syncManager.getConversationTitle(conversationId) == null) {
+                        currentConversationId = null
+                        isFirstMessage = true
+                    }
                 }
-            }
-            if (currentConversationId == null) {
-                val title = content.take(20)
-                currentConversationId = syncManager.createOrGetConversation(title)
-                activeTaskRun = activeTaskRun?.copy(conversationId = currentConversationId)
-                activeTaskRun?.let { agentRuntime.persist(it) }
-                _uiState.value = _uiState.value.copy(
-                    conversationId = currentConversationId,
-                    conversationTitle = title,
-                )
-            }
-            currentConversationId?.let { convId ->
-                syncManager.saveMessage(convId, role = "user", content = content)
+                if (currentConversationId == null) {
+                    val title = content.take(20)
+                    currentConversationId = syncManager.createOrGetConversation(title)
+                    activeTaskRun = activeTaskRun?.copy(conversationId = currentConversationId)
+                    activeTaskRun?.let { agentRuntime.persist(it) }
+                    _uiState.value = _uiState.value.copy(
+                        conversationId = currentConversationId,
+                        conversationTitle = title,
+                    )
+                }
+                currentConversationId?.let { convId ->
+                    syncManager.saveMessage(convId, role = "user", content = content)
 
-                // Auto-title on first user message
-                if (isFirstMessage) {
-                    val autoTitle = content.take(20)
-                    syncManager.updateConversationTitle(convId, autoTitle)
-                    _uiState.value = _uiState.value.copy(conversationTitle = autoTitle)
-                    isFirstMessage = false
+                    // Auto-title on first user message
+                    if (isFirstMessage) {
+                        val autoTitle = content.take(20)
+                        syncManager.updateConversationTitle(convId, autoTitle)
+                        _uiState.value = _uiState.value.copy(conversationTitle = autoTitle)
+                        isFirstMessage = false
+                    }
                 }
             }
 
@@ -396,7 +580,9 @@ class ChatViewModel @Inject constructor(
                         assistantMessage = ChatMessage(role = "assistant", tool_calls = listOf(call)),
                         calls = listOf(call),
                     ),
-                    checkpoint = AgentExecutionCheckpoint(messages = _uiState.value.messages),
+                    checkpoint = AgentExecutionCheckpoint(
+                        messages = taskExecutionMessages(_uiState.value.messages, content, startedAt),
+                    ),
                     startedAt = startedAt,
                     producedArtifacts = producedArtifacts,
                 )
@@ -454,11 +640,51 @@ class ChatViewModel @Inject constructor(
                     .updateStep("execute", TaskStepStatus.Running, "正在等待模型生成方案"),
             )
             val routedResponse = modelRouter.route(
-                messages = _uiState.value.messages,
+                messages = taskExecutionMessages(_uiState.value.messages, content, startedAt),
                 toolsEnabled = apiConfig.value.toolsEnabled,
                 memoryScopeId = currentConversationId?.toString(),
             )
             val directLocalEnabled = routedResponse.decision.engineId in setOf("litert-lm", "llama-cpp")
+            val localDeviceInfoCall = buildLocalDeviceInfoToolCall(
+                content = content,
+                directLocalEnabled = directLocalEnabled,
+                phoneToolsEnabled = apiConfig.value.phoneToolsEnabled,
+                taskRunId = activeTaskRun?.id.orEmpty(),
+            )
+            if (localDeviceInfoCall != null) {
+                val loop = runAgentToolLoop(
+                    firstResponse = ChatResponse.ToolCallsRequested(
+                        assistantMessage = ChatMessage(
+                            role = "assistant",
+                            tool_calls = listOf(localDeviceInfoCall),
+                        ),
+                        calls = listOf(localDeviceInfoCall),
+                    ),
+                    checkpoint = AgentExecutionCheckpoint(
+                        messages = taskExecutionMessages(_uiState.value.messages, content, startedAt),
+                    ),
+                    startedAt = startedAt,
+                    producedArtifacts = producedArtifacts,
+                    terminalToolResultFormatter = { call, result ->
+                        if (call.function.name == "get_device_info") {
+                            formatLocalDeviceInfoResult(result)
+                        } else {
+                            null
+                        }
+                    },
+                )
+                usageSeen = usageSeen || loop.usageSeen
+                modelAnswered = modelAnswered || loop.modelAnswered
+                if (!loop.paused) {
+                    finalizeAgentResponse(
+                        startedAt = startedAt,
+                        artifacts = producedArtifacts,
+                        usageSeen = usageSeen,
+                        modelAnswered = modelAnswered,
+                    )
+                }
+                return@launchGeneration
+            }
             val responseFlow = if (directLocalEnabled) {
                 localCapabilityGuidance(content)?.let { guidance ->
                     flowOf(ChatResponse.TextChunk(guidance))
@@ -468,10 +694,13 @@ class ChatViewModel @Inject constructor(
             }
             responseFlow.collect { response ->
                 when (response) {
+                    is ChatResponse.ModelExecutionStarted -> recordModelContribution(response)
                     is ChatResponse.ToolCallsRequested -> {
                         val loop = runAgentToolLoop(
                             firstResponse = response,
-                            checkpoint = AgentExecutionCheckpoint(messages = _uiState.value.messages),
+                            checkpoint = AgentExecutionCheckpoint(
+                                messages = taskExecutionMessages(_uiState.value.messages, content, startedAt),
+                            ),
                             startedAt = startedAt,
                             producedArtifacts = producedArtifacts,
                         )
@@ -504,8 +733,9 @@ class ChatViewModel @Inject constructor(
                         modelAnswered = true
                         val artifactResult = runCatching {
                             if (response.isBase64) {
-                                artifactStore.saveGeneratedImageArtifact(
-                                    bytes = Base64.decode(response.data, Base64.DEFAULT),
+                                artifactStore.saveGeneratedImageBase64Artifact(
+                                    encoded = response.data,
+                                    declaredMimeType = response.mimeType,
                                 )
                             } else {
                                 artifactStore.saveRemoteImageArtifact(response.data)
@@ -625,6 +855,22 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    private fun interjectMessage(content: String, activeJob: Job) {
+        generationJob = null
+        val job = viewModelScope.launch {
+            activeJob.cancel(CancellationException("用户发送新消息"))
+            runCatching { modelRouter.cancelActive() }
+            activeJob.join()
+            markGenerationInterrupted()
+            runCatching { modelRouter.releaseLocal() }
+            sendMessageWhenIdle(content)
+        }
+        interjectionJob = job
+        job.invokeOnCompletion {
+            if (interjectionJob === job) interjectionJob = null
+        }
+    }
+
     private fun recoverLatestTaskRun() {
         latestTaskRecoveryJob = viewModelScope.launch {
             val recovered = agentRuntime.recover(conversationId = null) ?: return@launch
@@ -654,6 +900,7 @@ class ChatViewModel @Inject constructor(
                 .updateStep("plan", TaskStepStatus.Completed, "已读取并校验自动化草稿")
                 .updateStep("prepare-inputs", TaskStepStatus.Completed, "已准备触发条件和执行动作")
                 .updateStep("execute", TaskStepStatus.Running, if (runTest) "正在创建并测试" else "正在创建"),
+            modelContributions = emptyList(),
         )
         launchGeneration {
             val outcome = runCatching { automationDraftService.applyDraft(draft, runTest) }
@@ -830,8 +1077,9 @@ class ChatViewModel @Inject constructor(
         }
         val step = _uiState.value.taskSteps.firstOrNull { it.id == stepId && it.retryable } ?: return
         val call = step.toolCall ?: return
-        if ((apiConfig.value.requireToolConfirmation || ToolPolicy.requiresMandatoryApproval(call.function.name)) &&
-            ToolPolicy.requiresUserApproval(call.function.name)
+        val profile = toolSecurityProfile(call.function.name)
+        if ((apiConfig.value.requireToolConfirmation || profile.mandatoryApproval) &&
+            profile.risk == ToolRiskLevel.High
         ) {
             val tool = toolRegistry.get(call.function.name)
             pendingRetryStepId = stepId
@@ -845,9 +1093,9 @@ class ChatViewModel @Inject constructor(
                         call.function.name.startsWith("mcp__") -> "MCP"
                         else -> null
                     },
-                    allowPersistentGrant = ToolPolicy.canRememberApproval(call.function.name),
-                    riskLevel = ToolPolicy.riskFor(call.function.name),
-                    reason = "这是失败步骤的重试。${ToolPolicy.approvalReason(call.function.name)}",
+                    allowPersistentGrant = profile.persistentGrantAllowed,
+                    riskLevel = profile.risk,
+                    reason = "这是失败步骤的重试。${ToolPolicy.approvalReason(profile)}",
                     call = call,
                 ),
                 taskSteps = _uiState.value.taskSteps.updateStep(
@@ -918,13 +1166,9 @@ class ChatViewModel @Inject constructor(
             if (!run.agentExecution.waitingForInput) continueAgentCheckpoint(null)
             return
         }
-        val resumed = agentRuntime.resume(run).copy(
-            steps = TaskStepFactory.initial(run.goal),
-            finishedAt = null,
-        )
+        val resumed = agentRuntime.resume(run).copy(finishedAt = null)
         activeTaskRun = resumed
-        resumedTaskRun = resumed
-        sendMessage(run.goal)
+        sendMessageWhenIdle(run.goal, resumedRun = resumed)
     }
 
     private fun continueAgentWithUserInput(content: String) = continueAgentCheckpoint(content)
@@ -985,8 +1229,10 @@ class ChatViewModel @Inject constructor(
                 toolsEnabled = true,
                 includeMemory = false,
                 memoryScopeId = currentConversationId?.toString(),
+                contribution = "继续未完成的回答",
             ).responses.collect { response ->
                 when (response) {
+                    is ChatResponse.ModelExecutionStarted -> recordModelContribution(response)
                     is ChatResponse.ToolCallsRequested -> toolResponse = response
                     is ChatResponse.TextChunk -> {
                         modelAnswered = true
@@ -1037,10 +1283,19 @@ class ChatViewModel @Inject constructor(
     }
 
     fun onAppBackgrounded() {
-        if (generationJob?.isActive == true) {
-            pauseCurrentTask()
-        } else {
-            viewModelScope.launch { modelRouter.releaseLocal() }
+        when (appBackgroundAction(generationJob?.isActive == true, activeTaskRun != null)) {
+            AppBackgroundAction.PersistRunningTask -> {
+                val checkpoint = activeTaskRun
+                    ?.withSteps(_uiState.value.taskSteps)
+                    ?.copy(conversationId = currentConversationId)
+                activeTaskRun = checkpoint
+                viewModelScope.launch {
+                    checkpoint?.let { agentRuntime.persist(it) }
+                }
+            }
+            AppBackgroundAction.ReleaseLocalRuntime -> {
+                viewModelScope.launch { modelRouter.releaseLocal() }
+            }
         }
     }
 
@@ -1166,6 +1421,9 @@ class ChatViewModel @Inject constructor(
     fun localModelStates(): List<LocalModelFileState> =
         localModelStore.states(LocalModelCatalog.models)
 
+    fun isLocalModelInstalled(modelId: String): Boolean =
+        modelId.isNotBlank() && localModelStore.readyModelPath(modelId) != null
+
     fun selectLocalModelDirect(enabled: Boolean) {
         val currentConfig = apiConfig.value
         viewModelScope.launch {
@@ -1188,6 +1446,22 @@ class ChatViewModel @Inject constructor(
             conversationUsage = current.conversationUsage + usage,
             lastUsageMissing = false,
         )
+    }
+
+    private suspend fun recordModelContribution(event: ChatResponse.ModelExecutionStarted) {
+        val contributions = mergeModelContribution(
+            current = _uiState.value.modelContributions,
+            modelId = event.modelId,
+            engineId = event.engineId,
+            part = event.contribution,
+        )
+        if (contributions == _uiState.value.modelContributions) return
+        activeTaskRun = activeTaskRun?.copy(modelContributions = contributions)
+        _uiState.value = _uiState.value.copy(
+            modelContributions = contributions,
+            taskRun = activeTaskRun,
+        )
+        activeTaskRun?.let { agentRuntime.persist(it) }
     }
 
     private fun launchToolStepRetry(stepId: String, call: ToolCall) {
@@ -1297,6 +1571,7 @@ class ChatViewModel @Inject constructor(
         checkpoint: AgentExecutionCheckpoint,
         startedAt: Long,
         producedArtifacts: MutableList<ArtifactMetadata>,
+        terminalToolResultFormatter: ((ToolCall, ToolResult) -> String?)? = null,
     ): AgentLoopResult {
         var state = checkpoint
         var pending = firstResponse
@@ -1355,6 +1630,7 @@ class ChatViewModel @Inject constructor(
             }
 
             val toolMessages = mutableListOf<ChatMessage>()
+            val completedToolResults = mutableListOf<Pair<ToolCall, ToolResult>>()
             var waitingForInput = false
             for (call in pending.calls) {
                 val isSkillActivation = call.function.name == SkillActivationTool.NAME
@@ -1423,6 +1699,7 @@ class ChatViewModel @Inject constructor(
                 }
                 result.artifactPaths().mapNotNull(artifactStore::metadataForExistingFile)
                     .forEach(producedArtifacts::add)
+                completedToolResults += call to result
                 toolMessages += ChatMessage(
                     role = "tool",
                     content = if (result.success) {
@@ -1453,14 +1730,34 @@ class ChatViewModel @Inject constructor(
             persistToolMessages(toolMessages)
             updateAgentCheckpoint(state)
 
+            val terminalContent = completedToolResults.singleOrNull()?.let { (call, result) ->
+                terminalToolResultFormatter?.invoke(call, result)
+            }
+            if (terminalContent != null) {
+                modelAnswered = true
+                _uiState.value = _uiState.value.copy(
+                    streamingContent = _uiState.value.streamingContent + terminalContent,
+                    taskSteps = completeOpenTaskSteps(
+                        _uiState.value.taskSteps
+                            .updateStep("execute", TaskStepStatus.Completed, "设备信息读取完成")
+                            .updateStep("review", TaskStepStatus.Completed, "已检查设备信息")
+                            .updateStep("summary", TaskStepStatus.Completed, "已生成设备信息回复"),
+                    ),
+                )
+                updateAgentCheckpoint(null)
+                return AgentLoopResult(usageSeen, modelAnswered)
+            }
+
             var nextToolResponse: ChatResponse.ToolCallsRequested? = null
             modelRouter.route(
                 nextMessages,
                 toolsEnabled = true,
                 includeMemory = false,
                 memoryScopeId = currentConversationId?.toString(),
+                contribution = "整理工具结果并生成回答",
             ).responses.collect { response ->
                 when (response) {
+                    is ChatResponse.ModelExecutionStarted -> recordModelContribution(response)
                     is ChatResponse.ToolCallsRequested -> nextToolResponse = response
                     is ChatResponse.TextChunk -> {
                         modelAnswered = true
@@ -1508,9 +1805,10 @@ class ChatViewModel @Inject constructor(
         approvedCallIds: List<String>,
         forceRestore: Boolean = false,
     ): ToolApprovalRequest? {
-        if (call.id in approvedCallIds || !ToolPolicy.requiresUserApproval(call.function.name)) return null
-        if (!forceRestore && !apiConfig.value.requireToolConfirmation && !ToolPolicy.requiresMandatoryApproval(call.function.name)) return null
-        if (!forceRestore && ToolPolicy.canRememberApproval(call.function.name) && toolGrantStore.isAlwaysAllowed(call.function.name)) return null
+        val profile = toolSecurityProfile(call.function.name)
+        if (call.id in approvedCallIds || profile.risk != ToolRiskLevel.High) return null
+        if (!forceRestore && !apiConfig.value.requireToolConfirmation && !profile.mandatoryApproval) return null
+        if (!forceRestore && profile.persistentGrantAllowed && toolGrantStore.isAlwaysAllowed(call.function.name)) return null
         val tool = toolRegistry.get(call.function.name)
         val arguments = parseToolArguments(call.function.arguments)
         val actionSummary = if (call.function.name == ConversationDispatchTool.NAME) {
@@ -1529,20 +1827,25 @@ class ChatViewModel @Inject constructor(
                 call.function.name.startsWith("mcp__") -> "MCP"
                 else -> null
             },
-            allowPersistentGrant = ToolPolicy.canRememberApproval(call.function.name),
-            riskLevel = ToolPolicy.riskFor(call.function.name),
-            reason = ToolPolicy.approvalReason(call.function.name),
+            allowPersistentGrant = profile.persistentGrantAllowed,
+            riskLevel = profile.risk,
+            reason = ToolPolicy.approvalReason(profile),
             call = call,
         )
     }
 
     private fun isToolCallConfirmed(call: ToolCall, approvedCallIds: List<String>): Boolean {
         if (call.id in approvedCallIds) return true
-        val risk = ToolPolicy.riskFor(call.function.name)
-        if (risk != ToolRiskLevel.High) return true
+        val profile = toolSecurityProfile(call.function.name)
+        if (profile.risk != ToolRiskLevel.High) return true
         return !apiConfig.value.requireToolConfirmation &&
-            !ToolPolicy.requiresMandatoryApproval(call.function.name)
+            !profile.mandatoryApproval
     }
+
+    private fun toolSecurityProfile(toolName: String) = ToolPolicy.profileFor(
+        toolName,
+        toolRegistry.get(toolName)?.securityHints,
+    )
 
     private suspend fun persistToolMessages(messages: List<ChatMessage>) {
         currentConversationId?.let { convId ->
@@ -1641,7 +1944,7 @@ class ChatViewModel @Inject constructor(
     private fun formatGuidedError(message: String): String {
         return if (message.contains("API Key", ignoreCase = true)) {
             """
-            请先进入左侧菜单的设置，选择服务商并配置 API Key；如果使用自定义中转站，也要确认 API 地址和模型名称。
+            请先进入左侧菜单的设置，选择服务商并配置 API Key；如果使用远端模型，也要确认 API 地址和模型名称。
             当前请求还没有发送给模型，所以 Mason 暂时无法继续处理。
             """.trimIndent()
         } else {
@@ -1739,6 +2042,56 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    private suspend fun markGenerationInterrupted() {
+        val state = _uiState.value
+        if (!state.isStreaming) return
+        val interruptedRun = activeTaskRun?.let { run ->
+            agentRuntime.cancel(
+                run.withSteps(state.taskSteps),
+                reason = "已被新消息打断",
+            )
+        }
+        activeTaskRun = interruptedRun
+        val interruptedSteps = interruptedRun?.steps ?: state.taskSteps.map { step ->
+            if (step.status == TaskStepStatus.Running || step.status == TaskStepStatus.Pending) {
+                step.copy(
+                    status = TaskStepStatus.Cancelled,
+                    detail = "已被新消息打断",
+                    finishedAt = System.currentTimeMillis(),
+                )
+            } else {
+                step
+            }
+        }
+        val visibleContent = state.streamingContent.trim()
+        val interruptedContent = if (visibleContent.isBlank()) {
+            "已被新消息打断。"
+        } else {
+            "$visibleContent\n\n已被新消息打断。"
+        }
+        val persistedContent = annotateCurrentTaskRun(interruptedContent, interruptedSteps)
+        val message = ChatMessage(
+            role = "assistant",
+            content = persistedContent,
+            timestamp = System.currentTimeMillis(),
+        )
+        _uiState.value = state.copy(
+            messages = state.messages + message,
+            isStreaming = false,
+            streamingContent = "",
+            toolCallStatus = null,
+            requestStartedAt = null,
+            lastProcessingMs = state.requestStartedAt?.let { System.currentTimeMillis() - it },
+            taskSteps = interruptedSteps,
+            taskRun = interruptedRun,
+        )
+        currentConversationId?.let { conversationId ->
+            syncManager.saveMessage(conversationId, role = "assistant", content = persistedContent)
+        }
+        interruptedRun?.let { agentRuntime.persist(it) }
+        notifyTaskEvent(TaskNotificationEvent.Stopped)
+    }
+
     private suspend fun prepareAssistantContent(
         content: String,
         existingArtifacts: List<ArtifactMetadata> = emptyList(),
@@ -1787,7 +2140,10 @@ class ChatViewModel @Inject constructor(
             interruptionReason = reason ?: activeTaskRun?.interruptionReason,
         )
         activeTaskRun = snapshot
-        return annotateTaskRun(content, snapshot)
+        return annotateTaskRun(
+            annotateModelParticipation(content, _uiState.value.modelContributions),
+            snapshot,
+        )
     }
 
     private fun interruptionReasonFor(error: String): TaskInterruptionReason =
@@ -1903,7 +2259,13 @@ class ChatViewModel @Inject constructor(
 
     private suspend fun notifyTaskCompletedIfNeeded() {
         if (_uiState.value.taskSteps.any { it.status == TaskStepStatus.WaitingForUser }) return
-        notifyTaskEvent(TaskNotificationEvent.Completed)
+        notifyTaskEvent(
+            if (_uiState.value.taskSteps.any { it.status == TaskStepStatus.Failed }) {
+                TaskNotificationEvent.Failed
+            } else {
+                TaskNotificationEvent.Completed
+            },
+        )
     }
 
     private suspend fun notifyTaskEvent(event: TaskNotificationEvent) {
@@ -1917,6 +2279,7 @@ class ChatViewModel @Inject constructor(
                     "text" to "任务正在执行，可点按返回 Mason 查看进度",
                     NotificationTool.EXTRA_LIVE_UPDATE to "true",
                     NotificationTool.EXTRA_LIVE_UPDATE_PROGRESS to "5",
+                    NotificationTool.EXTRA_LIVE_UPDATE_SHORT_TEXT to "执行中",
                     NotificationTool.EXTRA_CONVERSATION_ID to (activeTaskRun?.conversationId ?: currentConversationId)
                         ?.toString()
                         .orEmpty(),
@@ -1929,6 +2292,8 @@ class ChatViewModel @Inject constructor(
             TaskNotificationEvent.Started -> return
             TaskNotificationEvent.Completed -> "Mason 已完成" to
                 taskCompletionNotificationText(activeTaskRun?.artifactPaths.orEmpty())
+            TaskNotificationEvent.Failed -> "Mason 任务失败" to
+                (activeTaskRun?.lastError ?: "任务未能完成，可返回 Mason 查看原因")
             TaskNotificationEvent.Paused -> "Mason 已暂停任务" to "任务已暂停，可返回 Mason 继续或取消"
             TaskNotificationEvent.Stopped -> "Mason 已停止任务" to "生成已停止，任务不会继续执行"
             TaskNotificationEvent.Cancelled -> "Mason 已取消任务" to "任务已取消，不会继续执行"
@@ -1938,8 +2303,22 @@ class ChatViewModel @Inject constructor(
             mapOf(
                 "title" to title,
                 "text" to text,
-                NotificationTool.EXTRA_LIVE_UPDATE to (event == TaskNotificationEvent.Paused).toString(),
+                NotificationTool.EXTRA_LIVE_UPDATE to (
+                    event in setOf(
+                        TaskNotificationEvent.Paused,
+                        TaskNotificationEvent.Completed,
+                        TaskNotificationEvent.Failed,
+                    )
+                ).toString(),
                 NotificationTool.EXTRA_LIVE_UPDATE_PROGRESS to if (event == TaskNotificationEvent.Paused) "50" else "100",
+                NotificationTool.EXTRA_LIVE_UPDATE_FINAL to
+                    (event == TaskNotificationEvent.Completed || event == TaskNotificationEvent.Failed).toString(),
+                NotificationTool.EXTRA_LIVE_UPDATE_SHORT_TEXT to when (event) {
+                    TaskNotificationEvent.Paused -> "已暂停"
+                    TaskNotificationEvent.Completed -> "已完成"
+                    TaskNotificationEvent.Failed -> "失败"
+                    else -> ""
+                },
                 "task_action" to if (event == TaskNotificationEvent.Paused) {
                     NotificationTool.TASK_ACTION_PAUSED
                 } else {
@@ -1973,4 +2352,18 @@ class ChatViewModel @Inject constructor(
             runCatching { value.jsonPrimitive.content }.getOrElse { value.toString() }
         }
     }.getOrDefault(emptyMap())
+}
+
+internal fun isTaskContinuationCommand(content: String): Boolean {
+    val normalized = content.trim().lowercase().replace(Regex("[，。！？,.!?]"), "")
+    return normalized in setOf(
+        "继续",
+        "继续任务",
+        "继续执行",
+        "接着做",
+        "接着继续",
+        "continue",
+        "resume",
+        "keep going",
+    )
 }

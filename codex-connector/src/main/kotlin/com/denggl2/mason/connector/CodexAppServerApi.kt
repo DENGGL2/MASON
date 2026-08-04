@@ -6,19 +6,25 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
+interface CodexThreadHistoryApi {
+    suspend fun listThreads(limit: Int = 50, cursor: String? = null): JsonElement
+    suspend fun readThread(threadId: String, includeTurns: Boolean = true): JsonElement
+}
+
 class CodexAppServerApi(
     private val client: CodexAppServerClient,
-) {
-    suspend fun listThreads(limit: Int = 50): JsonElement = client.request(
+) : CodexThreadHistoryApi {
+    override suspend fun listThreads(limit: Int, cursor: String?): JsonElement = client.request(
         "thread/list",
         buildJsonObject {
             put("limit", limit)
             put("sortKey", "updated_at")
             put("sourceKinds", JsonArray(listOf("appServer", "cli", "vscode").map(::kotlinxString)))
+            cursor?.let { put("cursor", it) }
         },
     )
 
-    suspend fun readThread(threadId: String, includeTurns: Boolean = true): JsonElement = client.request(
+    override suspend fun readThread(threadId: String, includeTurns: Boolean): JsonElement = client.request(
         "thread/read",
         buildJsonObject {
             put("threadId", threadId)

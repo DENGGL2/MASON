@@ -9,8 +9,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.denggl2.mason.AppForegroundState
 import com.denggl2.mason.MainActivity
+import com.denggl2.mason.R
 import com.denggl2.mason.data.UiPreferencesDataStore
+import com.denggl2.mason.phoneagent.PhoneAgentStopReceiver
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.Locale
@@ -40,10 +43,20 @@ class NotificationTool @Inject constructor(
         const val EXTRA_ARTIFACT_PATH = "artifact_path"
         const val EXTRA_LIVE_UPDATE = "live_update"
         const val EXTRA_LIVE_UPDATE_PROGRESS = "live_update_progress"
+        const val EXTRA_LIVE_UPDATE_FINAL = "live_update_final"
+        const val EXTRA_LIVE_UPDATE_SHORT_TEXT = "live_update_short_text"
+        const val EXTRA_ALLOW_FOREGROUND = "allow_foreground_notification"
+        const val EXTRA_NOTIFICATION_ID = "notification_id"
+        const val EXTRA_PHONE_AGENT_STATUS = "phone_agent_status"
+        const val ACTION_PHONE_AGENT_STOP = "com.denggl2.mason.action.PHONE_AGENT_STOP"
+        const val EXTRA_PREVIEW_MODE = "notification_preview_mode"
+        const val PREVIEW_MODE_REGULAR = "regular"
+        const val PREVIEW_MODE_ISLAND = "island"
         const val TASK_ACTION_PAUSED = "paused"
         const val TASK_COMMAND_RESUME = "resume"
         const val TASK_COMMAND_CANCEL = "cancel"
         const val TASK_COMMAND_OPEN_ARTIFACT = "open_artifact"
+        const val PHONE_AGENT_NOTIFICATION_ID = 47002
         private const val LIVE_UPDATE_NOTIFICATION_ID = 47001
     }
 
@@ -51,7 +64,17 @@ class NotificationTool @Inject constructor(
         val title = args["title"] ?: return ToolResult(false, error = "缺少 title 参数")
         val text = args["text"] ?: return ToolResult(false, error = "缺少 text 参数")
         val preferences = uiPreferencesDataStore.preferences.first()
-        if (!preferences.regularNotificationsEnabled && !preferences.islandNotificationsEnabled) {
+        val previewMode = args[EXTRA_PREVIEW_MODE]
+        val regularNotificationsEnabled = when (previewMode) {
+            PREVIEW_MODE_REGULAR, PREVIEW_MODE_ISLAND -> true
+            else -> preferences.regularNotificationsEnabled
+        }
+        val islandNotificationsEnabled = when (previewMode) {
+            PREVIEW_MODE_ISLAND -> true
+            PREVIEW_MODE_REGULAR -> false
+            else -> preferences.islandNotificationsEnabled
+        }
+        if (!regularNotificationsEnabled && !islandNotificationsEnabled) {
             return ToolResult(false, error = "通知已在设置中关闭")
         }
 
@@ -64,23 +87,45 @@ class NotificationTool @Inject constructor(
 
         val conversationId = args[EXTRA_CONVERSATION_ID]?.toLongOrNull()?.takeIf { it > 0L }
         val isLiveUpdate = args[EXTRA_LIVE_UPDATE].toBoolean()
+        val isFinalLiveUpdate = args[EXTRA_LIVE_UPDATE_FINAL].toBoolean()
+        val phoneAgentStatus = args[EXTRA_PHONE_AGENT_STATUS].toBoolean()
         val pausedTask = args["task_action"] == TASK_ACTION_PAUSED && conversationId != null
         val artifactPath = args[EXTRA_ARTIFACT_PATH]?.takeIf { it.isNotBlank() }
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val liveNotificationId = liveUpdateNotificationId(conversationId)
+        if (!notificationManager.areNotificationsEnabled()) {
+            return ToolResult(false, error = "系统通知已关闭，请在系统设置中允许 Mason 发送通知")
+        }
+        val liveNotificationId = args[EXTRA_NOTIFICATION_ID]
+            ?.toIntOrNull()
+            ?.takeIf { it != 0 }
+            ?: liveUpdateNotificationId(conversationId)
         val canUseLiveUpdate = shouldRequestLiveUpdate(
             isLiveUpdate = isLiveUpdate,
-            islandNotificationsEnabled = preferences.islandNotificationsEnabled,
+            islandNotificationsEnabled = islandNotificationsEnabled,
             sdkInt = Build.VERSION.SDK_INT,
             promotionAllowed = Build.VERSION.SDK_INT >= 36 && notificationManager.canPostPromotedNotifications(),
         )
 
         if (!isLiveUpdate) {
             notificationManager.cancel(liveNotificationId)
-            if (!preferences.regularNotificationsEnabled) {
+        }
+        if (shouldSuppressSystemNotification(
+                appForeground = AppForegroundState.isForeground,
+                allowForeground = args[EXTRA_ALLOW_FOREGROUND].toBoolean(),
+            )
+        ) {
+            if (isLiveUpdate) notificationManager.cancel(liveNotificationId)
+            return ToolResult(
+                success = true,
+                data = mapOf("status" to "suppressed_in_foreground"),
+            )
+        }
+
+        if (!isLiveUpdate) {
+            if (!regularNotificationsEnabled) {
                 return ToolResult(true, data = mapOf("status" to "live_update_cancelled"))
             }
-        } else if (!canUseLiveUpdate && !preferences.regularNotificationsEnabled) {
+        } else if (!canUseLiveUpdate && !regularNotificationsEnabled) {
             return ToolResult(
                 false,
                 error = "岛通知仅支持 Android 16 且需要系统允许提升通知",
@@ -113,29 +158,35 @@ class NotificationTool @Inject constructor(
             context,
             if (canUseLiveUpdate) LIVE_UPDATE_CHANNEL_ID else CHANNEL_ID,
         )
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification_mason)
             .setContentTitle(title)
             .setContentText(text)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(if (canUseLiveUpdate) NotificationCompat.CATEGORY_PROGRESS else NotificationCompat.CATEGORY_EVENT)
             .setContentIntent(pendingIntent)
-            .setAutoCancel(!canUseLiveUpdate)
+            .setAutoCancel(!canUseLiveUpdate || isFinalLiveUpdate)
             .apply {
                 if (canUseLiveUpdate) {
                     val progress = args[EXTRA_LIVE_UPDATE_PROGRESS]
                         ?.toIntOrNull()
                         ?.coerceIn(0, 100)
                         ?: 0
-                    setOngoing(true)
+                    setOngoing(!isFinalLiveUpdate)
                     setSilent(true)
                     setOnlyAlertOnce(true)
-                    setShortCriticalText(title)
+                    setShortCriticalText(
+                        args[EXTRA_LIVE_UPDATE_SHORT_TEXT]
+                            ?.trim()
+                            ?.take(7)
+                            .orEmpty()
+                            .ifBlank { if (isFinalLiveUpdate) "完成" else "$progress%" },
+                    )
                     setStyle(
                         NotificationCompat.ProgressStyle()
                             .setStyledByProgress(true)
                             .setProgress(progress),
                     )
-                    setRequestPromotedOngoing(true)
+                    if (!isFinalLiveUpdate) setRequestPromotedOngoing(true)
                 }
                 if (pausedTask) {
                     addAction(
@@ -149,6 +200,20 @@ class NotificationTool @Inject constructor(
                         taskActionIntent(TASK_COMMAND_CANCEL, 2),
                     )
                 }
+                if (phoneAgentStatus && canUseLiveUpdate && !isFinalLiveUpdate) {
+                    addAction(
+                        android.R.drawable.ic_menu_close_clear_cancel,
+                        "停止操控",
+                        PendingIntent.getBroadcast(
+                            context,
+                            liveNotificationId + 4,
+                            Intent(context, PhoneAgentStopReceiver::class.java).apply {
+                                action = ACTION_PHONE_AGENT_STOP
+                            },
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                        ),
+                    )
+                }
                 artifactPath?.let { path ->
                     addAction(
                         android.R.drawable.ic_menu_view,
@@ -158,7 +223,7 @@ class NotificationTool @Inject constructor(
                 }
             }
 
-        val notificationId = if (canUseLiveUpdate) liveNotificationId else System.currentTimeMillis().toInt()
+        val notificationId = if (isLiveUpdate) liveNotificationId else System.currentTimeMillis().toInt()
         notificationManager.notify(notificationId, builder.build())
         return ToolResult(
             success = true,
@@ -171,6 +236,21 @@ class NotificationTool @Inject constructor(
     }
 }
 
+fun canUsePromotedNotificationIsland(context: Context): Boolean {
+    val notificationManager = context.getSystemService(NotificationManager::class.java)
+    val postNotificationPermissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+    return shouldUsePromotedNotificationIsland(
+        sdkInt = Build.VERSION.SDK_INT,
+        notificationsEnabled = notificationManager.areNotificationsEnabled(),
+        postNotificationPermissionGranted = postNotificationPermissionGranted,
+        promotedAllowed = Build.VERSION.SDK_INT >= 36 && notificationManager.canPostPromotedNotifications(),
+    )
+}
+
 private fun liveUpdateNotificationId(conversationId: Long?): Int =
     conversationId?.hashCode()?.takeIf { it != 0 } ?: 47001
 
@@ -180,6 +260,26 @@ internal fun shouldRequestLiveUpdate(
     sdkInt: Int,
     promotionAllowed: Boolean,
 ): Boolean = isLiveUpdate && islandNotificationsEnabled && sdkInt >= 36 && promotionAllowed
+
+internal fun shouldUsePromotedNotificationIsland(
+    sdkInt: Int,
+    notificationsEnabled: Boolean,
+    postNotificationPermissionGranted: Boolean,
+    promotedAllowed: Boolean,
+): Boolean = sdkInt >= 36 &&
+    notificationsEnabled &&
+    postNotificationPermissionGranted &&
+    promotedAllowed
+
+internal fun shouldSuppressSystemNotification(
+    appForeground: Boolean,
+    allowForeground: Boolean,
+): Boolean = appForeground && !allowForeground
+
+internal fun shouldRequestPostNotificationPermission(
+    sdkInt: Int,
+    permissionGranted: Boolean,
+): Boolean = sdkInt >= Build.VERSION_CODES.TIRAMISU && !permissionGranted
 
 internal fun artifactNotificationActionLabel(path: String): String = when (
     File(path).extension.lowercase(Locale.ROOT)

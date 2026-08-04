@@ -10,11 +10,14 @@ import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import com.denggl2.mason.data.ThemeMode
 import com.denggl2.mason.data.UiPreferences
 import com.denggl2.mason.data.UiPreferencesDataStore
@@ -57,6 +60,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val uiPreferences by uiPreferencesDataStore.preferences.collectAsState(initial = UiPreferences())
             val scope = rememberCoroutineScope()
+            val baseDensity = LocalDensity.current
             val systemDark = isSystemInDarkTheme()
             val useDarkTheme = when (uiPreferences.themeMode) {
                 ThemeMode.SYSTEM -> systemDark
@@ -89,11 +93,17 @@ class MainActivity : ComponentActivity() {
                 themeMode = uiPreferences.themeMode,
                 accentColor = uiPreferences.accentColor.toComposeColor(),
             ) {
-                val windowBackground = MaterialTheme.colorScheme.background.toArgb()
-                SideEffect {
-                    window.decorView.setBackgroundColor(windowBackground)
-                }
-                MasonNavGraph(
+                CompositionLocalProvider(
+                    LocalDensity provides Density(
+                        density = baseDensity.density,
+                        fontScale = baseDensity.fontScale * uiPreferences.fontSize.scale,
+                    ),
+                ) {
+                    val windowBackground = MaterialTheme.colorScheme.background.toArgb()
+                    SideEffect {
+                        window.decorView.setBackgroundColor(windowBackground)
+                    }
+                    MasonNavGraph(
                     uiPreferences = uiPreferences,
                     openConversationId = notificationConversationId.value,
                     notificationTaskCommand = notificationTaskCommand.value,
@@ -118,7 +128,11 @@ class MainActivity : ComponentActivity() {
                     onIslandNotificationsChange = { enabled ->
                         scope.launch { uiPreferencesDataStore.updateIslandNotificationsEnabled(enabled) }
                     },
-                )
+                    onFontSizeChange = { fontSize ->
+                        scope.launch { uiPreferencesDataStore.updateFontSize(fontSize) }
+                    },
+                    )
+                }
             }
         }
     }
@@ -130,6 +144,16 @@ class MainActivity : ComponentActivity() {
         notificationTaskCommand.value = intent.notificationTaskCommand()
         notificationArtifactPath.value = intent.notificationArtifactPath()
         lifecycleScope.launch { mcpOAuthCoordinator.handleCallback(intent.data) }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppForegroundState.onActivityResumed()
+    }
+
+    override fun onPause() {
+        AppForegroundState.onActivityPaused()
+        super.onPause()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

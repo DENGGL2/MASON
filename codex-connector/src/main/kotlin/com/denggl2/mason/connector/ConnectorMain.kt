@@ -15,6 +15,8 @@ fun main(args: Array<String>) {
     when (args.firstOrNull()) {
         "probe" -> runProbe(args.drop(1))
         "recover" -> runRecovery(args.drop(1))
+        "pair-local" -> runLocalPairing(args.drop(1))
+        "pair-private" -> runPrivatePairing(args.drop(1))
         else -> printUsage()
     }
 }
@@ -96,4 +98,6 @@ private fun printUsage() {
     println("Usage:")
     println("  mason-codex-connector probe [working-directory]")
     println("  mason-codex-connector recover <state-file> [working-directory]")
+    println("  mason-codex-connector pair-local <port> <qr-output.png> [state-directory]")
+    println("  mason-codex-connector pair-private <private-ipv4> <port> <qr-output.png> [state-directory]")
 }

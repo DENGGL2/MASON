@@ -1,8 +1,8 @@
 # MASON 多端统一对话 V1 技术规格
 
-状态：Draft 0.2
+状态：Draft 0.11
 
-日期：2026-07-28
+日期：2026-07-30
 
 适用范围：Android MASON、Windows MASON Connector、本地 Codex App Server
 
@@ -667,6 +667,126 @@ V1 不自动传送目录，不允许模型在无用户确认时向手机推送�
 
 本次验收未安装或启动 MASON 主应用，也未读取或迁移正式 `mason_database.db`。
 
-## 20. 下一实施决策
+## 20. Phase 2A 安全核心实现状态
 
-Phase 1 退出条件已满足。下一步进入 Phase 2：先定义并实现私有组网之上的应用层配对、设备认证和撤销，再接共享对话同步。Phase 2 开始前需要确定 Connector 的网络服务边界、密钥存储方式和首个配对流程，不同时修改 Android 对话 UI。
+已完成不依赖网络传输和 UI 的安全状态机：
+
+- 协议新增 `PairingOffer`、`PairingRequest`、`PairingResult`、`AuthChallenge`、`AuthProof` 和 `SessionGrant`。
+- 设备权限拆分为查看共享对话、发送消息、控制执行、处理审批和请求文件。
+- 设备身份使用 ECDSA P-256 / SHA-256；协议显式携带算法，配对请求必须签署规范化载荷，证明持有对应私钥。
+- Android 使用 `AndroidKeyStore` 原生生成 P-256 私钥并完成签名，私钥不可导出；协议只传输 X.509 Base64 公钥。
+- Windows Connector 使用当前用户范围的 DPAPI 保护 PKCS#8 私钥；身份文件只保存公钥、算法、创建时间和 DPAPI 密文。
+- 配对 token 使用 256 bit 随机值、五分钟默认有效期且只能成功使用一次；Connector 仅在内存中保存其 SHA-256。
+- 登录使用一次性随机 challenge；challenge 无论验证成功或失败均不能重放。
+- 会话 token 使用 256 bit 随机值、十五分钟默认有效期；Connector 仅保存哈希和权限主体。
+- 设备撤销写入持久状态，并立即清除该设备的未完成 challenge 和活动会话。
+- Connector 状态文件升级到 schema v2；v1 状态原子迁移并保留原设备 ID、会话、事件、命令和审批。
+- Connector 重启后保留配对设备及撤销状态，但主动使配对 token、challenge 和会话 token 失效。
+
+自动化测试覆盖：
+
+- 正常配对、ECDSA P-256 challenge 认证和权限范围校验。
+- 错误 token、错误签名、过期 offer、过期 challenge 和过期 session。
+- 配对 token 复用、challenge 重放和设备 ID 重复注册。
+- 撤销后现有会话立即失效，重启后撤销状态仍然有效。
+- v1 -> v2 Connector 状态迁移及原有会话恢复回归。
+
+Phase 2A 当时尚未实现：
+
+- HTTPS/WebSocket 网络端点、二维码展示/扫描和真实设备配对。
+- 共享对话同步、在线状态和 Android UI。
+
+AndroidKeyStore 设备验收已在 Android 12 测试设备通过：同一 alias 重复读取返回稳定公钥，P-256 签名验证成功，私钥编码为空且无法从应用导出。测试使用随机独立 alias，完成后删除，未读取或替换正式设备身份。
+
+Windows DPAPI 验收已在当前 Windows 用户下通过：临时身份文件重开后公钥和创建时间保持稳定，解密后的 P-256 私钥可以完成签名；篡改 DPAPI 密文后身份加载失败关闭。私钥明文只在签名期间存在于进程内存并在使用后清零，不写入磁盘。测试完成后删除独立临时身份文件，未生成正式 Connector 身份。
+
+## 21. Phase 2B1 Loopback 传输状态
+
+已完成真实 HTTP 回环闭环：
+
+- Windows Connector 使用 Ktor/Netty 提供 `/v1/pairing/complete`、`/v1/auth/challenge`、`/v1/auth/session` 和受 Bearer token 保护的 `/v1/me`。
+- 服务端只接受操作系统判定为 loopback 的监听地址，`0.0.0.0` 和私网地址在本阶段均拒绝启动。
+- Connector 不提供远程创建 pairing offer 的接口；一次性 offer 仍必须由本地可信入口创建。
+- Android `sync` 模块提供基于 OkHttp 的无 UI 配对客户端，并复用 AndroidKeyStore 身份完成配对和 challenge 签名。
+- 明文 HTTP 客户端只接受 loopback URL，避免尚未接入 TLS 时误用于真实私网。
+- 错误响应使用结构化协议错误；畸形 JSON、错误协议版本和空设备 ID 返回 400。
+- 真实 Netty 随机回环端口测试已完成“配对 -> challenge -> session -> `/me` -> 撤销后 session 失效”闭环。
+- Android 客户端 MockWebServer 测试验证配对签名、challenge 签名和 Bearer session 请求。
+
+本阶段未修改 Android UI，未开放私网端口，未调整 Windows 防火墙，也未生成正式配对身份或二维码。
+
+## 22. Phase 2B2 TLS 与证书固定状态
+
+当前已完成代码和本机隔离验证：
+
+- Connector 独立生成 TLS 自签名证书，TLS 私钥不复用设备签名身份。
+- TLS 身份以 PKCS12 保存，随机密码与 PKCS12 一起组成私有 bundle；整个 bundle 经当前 Windows 用户范围 DPAPI 加密后原子写入单一 JSON 文件。
+- 身份加载时校验证书 DER、SHA-256 指纹、证书有效期和私钥条目；密文、证书或指纹损坏时 fail closed。
+- `PairingBootstrap` 将一次性 `PairingOffer`、HTTPS endpoint 和 TLS 证书 SHA-256 指纹组成稳定的二维码载荷。
+- Connector HTTPS 服务只接受显式的本机地址，拒绝 wildcard、multicast 和不属于本机网卡的地址。
+- Android pinned 客户端只接受 HTTPS，不跟随重定向，并以二维码中的 SHA-256 严格固定服务器叶证书。
+- 本机随机 HTTPS 端口已完成“配对 -> challenge -> session -> `/me`”闭环；错误指纹必须在 TLS 握手阶段失败。
+
+本阶段仍未修改 Android UI、未生成二维码图片、未开放真实私网端口、未调整 Windows 防火墙、未安装主 APK，也未创建正式 Connector TLS 身份。下一步应在用户确认后接入二维码展示/扫描，并在两台真实设备的私有组网上验证地址选择、Android 后台存活和断线重连。
+
+## 23. Phase 2B3 Android 二维码配对入口
+
+当前已完成 Android 侧代码和构建验证：
+
+- 侧边栏在“新对话”和“最近对话”之间增加“设备扫码配对”入口，复用现有主操作样式。
+- 扫码使用 CameraX 和 bundled ML Kit Barcode Scanning，不依赖 Google Play 服务，也不需要运行时下载识别模型。
+- 扫描页只识别 QR Code；识别后校验协议版本、一次性 offer 有效期、HTTPS endpoint 和 64 位证书 SHA-256。
+- 用户确认后复用 AndroidKeyStore 设备身份与 pinned HTTPS 客户端完成注册、challenge、session 和 `/v1/me` 校验。
+- 配对成功后只持久化 Connector 设备 ID、endpoint、证书指纹和配对时间，不持久化短期 session token。
+- 注册成功但后续认证因瞬时网络失败时，重新尝试可从 `DEVICE_ALREADY_PAIRED` 继续 challenge 认证。
+
+本阶段未开放真实私网监听或修改防火墙，也未在本任务中安装/启动主 APK。下一步是先用 Connector 本机配对命令验收二维码生成和 HTTPS 服务生命周期，再经用户明确授权后进入真实私有组网的双设备验收。
+
+## 24. Phase 2B4 Windows 本机配对入口
+
+已实现 Connector CLI 本地可信入口：
+
+```text
+mason-codex-connector pair-local <port> <qr-output.png> [state-directory]
+```
+
+- 命令使用当前 Windows 用户范围 DPAPI 加载或创建 Connector 签名身份与 TLS 身份。
+- 未指定 `state-directory` 时，默认使用 `%LOCALAPPDATA%\MASON\connector`，其中保存 `connector-state.json`、`connector-identity.json` 和 `connector-tls-identity.json`。
+- 命令创建一个五分钟默认有效、只能成功使用一次的 `PairingOffer`，并将完整 `PairingBootstrap` 写入指定 PNG 二维码。
+- 二维码载荷包含 HTTPS endpoint、Connector 配对 offer 和 TLS 叶证书 SHA-256 指纹；测试会反向解码 PNG 并与原始 Bootstrap JSON 精确比对。
+- HTTPS 服务与前述 `PairingAuthService` 共用同一组配对、challenge、session 和 `/v1/me` 逻辑，保持到 offer 过期或用户按 Ctrl+C。
+- 为避免静默覆盖用户文件，`qr-output.png` 已存在时命令直接失败。
+
+当前命令生成的 endpoint 固定为 `https://127.0.0.1:<port>`，仅用于 Windows 本机 HTTPS 验证。手机扫码后的 `127.0.0.1` 指向手机自身，因此手机不能通过该二维码连接电脑。这一限制是本机验证方案的有意边界，不得将其宣称为已完成真实双设备配对。
+
+本阶段已通过 Connector 二维码编码/解码和服务端自动化测试，但未实际运行 `pair-local`，因此未写入正式 Windows Connector 身份或正式配对二维码。未开放私网端口，未修改 Windows 防火墙，未构建或安装新的 Android APK。
+
+## 25. Phase 2B5 局域网实机配对准备
+
+Connector CLI 已新增局域网配对命令：
+
+```text
+mason-codex-connector pair-private <private-ipv4> <port> <qr-output.png> [state-directory]
+```
+
+- `private-ipv4` 必须是 `10/8`、`172.16/12` 或 `192.168/16` 中的字面 IPv4 地址。
+- 地址必须已分配给当前电脑上处于 up 状态的网卡；域名、公网地址、loopback、wildcard、multicast 和非本机地址均拒绝。
+- 二维码 endpoint 使用经校验的局域网 IPv4，Android 仍以二维码中的 SHA-256 固定 Connector TLS 叶证书。
+- `pair-local` 与 `pair-private` 共用身份、一次性 offer、二维码和 HTTPS 服务；`pair-local` 仍在 offer 过期后关闭，`pair-private` 在 offer 过期后继续为已配对设备提供服务，直到用户按 Ctrl+C。
+- 命令不会自动修改 Windows 防火墙，也不会绑定 `0.0.0.0`。
+
+当前仅完成代码、自动化测试和分发包构建；尚未运行正式 `pair-private`，未创建正式身份或二维码，未开放端口，未修改防火墙。真机验收顺序为：手机与电脑连接同一 Wi-Fi -> 选择电脑当前私网 IPv4 -> 本地运行 `pair-private` -> 用 Android MASON 扫码 -> 验证配对、challenge、session 和 `/v1/me`。
+
+## 26. Phase 2B6 配对后会话浏览与设备管理
+
+当前已完成代码和隔离测试：
+
+- `pair-private` 启动并初始化独立 Codex App Server，通过 `thread/list` 和 `thread/read` 构建稳定的 MASON 只读投影；Codex 原始 JSON 不直接暴露给 Android。
+- Connector 新增 `GET /v1/conversations`、`GET /v1/conversations/{threadId}` 和 `POST /v1/me/revoke`，会话接口必须持有 `VIEW_SHARED_CONVERSATIONS` 权限。
+- 会话列表按更新时间分页；Android 首次展示 3 条，“展开更多”每次再请求 3 条。MASON 管理会话和外部历史会话在协议中保留 ownership 区分，但本阶段均以历史读取为主。
+- 配对成功后，侧栏扫码入口变为可展开的电脑分组；电脑离线时保留历史入口并显示离线状态，不伪造已加载结果。
+- 远端会话详情仅投影最近 20 条 user/assistant 文字消息，忽略 reasoning、命令和其他内部 item；有更早消息时显式提示截断。
+- 设置首页新增“设备配对”。手机取消配对时先立即清除本地状态，再通过固定证书连接尽力撤销电脑端授权；电脑离线不阻塞手机恢复未配对状态。
+- 本机随机 HTTP/HTTPS 自动化测试已覆盖权限会话、分页、详情、证书固定和撤销后 session 失效。
+
+本阶段仍未开放真实私网端口、修改 Windows 防火墙或执行双设备扫码。外部 Codex 历史继续对话、实时事件、审批和远控仍属于 Phase 3。

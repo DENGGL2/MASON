@@ -129,6 +129,11 @@ class LocalModelStore @Inject constructor(
         if (partial.exists()) check(partial.delete()) { "无法删除未完成的下载" }
     }
 
+    suspend fun resetPartialDownload(modelId: String) = withContext(Dispatchers.IO) {
+        val partial = partialFileForDownload(modelId)
+        if (partial.exists()) check(partial.delete()) { "无法清理已取消的下载" }
+    }
+
     fun displayName(uri: Uri): String? {
         return runCatching {
             context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)

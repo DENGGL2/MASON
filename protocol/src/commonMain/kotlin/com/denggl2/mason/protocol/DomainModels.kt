@@ -34,6 +34,7 @@ data class Device(
     val ownerId: String,
     val displayName: String,
     val platform: Platform,
+    val keyAlgorithm: DeviceKeyAlgorithm = DeviceKeyAlgorithm.ECDSA_P256_SHA256,
     val publicKey: String,
     val capabilities: Set<DeviceCapability>,
     val lastSeenAt: Long? = null,
