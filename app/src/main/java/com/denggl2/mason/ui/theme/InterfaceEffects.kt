@@ -14,6 +14,7 @@ data class InterfaceEffects(
     val progressiveEdgeBlurEnabled: Boolean,
     val glassMaterialEnabled: Boolean,
     val glassRefractionEnabled: Boolean,
+    val backdropEffectAlpha: Float,
     val compactSurfaceAlpha: Float,
     val largeSurfaceAlpha: Float,
 )
@@ -32,7 +33,17 @@ internal fun resolveInterfaceEffects(
     }
     val glassTransparency = normalizeGlassTransparency(requestedGlassTransparency)
     val compactGlassAlpha = 1f - glassTransparency
-    val largeGlassAlpha = (compactGlassAlpha + 0.30f).coerceAtMost(1f)
+    val defaultCompactGlassAlpha = 1f - DEFAULT_GLASS_TRANSPARENCY
+    val largeGlassAlpha = if (defaultCompactGlassAlpha > 0f) {
+        (compactGlassAlpha * (0.72f / defaultCompactGlassAlpha)).coerceIn(0f, 1f)
+    } else {
+        compactGlassAlpha
+    }
+    val glassBackdropAlpha = if (defaultCompactGlassAlpha > 0f) {
+        (compactGlassAlpha / defaultCompactGlassAlpha).coerceIn(0f, 1f)
+    } else {
+        compactGlassAlpha
+    }
     return InterfaceEffects(
         requestedStyle = requestedStyle,
         effectiveStyle = effectiveStyle,
@@ -45,6 +56,11 @@ internal fun resolveInterfaceEffects(
         glassRefractionEnabled = glassSupported &&
             requestedGlassRefraction &&
             sdkInt >= 33,
+        backdropEffectAlpha = when {
+            glassSupported -> glassBackdropAlpha
+            backdropSupported && requestedStyle != InterfaceStyle.NATIVE -> 1f
+            else -> 0f
+        },
         compactSurfaceAlpha = when {
             glassSupported -> compactGlassAlpha
             requestedStyle == InterfaceStyle.NATIVE || !backdropSupported -> 1f

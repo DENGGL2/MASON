@@ -12,8 +12,6 @@ import android.view.View
 import android.view.ViewTreeObserver
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -50,7 +48,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.math.roundToInt
 import kotlin.coroutines.resume
 
-private const val BACKDROP_FADE_IN_MILLIS = 120
 private const val BACKDROP_RELEASE_FALLBACK_MILLIS = 1_000L
 private const val BACKDROP_REFRESH_DEBOUNCE_MILLIS = 100L
 
@@ -237,6 +234,9 @@ internal fun rememberWindowBackdropSnapshot(
         )
     }
     var snapshot by remember { mutableStateOf<WindowBackdropSnapshot?>(null) }
+    var lastCapturedViewport by remember(rootView, captureEnabled) {
+        mutableStateOf<WindowBackdropViewportSignature?>(null)
+    }
 
     DisposableEffect(captureEnabled, rootView) {
         if (!captureEnabled || rootView == null) return@DisposableEffect onDispose { }
@@ -258,11 +258,22 @@ internal fun rememberWindowBackdropSnapshot(
     }
 
     LaunchedEffect(captureEnabled, context, refreshKey, viewportSignature) {
-        snapshot = null
-        if (!captureEnabled) return@LaunchedEffect
-        delay(BACKDROP_REFRESH_DEBOUNCE_MILLIS)
+        if (!captureEnabled) {
+            snapshot = null
+            lastCapturedViewport = null
+            return@LaunchedEffect
+        }
+        val viewportChanged = lastCapturedViewport != null &&
+            lastCapturedViewport != viewportSignature
+        if (viewportChanged) {
+            snapshot = null
+            delay(BACKDROP_REFRESH_DEBOUNCE_MILLIS)
+        }
         withFrameNanos { }
-        snapshot = captureWindowBackdropSnapshot(context)
+        captureWindowBackdropSnapshot(context)?.let { nextSnapshot ->
+            snapshot = nextSnapshot
+            lastCapturedViewport = viewportSignature
+        }
     }
     DisposableEffect(snapshot) {
         val currentSnapshot = snapshot
@@ -297,16 +308,14 @@ internal fun Modifier.windowBackdrop(
     snapshot: WindowBackdropSnapshot?,
     windowPosition: IntOffset,
     blurRadius: Dp,
+    effectAlpha: Float = 1f,
     allowZeroPosition: Boolean = false,
 ): Modifier = composed {
+    val resolvedEffectAlpha = effectAlpha.coerceIn(0f, 1f)
     val canDrawBackdrop = snapshot != null &&
+        resolvedEffectAlpha > 0f &&
         (allowZeroPosition || windowPosition != IntOffset.Zero) &&
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    val backdropAlpha by animateFloatAsState(
-        targetValue = if (canDrawBackdrop) 1f else 0f,
-        animationSpec = tween(durationMillis = BACKDROP_FADE_IN_MILLIS),
-        label = "window_backdrop_alpha",
-    )
     if (!canDrawBackdrop) {
         return@composed this
     }
@@ -353,7 +362,7 @@ internal fun Modifier.windowBackdrop(
                     dstSize = geometry.destinationSize,
                 )
             }
-            blurredLayer.alpha = backdropAlpha
+            blurredLayer.alpha = resolvedEffectAlpha
             clipRect {
                 translate(
                     left = (geometry.destinationOffset.x - bleedPixels).toFloat(),
@@ -371,17 +380,13 @@ internal fun Modifier.windowBackdropMaterial(
     enabled: Boolean,
     blurRadius: Dp,
     fallbackColor: Color,
+    effectAlpha: Float = 1f,
 ): Modifier = composed {
     var windowPosition by remember { mutableStateOf(IntOffset.Zero) }
     val snapshot = rememberWindowBackdropSnapshot(
         enabled = enabled,
-        refreshKey = windowPosition,
     )
-    val fallbackAlpha by animateFloatAsState(
-        targetValue = if (enabled && snapshot == null) 1f else 0f,
-        animationSpec = tween(durationMillis = BACKDROP_FADE_IN_MILLIS),
-        label = "window_backdrop_fallback_alpha",
-    )
+    val fallbackAlpha = if (enabled && snapshot == null) 1f else 0f
     this
         .onGloballyPositioned { coordinates ->
             val position = coordinates.positionInWindow()
@@ -391,6 +396,7 @@ internal fun Modifier.windowBackdropMaterial(
             snapshot = snapshot,
             windowPosition = windowPosition,
             blurRadius = blurRadius,
+            effectAlpha = effectAlpha,
             allowZeroPosition = true,
         )
         .background(fallbackColor.copy(alpha = fallbackColor.alpha * fallbackAlpha))

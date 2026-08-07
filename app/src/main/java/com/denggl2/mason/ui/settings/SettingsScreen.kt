@@ -11,6 +11,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -129,6 +131,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -289,6 +292,11 @@ private data class PendingRemoteModelDelete(
 private const val LOCAL_PROVIDER_ID = "local"
 private const val INTERFACE_STYLE_SETTING_VISIBLE = true
 private const val ACCENT_COLOR_SETTING_VISIBLE = false
+private const val SETTINGS_POPUP_BACKDROP_WAIT_MILLIS = 300L
+private const val DROPDOWN_ENTER_DURATION_MILLIS = 180
+private const val DROPDOWN_EXIT_DURATION_MILLIS = 120
+private val DropdownEnterEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
+private val DropdownExitEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
 private val settingsSheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
 
 private fun Modifier.settingsSheetContentBackdrop(): Modifier = composed {
@@ -301,6 +309,7 @@ private fun Modifier.settingsSheetContentBackdrop(): Modifier = composed {
             enabled = true,
             blurRadius = 40.dp,
             fallbackColor = MaterialTheme.colorScheme.surface,
+            effectAlpha = interfaceEffects.backdropEffectAlpha,
         )
         .background(
             MaterialTheme.colorScheme.surface.copy(
@@ -4844,7 +4853,8 @@ private fun AppearanceSettingsContent(
                 SwitchSettingRow(
                     title = "折射效果",
                     description = android13RequirementDescription(Build.VERSION.SDK_INT).orEmpty(),
-                    checked = glassRefractionEnabled,
+                    checked = glassRefractionEnabled &&
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
                     enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
                     onCheckedChange = onGlassRefractionChange,
                 )
@@ -5312,12 +5322,26 @@ private fun SettingsDropdownArrow(
     expandedDescription: String,
     menuContent: @Composable ColumnScope.() -> Unit,
 ) {
+    val arrowRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(
+            durationMillis = if (expanded) {
+                DROPDOWN_ENTER_DURATION_MILLIS
+            } else {
+                DROPDOWN_EXIT_DURATION_MILLIS
+            },
+            easing = if (expanded) DropdownEnterEasing else DropdownExitEasing,
+        ),
+        label = "settings_dropdown_arrow",
+    )
     Box(contentAlignment = Alignment.Center) {
         Icon(
-            if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+            Icons.Outlined.ExpandMore,
             contentDescription = if (expanded) expandedDescription else collapsedDescription,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(19.dp),
+            modifier = Modifier
+                .size(19.dp)
+                .graphicsLayer { rotationZ = arrowRotation },
         )
         SettingsPopupMenu(
             expanded = expanded,
@@ -5350,13 +5374,30 @@ private fun SettingsGlassDropdown(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    if (!expanded) return
+    var popupMounted by remember { mutableStateOf(expanded) }
+    val popupMotion = remember { Animatable(0f) }
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            popupMounted = true
+        } else if (popupMounted) {
+            popupMotion.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(
+                    durationMillis = DROPDOWN_EXIT_DURATION_MILLIS,
+                    easing = DropdownExitEasing,
+                ),
+            )
+            popupMounted = false
+        }
+    }
+    if (!popupMounted) return
+
     val density = LocalDensity.current
     val interfaceEffects = LocalInterfaceEffects.current
     var popupPosition by remember { mutableStateOf(IntOffset.Zero) }
+    var opensAbove by remember { mutableStateOf(false) }
     val popupBackdrop = rememberWindowBackdropSnapshot(
         enabled = interfaceEffects.backdropBlurEnabled,
-        refreshKey = popupPosition,
     )
     val shadowGutter = 24.dp
     val availableMenuHeight = (
@@ -5381,10 +5422,14 @@ private fun SettingsGlassDropdown(
                 )
                 val belowY = anchorBounds.bottom + gapPx
                 val aboveY = anchorBounds.top - gapPx - surfaceHeight
-                val desiredSurfaceY = if (belowY + surfaceHeight + gutterPx <= windowSize.height) {
+                val nextOpensAbove = belowY + surfaceHeight + gutterPx > windowSize.height
+                val desiredSurfaceY = if (!nextOpensAbove) {
                     belowY
                 } else {
                     aboveY
+                }
+                if (opensAbove != nextOpensAbove) {
+                    opensAbove = nextOpensAbove
                 }
                 val surfaceY = desiredSurfaceY.coerceIn(
                     gutterPx,
@@ -5399,18 +5444,44 @@ private fun SettingsGlassDropdown(
         }
     }
     val shape = RoundedCornerShape(14.dp)
-    val popupSurfaceAlpha by animateFloatAsState(
-        targetValue = if (
+    val positionReady = popupPosition != IntOffset.Zero
+    val backdropReady = popupBackdrop != null && positionReady
+    var opaqueFallbackLocked by remember { mutableStateOf(false) }
+    LaunchedEffect(interfaceEffects.backdropBlurEnabled, backdropReady) {
+        if (!interfaceEffects.backdropBlurEnabled) {
+            opaqueFallbackLocked = false
+        } else if (!backdropReady && !opaqueFallbackLocked) {
+            delay(SETTINGS_POPUP_BACKDROP_WAIT_MILLIS)
+            opaqueFallbackLocked = true
+        }
+    }
+    val useBackdrop = backdropReady && !opaqueFallbackLocked
+    val popupReady = positionReady && (
+        !interfaceEffects.backdropBlurEnabled ||
+            useBackdrop ||
+            opaqueFallbackLocked
+        )
+    val popupSurfaceAlpha = if (
             interfaceEffects.backdropBlurEnabled &&
-            (popupBackdrop == null || popupPosition == IntOffset.Zero)
+            !useBackdrop
         ) {
             1f
         } else {
             interfaceEffects.compactSurfaceAlpha
-        },
-        animationSpec = tween(durationMillis = 120),
-        label = "settings_popup_surface_alpha",
-    )
+        }
+    LaunchedEffect(expanded, popupReady) {
+        when {
+            !expanded -> Unit
+            !popupReady -> popupMotion.snapTo(0f)
+            else -> popupMotion.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = DROPDOWN_ENTER_DURATION_MILLIS,
+                    easing = DropdownEnterEasing,
+                ),
+            )
+        }
+    }
     Popup(
         popupPositionProvider = positionProvider,
         onDismissRequest = onDismissRequest,
@@ -5420,7 +5491,26 @@ private fun SettingsGlassDropdown(
             dismissOnClickOutside = true,
         ),
     ) {
-        Box(modifier = Modifier.padding(shadowGutter)) {
+        Box(
+            modifier = Modifier
+                .padding(shadowGutter)
+                .graphicsLayer {
+                    val progress = popupMotion.value
+                    val closing = !expanded
+                    val hiddenScale = if (closing) 0.98f else 0.96f
+                    val hiddenOffset = if (closing) 4.dp.toPx() else 6.dp.toPx()
+                    val scale = hiddenScale + (1f - hiddenScale) * progress
+                    alpha = if (popupReady) progress else 0f
+                    scaleX = scale
+                    scaleY = scale
+                    translationY = (if (opensAbove) 1f else -1f) *
+                        hiddenOffset * (1f - progress)
+                    transformOrigin = TransformOrigin(
+                        pivotFractionX = 1f,
+                        pivotFractionY = if (opensAbove) 1f else 0f,
+                    )
+                },
+        ) {
             Box(
                 modifier = Modifier
                     .zIndex(2f)
@@ -5436,10 +5526,15 @@ private fun SettingsGlassDropdown(
                 Box(
                     modifier = Modifier
                         .matchParentSize()
+                        .glassRefraction(
+                            enabled = useBackdrop && interfaceEffects.glassRefractionEnabled,
+                            cornerRadius = 14.dp,
+                        )
                         .windowBackdrop(
-                            snapshot = popupBackdrop,
+                            snapshot = if (useBackdrop) popupBackdrop else null,
                             windowPosition = popupPosition,
                             blurRadius = if (interfaceEffects.glassMaterialEnabled) 18.dp else 15.dp,
+                            effectAlpha = interfaceEffects.backdropEffectAlpha,
                         ),
                 )
                 Box(

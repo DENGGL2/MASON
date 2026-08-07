@@ -298,6 +298,11 @@ private val masonGlassOutline = Color(0xFFBABFCC)
 private val masonGlassShadowColor = masonGlassOutline.copy(alpha = 0.30f)
 private val masonGlassShadowBlur = 20.dp
 private const val LIVE_BACKDROP_BLUR_ENABLED = true
+private const val CHAT_POPUP_BACKDROP_WAIT_MILLIS = 300L
+private const val DROPDOWN_ENTER_DURATION_MILLIS = 180
+private const val DROPDOWN_EXIT_DURATION_MILLIS = 120
+private val DropdownEnterEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
+private val DropdownExitEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
 
 private fun Modifier.masonGlassShadow(
     cornerRadius: Dp,
@@ -388,13 +393,30 @@ private fun ChatGlassDropdown(
     alignEnd: Boolean,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    if (!expanded) return
+    var popupMounted by remember { mutableStateOf(expanded) }
+    val popupMotion = remember { Animatable(0f) }
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            popupMounted = true
+        } else if (popupMounted) {
+            popupMotion.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(
+                    durationMillis = DROPDOWN_EXIT_DURATION_MILLIS,
+                    easing = DropdownExitEasing,
+                ),
+            )
+            popupMounted = false
+        }
+    }
+    if (!popupMounted) return
+
     val density = LocalDensity.current
     val interfaceEffects = LocalInterfaceEffects.current
     var surfacePosition by remember { mutableStateOf(IntOffset.Zero) }
+    var opensAbove by remember { mutableStateOf(false) }
     val popupBackdrop = rememberWindowBackdropSnapshot(
         enabled = interfaceEffects.backdropBlurEnabled,
-        refreshKey = surfacePosition,
     )
     val shadowGutter = 24.dp
     val positionProvider = remember(density, alignEnd) {
@@ -420,10 +442,14 @@ private fun ChatGlassDropdown(
                 )
                 val belowY = anchorBounds.bottom + gapPx
                 val aboveY = anchorBounds.top - gapPx - surfaceHeight
-                val desiredSurfaceY = if (belowY + surfaceHeight + gutterPx <= windowSize.height) {
+                val nextOpensAbove = belowY + surfaceHeight + gutterPx > windowSize.height
+                val desiredSurfaceY = if (!nextOpensAbove) {
                     belowY
                 } else {
                     aboveY
+                }
+                if (opensAbove != nextOpensAbove) {
+                    opensAbove = nextOpensAbove
                 }
                 val surfaceY = desiredSurfaceY.coerceIn(
                     gutterPx,
@@ -438,18 +464,44 @@ private fun ChatGlassDropdown(
         }
     }
     val shape = RoundedCornerShape(cornerRadius)
-    val popupSurfaceAlpha by animateFloatAsState(
-        targetValue = if (
-            interfaceEffects.backdropBlurEnabled &&
-            (popupBackdrop == null || surfacePosition == IntOffset.Zero)
-        ) {
-            1f
-        } else {
-            interfaceEffects.compactSurfaceAlpha
-        },
-        animationSpec = tween(durationMillis = 120),
-        label = "chat_popup_surface_alpha",
-    )
+    val positionReady = surfacePosition != IntOffset.Zero
+    val backdropReady = popupBackdrop != null && positionReady
+    var opaqueFallbackLocked by remember { mutableStateOf(false) }
+    LaunchedEffect(interfaceEffects.backdropBlurEnabled, backdropReady) {
+        if (!interfaceEffects.backdropBlurEnabled) {
+            opaqueFallbackLocked = false
+        } else if (!backdropReady && !opaqueFallbackLocked) {
+            delay(CHAT_POPUP_BACKDROP_WAIT_MILLIS)
+            opaqueFallbackLocked = true
+        }
+    }
+    val useBackdrop = backdropReady && !opaqueFallbackLocked
+    val popupReady = positionReady && (
+        !interfaceEffects.backdropBlurEnabled ||
+            useBackdrop ||
+            opaqueFallbackLocked
+        )
+    val popupSurfaceAlpha = if (
+        interfaceEffects.backdropBlurEnabled &&
+        !useBackdrop
+    ) {
+        1f
+    } else {
+        interfaceEffects.compactSurfaceAlpha
+    }
+    LaunchedEffect(expanded, popupReady) {
+        when {
+            !expanded -> Unit
+            !popupReady -> popupMotion.snapTo(0f)
+            else -> popupMotion.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = DROPDOWN_ENTER_DURATION_MILLIS,
+                    easing = DropdownEnterEasing,
+                ),
+            )
+        }
+    }
     Popup(
         popupPositionProvider = positionProvider,
         onDismissRequest = onDismissRequest,
@@ -459,7 +511,26 @@ private fun ChatGlassDropdown(
             dismissOnClickOutside = true,
         ),
     ) {
-        Box(modifier = Modifier.padding(shadowGutter)) {
+        Box(
+            modifier = Modifier
+                .padding(shadowGutter)
+                .graphicsLayer {
+                    val progress = popupMotion.value
+                    val closing = !expanded
+                    val hiddenScale = if (closing) 0.98f else 0.96f
+                    val hiddenOffset = if (closing) 4.dp.toPx() else 6.dp.toPx()
+                    val scale = hiddenScale + (1f - hiddenScale) * progress
+                    alpha = if (popupReady) progress else 0f
+                    scaleX = scale
+                    scaleY = scale
+                    translationY = (if (opensAbove) 1f else -1f) *
+                        hiddenOffset * (1f - progress)
+                    transformOrigin = TransformOrigin(
+                        pivotFractionX = if (alignEnd) 1f else 0f,
+                        pivotFractionY = if (opensAbove) 1f else 0f,
+                    )
+                },
+        ) {
             Box(
                 modifier = Modifier
                     .width(width)
@@ -470,10 +541,15 @@ private fun ChatGlassDropdown(
                 Box(
                     modifier = Modifier
                         .matchParentSize()
+                        .glassRefraction(
+                            enabled = useBackdrop && interfaceEffects.glassRefractionEnabled,
+                            cornerRadius = cornerRadius,
+                        )
                         .windowBackdrop(
-                            snapshot = popupBackdrop,
+                            snapshot = if (useBackdrop) popupBackdrop else null,
                             windowPosition = surfacePosition,
                             blurRadius = if (interfaceEffects.glassMaterialEnabled) 18.dp else 15.dp,
+                            effectAlpha = interfaceEffects.backdropEffectAlpha,
                         ),
                 )
                 Box(
@@ -512,6 +588,7 @@ private fun Modifier.chatSheetContentBackdrop(): Modifier = composed {
             enabled = true,
             blurRadius = 40.dp,
             fallbackColor = MaterialTheme.colorScheme.surface,
+            effectAlpha = interfaceEffects.backdropEffectAlpha,
         )
         .background(
             MaterialTheme.colorScheme.surface.copy(
@@ -677,7 +754,8 @@ private fun Modifier.chatBackdrop(
             fallbackTint = HazeTint(Color.Transparent),
         ),
     ) {
-        blurEnabled = true
+        blurEnabled = interfaceEffects.backdropEffectAlpha > 0f
+        alpha = interfaceEffects.backdropEffectAlpha
     }
 }
 
@@ -2511,6 +2589,7 @@ private fun MasonDrawer(
                     snapshot = backdropSnapshot,
                     windowPosition = drawerWindowPosition,
                     blurRadius = if (interfaceEffects.glassMaterialEnabled) 40.dp else 32.dp,
+                    effectAlpha = interfaceEffects.backdropEffectAlpha,
                     allowZeroPosition = true,
                 )
                 .background(drawerSurface),
@@ -6123,6 +6202,7 @@ private fun InputBar(
                 cornerRadius = 18.dp,
                 role = ChatSurfaceRole.Large,
                 blur = ChatBackdropBlur.Soft,
+                refraction = true,
                 blurredAlpha = 0.80f,
                 fallbackAlpha = 0.99f,
                 borderColor = borderColor,
@@ -6332,6 +6412,7 @@ private fun RiskApprovalPill(
             shape = shape,
             cornerRadius = 12.dp,
             role = ChatSurfaceRole.Large,
+            refraction = true,
             blurredAlpha = 0.88f,
             fallbackAlpha = 0.97f,
             borderWidth = 1.dp,
@@ -6416,6 +6497,7 @@ private fun ApiAttentionPill(
             shape = shape,
             cornerRadius = 10.dp,
             role = ChatSurfaceRole.Large,
+            refraction = true,
             blurredAlpha = 0.94f,
             fallbackAlpha = 0.96f,
             borderWidth = 1.dp,
@@ -6465,6 +6547,18 @@ private fun ModelModeSwitcher(
     onSelect: (String) -> Unit,
 ) {
     val current = models.firstOrNull { it.id == currentModelId } ?: models.first()
+    val arrowRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(
+            durationMillis = if (expanded) {
+                DROPDOWN_ENTER_DURATION_MILLIS
+            } else {
+                DROPDOWN_EXIT_DURATION_MILLIS
+            },
+            easing = if (expanded) DropdownEnterEasing else DropdownExitEasing,
+        ),
+        label = "model_mode_dropdown_arrow",
+    )
 
     Box {
         Row(
@@ -6495,7 +6589,9 @@ private fun ModelModeSwitcher(
                 Icons.Outlined.KeyboardArrowDown,
                 contentDescription = "切换模型模式",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(17.dp),
+                modifier = Modifier
+                    .size(17.dp)
+                    .graphicsLayer { rotationZ = arrowRotation },
             )
         }
 

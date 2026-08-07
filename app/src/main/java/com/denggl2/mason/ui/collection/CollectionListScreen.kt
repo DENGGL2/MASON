@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -73,6 +74,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -871,35 +873,60 @@ private fun WorkbenchTabs(
     selected: CollectionKind,
     onSelect: (CollectionKind) -> Unit,
 ) {
-    Row(modifier = Modifier.fillMaxWidth()) {
-        listOf(
-            CollectionKind.ARTIFACTS,
-            CollectionKind.AUTOMATIONS,
-            CollectionKind.SKILLS,
-        ).forEach { item ->
-            val active = item == selected
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .clickable { onSelect(item) }
-                    .padding(vertical = 10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    item.title,
-                    color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 14.sp,
-                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                )
-                Spacer(Modifier.height(7.dp))
-                Box(
+    val density = LocalDensity.current
+    val tabs = listOf(
+        CollectionKind.ARTIFACTS,
+        CollectionKind.AUTOMATIONS,
+        CollectionKind.SKILLS,
+    )
+    val selectedIndex = tabs.indexOf(selected).coerceAtLeast(0)
+    val indicatorPosition by animateFloatAsState(
+        targetValue = selectedIndex.toFloat(),
+        animationSpec = tween(
+            durationMillis = 180,
+            easing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f),
+        ),
+        label = "workbench_tab_indicator",
+    )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val tabWidth = maxWidth / tabs.size
+        val tabWidthPx = with(density) { tabWidth.toPx() }
+        val indicatorInsetPx = with(density) { ((tabWidth - 34.dp) / 2).toPx() }
+        Row(modifier = Modifier.fillMaxWidth()) {
+            tabs.forEach { item ->
+                val active = item == selected
+                Column(
                     modifier = Modifier
-                        .width(34.dp)
-                        .height(2.dp)
-                        .background(if (active) MaterialTheme.colorScheme.onSurface else Color.Transparent),
-                )
+                        .weight(1f)
+                        .clickable { onSelect(item) }
+                        .padding(vertical = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        item.title,
+                        color = if (active) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        fontSize = 14.sp,
+                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                    Spacer(Modifier.height(9.dp))
+                }
             }
         }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .offset(y = (-10).dp)
+                .width(34.dp)
+                .height(2.dp)
+                .graphicsLayer {
+                    translationX = tabWidthPx * indicatorPosition + indicatorInsetPx
+                }
+                .background(MaterialTheme.colorScheme.onSurface),
+        )
     }
 }
 

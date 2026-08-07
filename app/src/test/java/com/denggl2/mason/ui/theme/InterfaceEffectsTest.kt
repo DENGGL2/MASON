@@ -15,6 +15,7 @@ class InterfaceEffectsTest {
         assertFalse(effects.backdropBlurEnabled)
         assertFalse(effects.progressiveEdgeBlurEnabled)
         assertFalse(effects.glassRefractionEnabled)
+        assertEquals(0f, effects.backdropEffectAlpha)
         assertEquals(1f, effects.compactSurfaceAlpha)
     }
 
@@ -27,6 +28,7 @@ class InterfaceEffectsTest {
         assertTrue(effects.progressiveEdgeBlurEnabled)
         assertTrue(effects.glassMaterialEnabled)
         assertFalse(effects.glassRefractionEnabled)
+        assertEquals(1f, effects.backdropEffectAlpha, 0.0001f)
         assertEquals(0.42f, effects.compactSurfaceAlpha, 0.0001f)
         assertEquals(0.72f, effects.largeSurfaceAlpha, 0.0001f)
     }
@@ -47,9 +49,25 @@ class InterfaceEffectsTest {
         )
 
         assertEquals(0.25f, clear.compactSurfaceAlpha, 0.0001f)
-        assertEquals(0.55f, clear.largeSurfaceAlpha, 0.0001f)
+        assertEquals(0.42857143f, clear.largeSurfaceAlpha, 0.0001f)
+        assertEquals(0.5952381f, clear.backdropEffectAlpha, 0.0001f)
         assertEquals(1f, opaque.compactSurfaceAlpha, 0.0001f)
         assertEquals(1f, opaque.largeSurfaceAlpha, 0.0001f)
+        assertEquals(1f, opaque.backdropEffectAlpha, 0.0001f)
+    }
+
+    @Test
+    fun `fully transparent glass removes both surface and backdrop blur`() {
+        val effects = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = true,
+            requestedGlassTransparency = 1f,
+            sdkInt = 33,
+        )
+
+        assertEquals(0f, effects.compactSurfaceAlpha, 0.0001f)
+        assertEquals(0f, effects.largeSurfaceAlpha, 0.0001f)
+        assertEquals(0f, effects.backdropEffectAlpha, 0.0001f)
     }
 
     @Test
@@ -72,6 +90,7 @@ class InterfaceEffectsTest {
         assertFalse(effects.progressiveEdgeBlurEnabled)
         assertFalse(effects.glassMaterialEnabled)
         assertFalse(effects.glassRefractionEnabled)
+        assertEquals(0f, effects.backdropEffectAlpha)
         assertEquals(1f, effects.largeSurfaceAlpha)
     }
 
@@ -83,6 +102,7 @@ class InterfaceEffectsTest {
         assertTrue(effects.progressiveEdgeBlurEnabled)
         assertFalse(effects.glassMaterialEnabled)
         assertFalse(effects.glassRefractionEnabled)
+        assertEquals(1f, effects.backdropEffectAlpha)
         assertEquals(0.80f, effects.compactSurfaceAlpha)
         assertEquals(0.80f, effects.largeSurfaceAlpha)
     }
