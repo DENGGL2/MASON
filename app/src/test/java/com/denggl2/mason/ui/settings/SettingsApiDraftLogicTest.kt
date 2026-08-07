@@ -134,7 +134,7 @@ class SettingsApiDraftLogicTest {
                 requiresApiKey = true,
             ),
         )
-        assertTrue(
+        assertFalse(
             shouldConfirmRemoteModelSheetDismiss(
                 mode = RemoteModelSheetMode.Testing,
                 apiUrl = "https://relay.example/v1",
@@ -340,6 +340,39 @@ class SettingsApiDraftLogicTest {
     }
 
     @Test
+    fun testingAnotherModelDoesNotPutTheCurrentSheetInTestingMode() {
+        val modelA = ApiConnection(
+            id = "model-a-connection",
+            providerId = "custom",
+            name = "Remote",
+            apiUrl = "https://relay-a.example/v1",
+            apiKey = "a-key",
+            modelIds = listOf("model-a"),
+        )
+        val modelB = ApiConnection(
+            id = "model-b-connection",
+            providerId = "custom",
+            name = "Remote",
+            apiUrl = "https://relay-b.example/v1",
+            apiKey = "b-key",
+            modelIds = listOf("model-b"),
+        )
+
+        assertEquals(
+            RemoteModelSheetMode.Draft,
+            remoteModelSheetMode(
+                draft = modelA,
+                savedConnection = modelA,
+                editingModelId = "model-a",
+                testState = ApiTestUiState(
+                    isTesting = true,
+                    targetConnection = modelB,
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun backgroundTestingKeepsAnUnsavedModelVisibleInSettings() {
         val pending = ApiConnection(
             id = "pending",
@@ -405,6 +438,82 @@ class SettingsApiDraftLogicTest {
                     isTesting = true,
                     targetConnection = target,
                     replacingModelId = null,
+                    activeModelId = "model-a",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun backgroundTestForModelADoesNotDisableModelBEditor() {
+        val target = ApiConnection(
+            id = "custom",
+            providerId = "custom",
+            name = "Remote",
+            apiUrl = "https://example.invalid/v1",
+            apiKey = "key",
+            modelIds = listOf("model-a", "model-b"),
+        )
+        val testingA = ApiTestUiState(
+            isTesting = true,
+            targetConnection = target,
+            activeModelId = "model-a",
+        )
+
+        assertEquals(
+            RemoteModelSheetMode.Draft,
+            remoteModelSheetMode(
+                draft = target.copy(modelIds = listOf("model-b")),
+                savedConnection = target,
+                editingModelId = "model-b",
+                testState = testingA,
+            ),
+        )
+        assertEquals("待测试能力", remoteModelTestStatus(target, "model-b", testingA))
+        assertEquals("测试中", remoteModelTestStatus(target, "model-a", testingA))
+    }
+
+    @Test
+    fun addingRemoteModelKeepsSheetAttachedToItsBackgroundTest() {
+        val target = ApiConnection(
+            id = "custom",
+            providerId = "custom",
+            name = "远端模型",
+            apiUrl = "https://example.invalid/v1",
+            apiKey = "key",
+            modelIds = listOf("model-a"),
+        )
+
+        assertTrue(
+            testStateTargetsRemoteModelEditor(
+                target = target,
+                editingModelId = null,
+                replacingModelId = null,
+            ),
+        )
+        assertEquals(
+            RemoteModelSheetMode.Testing,
+            remoteModelSheetMode(
+                draft = target,
+                savedConnection = null,
+                editingModelId = null,
+                testState = ApiTestUiState(
+                    isTesting = true,
+                    targetConnection = target,
+                ),
+            ),
+        )
+        assertEquals(
+            RemoteModelSheetMode.Verified,
+            remoteModelSheetMode(
+                draft = target,
+                savedConnection = null,
+                editingModelId = null,
+                testState = ApiTestUiState(
+                    success = true,
+                    saved = true,
+                    targetConnection = target,
+                    testedConnection = target,
                 ),
             ),
         )
@@ -516,6 +625,33 @@ class SettingsApiDraftLogicTest {
         assertTrue(updated.connections.isEmpty())
         assertEquals(null, updated.chatModelRef)
         assertEquals(null, updated.imageModelRef)
+    }
+
+    @Test
+    fun deletingSoleLegacyChatModelClearsTopLevelFallbackFields() {
+        val connection = ApiConnection(
+            id = "custom:model",
+            providerId = "custom",
+            name = "Remote",
+            apiUrl = "https://relay.example/v1",
+            apiKey = "key",
+            modelIds = listOf("model-a"),
+        )
+        val config = ApiConfig(
+            providerId = "custom",
+            apiUrl = connection.apiUrl,
+            apiKey = connection.apiKey,
+            model = "model-a",
+            connections = listOf(connection),
+        )
+
+        val updated = removeRemoteModel(config, connection.id, "model-a")
+
+        assertTrue(updated.connections.isEmpty())
+        assertEquals("", updated.providerId)
+        assertEquals("", updated.apiUrl)
+        assertEquals("", updated.apiKey)
+        assertEquals("", updated.model)
     }
 
     @Test

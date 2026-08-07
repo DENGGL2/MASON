@@ -113,6 +113,11 @@ import com.denggl2.mason.data.MasonAutomationAction
 import com.denggl2.mason.data.MasonAutomationCondition
 import com.denggl2.mason.data.MasonAutomationTrigger
 import com.denggl2.mason.automation.AutomationWorkflowLogic
+import com.denggl2.mason.ui.theme.LocalInterfaceEffects
+import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
+import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
+import com.denggl2.mason.ui.theme.progressiveEdgeBlur
+import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -210,6 +215,9 @@ fun CollectionListScreen(
         targetValue = if (collectionListState.canScrollForward) 1f else 0f,
         animationSpec = tween(durationMillis = 180),
         label = "workbench_bottom_fade",
+    )
+    val collectionEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
     )
     val scope = rememberCoroutineScope()
     val localSkillArchivePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -412,10 +420,15 @@ fun CollectionListScreen(
                     }
                     else -> {
                         val fadeSurface = MaterialTheme.colorScheme.background
+                        val fadeOverlay = fadeSurface.copy(
+                            alpha = if (LocalInterfaceEffects.current.glassMaterialEnabled) 0.10f else 1f,
+                        )
                         Box(modifier = Modifier.fillMaxSize()) {
                             LazyColumn(
                                 state = collectionListState,
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .captureProgressiveEdgeBlur(collectionEdgeBlurState),
                                 contentPadding = androidx.compose.foundation.layout.PaddingValues(
                                     top = 4.dp,
                                     bottom = 10.dp,
@@ -486,11 +499,16 @@ fun CollectionListScreen(
                                         alpha = progress
                                         translationY = -30.dp.toPx() * (1f - progress)
                                     }
+                                    .progressiveEdgeBlur(
+                                        state = collectionEdgeBlurState,
+                                        edge = ProgressiveBlurEdge.Top,
+                                        backgroundColor = fadeSurface,
+                                    )
                                     .background(
                                         Brush.verticalGradient(
                                             colors = listOf(
-                                                fadeSurface,
-                                                fadeSurface.copy(alpha = 0.72f),
+                                                fadeOverlay,
+                                                fadeOverlay.copy(alpha = fadeOverlay.alpha * 0.72f),
                                                 Color.Transparent,
                                             ),
                                         ),
@@ -502,12 +520,17 @@ fun CollectionListScreen(
                                     .fillMaxWidth()
                                     .height(34.dp)
                                     .graphicsLayer { alpha = bottomFadeProgress }
+                                    .progressiveEdgeBlur(
+                                        state = collectionEdgeBlurState,
+                                        edge = ProgressiveBlurEdge.Bottom,
+                                        backgroundColor = fadeSurface,
+                                    )
                                     .background(
                                         Brush.verticalGradient(
                                             colors = listOf(
                                                 Color.Transparent,
-                                                fadeSurface.copy(alpha = 0.72f),
-                                                fadeSurface,
+                                                fadeOverlay.copy(alpha = fadeOverlay.alpha * 0.72f),
+                                                fadeOverlay,
                                             ),
                                         ),
                                     ),
@@ -1507,6 +1530,9 @@ private fun AutomationLogsDialog(
         animationSpec = tween(durationMillis = 180),
         label = "automation_log_bottom_fade",
     )
+    val logEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("$title · 运行日志") },
@@ -1515,10 +1541,15 @@ private fun AutomationLogsDialog(
                 Text("暂无运行记录")
             } else {
                 val fadeSurface = MaterialTheme.colorScheme.surface
+                val fadeOverlay = fadeSurface.copy(
+                    alpha = if (LocalInterfaceEffects.current.glassMaterialEnabled) 0.10f else 1f,
+                )
                 Box(modifier = Modifier.height(260.dp)) {
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .captureProgressiveEdgeBlur(logEdgeBlurState),
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(
                             top = 4.dp,
                             bottom = 10.dp,
@@ -1580,11 +1611,16 @@ private fun AutomationLogsDialog(
                                 alpha = progress
                                 translationY = -24.dp.toPx() * (1f - progress)
                             }
+                            .progressiveEdgeBlur(
+                                state = logEdgeBlurState,
+                                edge = ProgressiveBlurEdge.Top,
+                                backgroundColor = fadeSurface,
+                            )
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        fadeSurface,
-                                        fadeSurface.copy(alpha = 0.72f),
+                                        fadeOverlay,
+                                        fadeOverlay.copy(alpha = fadeOverlay.alpha * 0.72f),
                                         Color.Transparent,
                                     ),
                                 ),
@@ -1596,12 +1632,17 @@ private fun AutomationLogsDialog(
                             .fillMaxWidth()
                             .height(28.dp)
                             .graphicsLayer { alpha = bottomFadeProgress }
+                            .progressiveEdgeBlur(
+                                state = logEdgeBlurState,
+                                edge = ProgressiveBlurEdge.Bottom,
+                                backgroundColor = fadeSurface,
+                            )
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
                                         Color.Transparent,
-                                        fadeSurface.copy(alpha = 0.72f),
-                                        fadeSurface,
+                                        fadeOverlay.copy(alpha = fadeOverlay.alpha * 0.72f),
+                                        fadeOverlay,
                                     ),
                                 ),
                             ),

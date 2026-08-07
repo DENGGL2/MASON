@@ -1,13 +1,26 @@
 package com.denggl2.mason.ui.theme
 
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import com.denggl2.mason.data.InterfaceStyle
 import com.denggl2.mason.data.ThemeMode
 import kotlin.math.pow
+
+val LocalInterfaceStyle = staticCompositionLocalOf { InterfaceStyle.ACRYLIC }
+val LocalInterfaceEffects = staticCompositionLocalOf {
+    resolveInterfaceEffects(
+        requestedStyle = InterfaceStyle.ACRYLIC,
+        requestedGlassRefraction = false,
+        sdkInt = Build.VERSION.SDK_INT,
+    )
+}
 
 private fun contentColorFor(background: Color): Color {
     fun linear(channel: Float): Double {
@@ -67,6 +80,8 @@ private fun lightMasonColorScheme(accentColor: Color) = lightColorScheme(
 fun MasonTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     accentColor: Color = MasonAccent,
+    interfaceStyle: InterfaceStyle = InterfaceStyle.ACRYLIC,
+    glassRefractionEnabled: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val darkTheme = when (themeMode) {
@@ -75,12 +90,22 @@ fun MasonTheme(
         ThemeMode.DARK -> true
     }
 
-    MaterialTheme(
-        colorScheme = if (darkTheme) {
-            darkMasonColorScheme(accentColor)
-        } else {
-            lightMasonColorScheme(accentColor)
-        },
-        content = content,
+    val interfaceEffects = resolveInterfaceEffects(
+        requestedStyle = interfaceStyle,
+        requestedGlassRefraction = glassRefractionEnabled,
+        sdkInt = Build.VERSION.SDK_INT,
     )
+    CompositionLocalProvider(
+        LocalInterfaceStyle provides interfaceStyle,
+        LocalInterfaceEffects provides interfaceEffects,
+    ) {
+        MaterialTheme(
+            colorScheme = if (darkTheme) {
+                darkMasonColorScheme(accentColor)
+            } else {
+                lightMasonColorScheme(accentColor)
+            },
+            content = content,
+        )
+    }
 }

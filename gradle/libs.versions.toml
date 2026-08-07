@@ -27,6 +27,7 @@ camerax = "1.4.2"
 mlkitBarcode = "17.3.0"
 zxing = "3.5.3"
 pdfboxAndroid = "2.0.27.0"
+haze = "1.1.1"
 
 [libraries]
 # AndroidX Core
@@ -72,6 +73,7 @@ mlkit-barcode-scanning = { module = "com.google.mlkit:barcode-scanning", version
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 zxing-javase = { module = "com.google.zxing:javase", version.ref = "zxing" }
 pdfbox-android = { module = "com.tom-roush:pdfbox-android", version.ref = "pdfboxAndroid" }
+haze = { module = "dev.chrisbanes.haze:haze", version.ref = "haze" }
 
 # Windows native integration
 jna-platform = { module = "net.java.dev.jna:jna-platform", version.ref = "jna" }

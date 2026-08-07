@@ -21,15 +21,12 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -40,10 +37,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -57,7 +57,6 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Info
@@ -68,10 +67,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -91,6 +88,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -99,36 +97,58 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.semantics.ProgressBarRangeInfo
-import androidx.compose.ui.semantics.progressBarRangeInfo
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -137,6 +157,8 @@ import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.AiProviderKind
 import com.denggl2.mason.data.AiProviderPreset
 import com.denggl2.mason.data.ApiConfig
+import com.denggl2.mason.data.connectionIdForEndpoint
+import com.denggl2.mason.data.connectionIdForModel
 import com.denggl2.mason.data.ApiConnection
 import com.denggl2.mason.data.ApiModelCapabilities
 import com.denggl2.mason.data.ModelReference
@@ -172,6 +194,16 @@ import com.denggl2.mason.data.UserMemoryType
 import com.denggl2.mason.data.toComposeColor
 import com.denggl2.mason.sync.remote.PairedConnector
 import com.denggl2.mason.tool.shouldRequestPostNotificationPermission
+import com.denggl2.mason.ui.theme.LocalInterfaceEffects
+import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
+import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
+import com.denggl2.mason.ui.theme.glassRefraction
+import com.denggl2.mason.ui.theme.progressiveEdgeBlur
+import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
+import com.denggl2.mason.ui.theme.rememberWindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.windowBackdrop
+import com.denggl2.mason.ui.theme.windowBackdropMaterial
+import dev.chrisbanes.haze.HazeState
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -231,15 +263,214 @@ private data class PendingRemoteModelDelete(
 )
 
 private const val LOCAL_PROVIDER_ID = "local"
-private const val LIQUID_GLASS_STYLE_VISIBLE = false
-private const val INTERFACE_STYLE_SETTING_VISIBLE = false
+private const val INTERFACE_STYLE_SETTING_VISIBLE = true
 private const val ACCENT_COLOR_SETTING_VISIBLE = false
 private val settingsSheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
 
-private fun Modifier.settingsSheetEdgeFade(
-    scrollState: ScrollState,
-    surfaceColor: Color,
+private fun Modifier.settingsSheetContentBackdrop(): Modifier = composed {
+    val interfaceEffects = LocalInterfaceEffects.current
+    if (!interfaceEffects.backdropBlurEnabled) {
+        return@composed this
+    }
+    this
+        .windowBackdropMaterial(
+            enabled = true,
+            blurRadius = 40.dp,
+            fallbackColor = MaterialTheme.colorScheme.surface,
+        )
+        .background(
+            MaterialTheme.colorScheme.surface.copy(
+                alpha = interfaceEffects.largeSurfaceAlpha,
+            ),
+        )
+}
+
+@Composable
+private fun settingsSheetSurfaceColor(): Color = MaterialTheme.colorScheme.surface.copy(
+    alpha = if (LocalInterfaceEffects.current.backdropBlurEnabled) 0f else 1f,
+)
+private val settingsGlassOutline = Color(0xFFBABFCC)
+private val settingsGlassShadowColor = settingsGlassOutline.copy(alpha = 0.30f)
+private val settingsGlassShadowBlur = 20.dp
+
+private fun Modifier.settingsGlassShadow(
+    cornerRadius: Dp,
+    blurRadius: Dp = settingsGlassShadowBlur,
 ): Modifier = composed {
+    val graphicsContext = LocalGraphicsContext.current
+    val density = LocalDensity.current
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        return@composed drawBehind {
+            val blurPx = blurRadius.toPx()
+            val cornerPx = cornerRadius.toPx()
+            val shadowMask = Path().apply {
+                addRoundRect(
+                    RoundRect(
+                        Rect(Offset.Zero, size),
+                        CornerRadius(cornerPx, cornerPx),
+                    ),
+                )
+            }
+            val layers = 12
+            clipPath(shadowMask, clipOp = ClipOp.Difference) {
+                for (layer in layers downTo 1) {
+                    val spread = blurPx * layer / layers
+                    drawRoundRect(
+                        color = settingsGlassShadowColor.copy(alpha = 0.012f),
+                        topLeft = Offset(-spread, -spread),
+                        size = Size(size.width + spread * 2f, size.height + spread * 2f),
+                        cornerRadius = CornerRadius(cornerPx + spread),
+                    )
+                }
+            }
+        }
+    }
+    val shadowLayer = remember(graphicsContext, density.density, cornerRadius, blurRadius) {
+        graphicsContext.createGraphicsLayer().also { layer ->
+            // Figma's shadow blur is a diameter-like value; RenderEffect expects sigma.
+            val blurSigmaPx = with(density) { blurRadius.toPx() } * 0.5f
+            layer.renderEffect = BlurEffect(
+                radiusX = blurSigmaPx,
+                radiusY = blurSigmaPx,
+                edgeTreatment = TileMode.Decal,
+            )
+        }
+    }
+    DisposableEffect(graphicsContext, shadowLayer) {
+        onDispose { graphicsContext.releaseGraphicsLayer(shadowLayer) }
+    }
+    drawWithContent {
+        val blurPx = blurRadius.toPx()
+        val cornerPx = cornerRadius.toPx()
+        val contentSize = size
+        val paddingPx = blurPx
+        val layerSize = IntSize(
+            width = (contentSize.width + paddingPx * 2f).toInt().coerceAtLeast(1),
+            height = (contentSize.height + paddingPx * 2f).toInt().coerceAtLeast(1),
+        )
+        shadowLayer.record(layerSize) {
+            drawRoundRect(
+                color = settingsGlassShadowColor,
+                topLeft = Offset(paddingPx, paddingPx),
+                size = contentSize,
+                cornerRadius = CornerRadius(cornerPx),
+            )
+        }
+        val shadowMask = Path().apply {
+            addRoundRect(
+                RoundRect(
+                    Rect(Offset.Zero, contentSize),
+                    CornerRadius(cornerPx, cornerPx),
+                ),
+            )
+        }
+        clipPath(shadowMask, clipOp = ClipOp.Difference) {
+            translate(left = -paddingPx, top = -paddingPx) {
+                drawLayer(shadowLayer)
+            }
+        }
+        drawContent()
+    }
+}
+
+private class SettingsBackdropState(
+    val sourceLayer: GraphicsLayer,
+    val blurredLayer: GraphicsLayer,
+) {
+    var sourcePosition by mutableStateOf(Offset.Zero)
+    var sourceSize = IntSize.Zero
+    @Volatile var capturing: Boolean = false
+}
+
+private val LocalSettingsBackdropState = staticCompositionLocalOf<SettingsBackdropState?> { null }
+
+@Composable
+private fun rememberSettingsBackdropState(enabled: Boolean): SettingsBackdropState? {
+    if (!enabled || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+    val graphicsContext = LocalGraphicsContext.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val state = remember(graphicsContext, density.density) {
+        SettingsBackdropState(
+            sourceLayer = graphicsContext.createGraphicsLayer(),
+            blurredLayer = graphicsContext.createGraphicsLayer().also {
+                it.renderEffect = BlurEffect(
+                    radiusX = with(density) { 15.dp.toPx() },
+                    radiusY = with(density) { 15.dp.toPx() },
+                    edgeTreatment = TileMode.Clamp,
+                )
+            },
+        )
+    }
+    DisposableEffect(graphicsContext, state) {
+        onDispose {
+            graphicsContext.releaseGraphicsLayer(state.sourceLayer)
+            graphicsContext.releaseGraphicsLayer(state.blurredLayer)
+        }
+    }
+    return state
+}
+
+private fun Modifier.captureSettingsBackdrop(state: SettingsBackdropState?): Modifier {
+    if (state == null) return this
+    return this
+        .onGloballyPositioned { coordinates ->
+            state.sourcePosition = coordinates.positionInRoot()
+        }
+        .drawWithContent {
+            state.capturing = true
+            try {
+                val layerSize = IntSize(
+                    width = size.width.toInt().coerceAtLeast(1),
+                    height = size.height.toInt().coerceAtLeast(1),
+                )
+                state.sourceSize = layerSize
+                state.sourceLayer.record(layerSize) {
+                    this@drawWithContent.drawContent()
+                }
+                state.blurredLayer.record(layerSize) {
+                    drawLayer(state.sourceLayer)
+                }
+            } finally {
+                state.capturing = false
+            }
+            drawLayer(state.sourceLayer)
+        }
+}
+
+private fun Modifier.settingsBackdrop(positionOverride: IntOffset? = null): Modifier = composed {
+    val state = LocalSettingsBackdropState.current ?: return@composed this
+    var position by remember { mutableStateOf(Offset.Zero) }
+    onGloballyPositioned { coordinates ->
+        if (positionOverride == null) {
+            position = coordinates.positionInRoot()
+        }
+    }.drawWithContent {
+        if (state.capturing) {
+            // The popup is excluded from the source snapshot, preventing
+            // recursive blur and ensuring only the page behind it is sampled.
+            return@drawWithContent
+        }
+        val overlayPosition = positionOverride?.let { Offset(it.x.toFloat(), it.y.toFloat()) } ?: position
+        val relativePosition = overlayPosition - state.sourcePosition
+        if (state.sourceSize == IntSize.Zero) {
+            drawContent()
+            return@drawWithContent
+        }
+        clipRect {
+            translate(left = -relativePosition.x, top = -relativePosition.y) {
+                drawLayer(state.blurredLayer)
+            }
+        }
+        drawContent()
+    }
+}
+
+@Composable
+private fun BoxScope.SettingsSheetEdgeFades(
+    scrollState: ScrollState,
+    blurState: HazeState?,
+    surfaceColor: Color,
+) {
     val topAlpha by animateFloatAsState(
         targetValue = if (scrollState.canScrollBackward) 1f else 0f,
         animationSpec = tween(180),
@@ -250,50 +481,63 @@ private fun Modifier.settingsSheetEdgeFade(
         animationSpec = tween(180),
         label = "settings_sheet_bottom_fade",
     )
-    drawWithContent {
-        drawContent()
-        val fadeHeight = 48.dp.toPx()
-        val fadeSurface = surfaceColor.copy(alpha = 0.995f)
-        if (topAlpha > 0f) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to fadeSurface,
-                        0.32f to fadeSurface.copy(alpha = 0.82f),
-                        0.70f to fadeSurface.copy(alpha = 0.28f),
-                        1f to Color.Transparent,
+    val fadeSurface = surfaceColor.copy(
+        alpha = if (LocalInterfaceEffects.current.glassMaterialEnabled) 0.10f else 0.995f,
+    )
+    if (topAlpha > 0f) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(48.dp)
+                .graphicsLayer { alpha = topAlpha }
+                .progressiveEdgeBlur(
+                    state = blurState,
+                    edge = ProgressiveBlurEdge.Top,
+                    backgroundColor = surfaceColor,
+                )
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0f to fadeSurface,
+                            0.32f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.82f),
+                            0.70f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.28f),
+                            1f to Color.Transparent,
+                        ),
                     ),
-                    startY = 0f,
-                    endY = fadeHeight,
                 ),
-                size = Size(size.width, fadeHeight),
-                alpha = topAlpha,
-            )
-        }
-        if (bottomAlpha > 0f) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to Color.Transparent,
-                        0.30f to fadeSurface.copy(alpha = 0.28f),
-                        0.68f to fadeSurface.copy(alpha = 0.82f),
-                        1f to fadeSurface,
+        )
+    }
+    if (bottomAlpha > 0f) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(48.dp)
+                .graphicsLayer { alpha = bottomAlpha }
+                .progressiveEdgeBlur(
+                    state = blurState,
+                    edge = ProgressiveBlurEdge.Bottom,
+                    backgroundColor = surfaceColor,
+                )
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0f to Color.Transparent,
+                            0.30f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.28f),
+                            0.68f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.82f),
+                            1f to fadeSurface,
+                        ),
                     ),
-                    startY = size.height - fadeHeight,
-                    endY = size.height,
                 ),
-                topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - fadeHeight),
-                size = Size(size.width, fadeHeight),
-                alpha = bottomAlpha,
-            )
-        }
+        )
     }
 }
 
 @Composable
-private fun SettingsSheetDragHandle() {
+private fun SettingsSheetDragHandle(modifier: Modifier = Modifier) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .padding(top = 10.dp, bottom = 8.dp)
             .size(width = 38.dp, height = 4.dp)
             .clip(CircleShape)
@@ -331,7 +575,7 @@ fun SettingsScreen(
     uiPreferences: UiPreferences = UiPreferences(),
     onThemeModeChange: (ThemeMode) -> Unit = {},
     onInterfaceStyleChange: (InterfaceStyle) -> Unit = {},
-    onLiquidGlassTransparencyChange: (Float) -> Unit = {},
+    onGlassRefractionChange: (Boolean) -> Unit = {},
     onAccentColorChange: (Long) -> Unit = {},
     onRegularNotificationsChange: (Boolean) -> Unit = {},
     onIslandNotificationsChange: (Boolean) -> Unit = {},
@@ -577,6 +821,9 @@ fun SettingsScreen(
 
     BackHandler(onBack = ::navigateBack)
 
+    // Popup blur uses PixelCopy; the legacy full-page capture currently has no consumer.
+    val settingsBackdropState: SettingsBackdropState? = null
+
     LaunchedEffect(providerId, modelRefreshState.models) {
         if (providerId == "openrouter" && modelRefreshState.models.isNotEmpty()) {
             val currentStillExists = modelRefreshState.models.any { it.id == model }
@@ -610,9 +857,7 @@ fun SettingsScreen(
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets.safeDrawing.only(
-            WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal,
-        ),
+        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
         topBar = {
             TopAppBar(
                 title = {
@@ -655,7 +900,9 @@ fun SettingsScreen(
             )
         },
     ) { padding ->
+        CompositionLocalProvider(LocalSettingsBackdropState provides settingsBackdropState) {
         AnimatedContent(
+            modifier = Modifier.captureSettingsBackdrop(settingsBackdropState),
             targetState = page,
             transitionSpec = {
                 val movingForward = settingsPageDepth(targetState) > settingsPageDepth(initialState)
@@ -692,7 +939,8 @@ fun SettingsScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
+                    .padding(padding)
+                    .navigationBarsPadding(),
                 contentAlignment = Alignment.TopCenter,
             ) {
                 Column(
@@ -707,12 +955,12 @@ fun SettingsScreen(
                 AppearanceSettingsContent(
                     selectedMode = uiPreferences.themeMode,
                     selectedStyle = uiPreferences.interfaceStyle,
-                    liquidGlassTransparency = uiPreferences.liquidGlassTransparency,
+                    glassRefractionEnabled = uiPreferences.glassRefractionEnabled,
                     selectedColor = uiPreferences.accentColor,
                     selectedFontSize = uiPreferences.fontSize,
                     onModeChange = onThemeModeChange,
                     onStyleChange = onInterfaceStyleChange,
-                    onLiquidGlassTransparencyChange = onLiquidGlassTransparencyChange,
+                    onGlassRefractionChange = onGlassRefractionChange,
                     onAccentColorChange = onAccentColorChange,
                     onFontSizeChange = onFontSizeChange,
                 )
@@ -1237,6 +1485,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(18.dp))
                 }
             }
+        }
         }
     }
 
@@ -1968,7 +2217,12 @@ internal fun remoteModelTestStatus(
         target.id == connection.id && modelId in target.modelIds
     } == true
     if (targetsModel) {
-        if (state.isTesting) return "测试中"
+        if (state.isTesting && state.activeModelId != null && state.activeModelId != modelId) {
+            // A connection test can contain several IDs, but only the active
+            // one should be shown as running.
+        } else {
+            if (state.isTesting) return "测试中"
+        }
         connection.modelTestErrors[modelId]
             ?.let { return remoteModelTestFailureStatus(it) }
         val testedCapabilities = state.testedConnection?.modelCapabilities?.get(modelId)
@@ -2039,10 +2293,16 @@ private fun RemoteModelConfigurationSheet(
         ?: AiProviderCatalog.defaultProvider
     val editorKey = "$initialConnectionId::$initialProviderId::$initialModelId"
     val formScrollState = remember(editorKey) { ScrollState(0) }
+    val formEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
     val editingExistingModel = initialModelId != null
     val savedConnection = if (editingExistingModel) {
         initialConnectionId?.let(config::connection)
-            ?: config.connectionForProvider(initialProviderId)
+            ?: config.resolvedConnections().firstOrNull { connection ->
+                connection.providerId == initialProviderId &&
+                    initialModelId in connection.modelIds
+            }
     } else {
         null
     }
@@ -2058,14 +2318,21 @@ private fun RemoteModelConfigurationSheet(
     val quickModelIds = config.resolvedConnections()
         .flatMap(ApiConnection::modelIds)
         .distinct()
-    var apiUrl by remember(editorKey) { mutableStateOf("") }
-    var apiKey by remember(editorKey) { mutableStateOf("") }
-    var workspaceId by remember(editorKey) { mutableStateOf("") }
-    var modelIdDrafts by remember(editorKey) { mutableStateOf(listOf("")) }
+    val initialApiUrl = draftSourceConnection?.apiUrl?.takeIf(String::isNotBlank)
+        ?: selectedProvider.apiUrl.takeUnless { selectedProvider.id == AiProviderCatalog.CUSTOM_PROVIDER_ID }
+            .orEmpty()
+    val initialApiKey = draftSourceConnection?.apiKey.orEmpty()
+    val initialWorkspaceId = draftSourceConnection?.workspaceId.orEmpty()
+    val initialModelIds = normalizeRemoteModelIds(initialRemoteModelIdDrafts(initialModelId))
+    var apiUrl by remember(editorKey) { mutableStateOf(initialApiUrl) }
+    var apiKey by remember(editorKey) { mutableStateOf(initialApiKey) }
+    var workspaceId by remember(editorKey) { mutableStateOf(initialWorkspaceId) }
+    var modelIdDrafts by remember(editorKey) { mutableStateOf(initialModelIds) }
     var pendingModelIdDeleteIndex by remember(editorKey) { mutableStateOf<Int?>(null) }
     var confirmDiscard by remember(editorKey) { mutableStateOf(false) }
     var confirmCancelTest by remember(editorKey) { mutableStateOf(false) }
     var keyVisible by remember { mutableStateOf(false) }
+    var sheetReady by remember(editorKey) { mutableStateOf(false) }
 
     LaunchedEffect(editorKey) {
         apiUrl = draftSourceConnection?.apiUrl?.takeIf(String::isNotBlank)
@@ -2078,15 +2345,14 @@ private fun RemoteModelConfigurationSheet(
         confirmDiscard = false
         confirmCancelTest = false
         keyVisible = false
+        sheetReady = false
+        // ModalBottomSheet can report its initial hidden anchor as a dismiss
+        // during the first composition. Ignore that transient callback.
+        withFrameNanos { }
+        withFrameNanos { sheetReady = true }
     }
 
     val draftModelIds = normalizeRemoteModelIds(modelIdDrafts)
-    val initialApiUrl = draftSourceConnection?.apiUrl?.takeIf(String::isNotBlank)
-        ?: selectedProvider.apiUrl.takeUnless { selectedProvider.id == AiProviderCatalog.CUSTOM_PROVIDER_ID }
-            .orEmpty()
-    val initialApiKey = draftSourceConnection?.apiKey.orEmpty()
-    val initialWorkspaceId = draftSourceConnection?.workspaceId.orEmpty()
-    val initialModelIds = normalizeRemoteModelIds(initialRemoteModelIdDrafts(initialModelId))
     val hasDraftChanges = apiUrl.trim().trimEnd('/') != initialApiUrl.trim().trimEnd('/') ||
         apiKey.trim() != initialApiKey.trim() ||
         workspaceId.trim() != initialWorkspaceId.trim() ||
@@ -2096,7 +2362,11 @@ private fun RemoteModelConfigurationSheet(
     val draftConnection = ApiConnection(
         id = savedConnection?.id
             ?: initialConnectionId
-            ?: connectionIdForProvider(selectedProvider.id),
+            ?: connectionIdForModel(
+                selectedProvider.id,
+                apiUrl,
+                draftModelIds.firstOrNull().orEmpty(),
+            ),
         providerId = selectedProvider.id,
         name = savedConnection?.name ?: selectedProvider.name,
         apiUrl = apiUrl.trim(),
@@ -2111,9 +2381,12 @@ private fun RemoteModelConfigurationSheet(
             editingModelId = initialModelId,
             replacingModelId = apiTestState.replacingModelId,
         ) &&
-            (apiTestState.replacingModelId == initialModelId ||
-                (apiTestState.replacingModelId == null &&
-                    initialModelId != null && initialModelId in target.modelIds))
+            testStateTargetsRemoteModelEditor(
+                target = target,
+                editingModelId = initialModelId,
+                replacingModelId = apiTestState.replacingModelId,
+                activeModelId = apiTestState.activeModelId,
+            )
     } == true
     val isTestingDraft = testTargetsDraft && apiTestState.isTesting
     val testedConnection = apiTestState.testedConnection.takeIf { testTargetsDraft }
@@ -2144,11 +2417,7 @@ private fun RemoteModelConfigurationSheet(
                 shouldConfirmDismiss = currentShouldConfirmDismiss,
             )
             if (!allowTransition) {
-                if (editorMode == RemoteModelSheetMode.Testing) {
-                    confirmCancelTest = true
-                } else {
-                    confirmDiscard = true
-                }
+                confirmDiscard = true
             }
             allowTransition
         },
@@ -2163,15 +2432,15 @@ private fun RemoteModelConfigurationSheet(
         confirmDiscard = true
         keepSheetVisible()
     }
-    val showCancelTestConfirmation = {
-        confirmCancelTest = true
-        keepSheetVisible()
-    }
     val requestDismiss = {
-        when {
-            editorMode == RemoteModelSheetMode.Testing -> showCancelTestConfirmation()
-            currentShouldConfirmDismiss -> showDiscardConfirmation()
-            else -> onDismiss()
+        if (!sheetReady) {
+            keepSheetVisible()
+        } else if (currentShouldConfirmDismiss) {
+            showDiscardConfirmation()
+        } else {
+            // Closing the sheet is only a view change. A running API test belongs
+            // to the ViewModel/runtime and must continue in the background.
+            onDismiss()
         }
     }
 
@@ -2186,31 +2455,31 @@ private fun RemoteModelConfigurationSheet(
         onDismissRequest = requestDismiss,
         sheetState = sheetState,
         shape = settingsSheetShape,
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        containerColor = settingsSheetSurfaceColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         properties = ModalBottomSheetProperties(
             shouldDismissOnBackPress = !currentShouldConfirmDismiss,
         ),
-        dragHandle = { SettingsSheetDragHandle() },
+        dragHandle = null,
     ) {
         BackHandler(
             enabled = currentShouldConfirmDismiss && !confirmDiscard && !confirmCancelTest,
         ) {
-            if (editorMode == RemoteModelSheetMode.Testing) {
-                showCancelTestConfirmation()
-            } else {
-                showDiscardConfirmation()
-            }
+            showDiscardConfirmation()
         }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.72f)
+                .settingsSheetContentBackdrop()
                 .imePadding()
                 .padding(bottom = 18.dp),
         ) {
+            SettingsSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            )
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2225,13 +2494,18 @@ private fun RemoteModelConfigurationSheet(
                     modifier = Modifier.weight(1f),
                 )
             }
-            Column(
+            Box(
                 modifier = Modifier
                     .weight(1f)
-                    .settingsSheetEdgeFade(formScrollState, MaterialTheme.colorScheme.surface)
-                    .verticalScroll(formScrollState)
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .fillMaxWidth(),
             ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .captureProgressiveEdgeBlur(formEdgeBlurState)
+                        .verticalScroll(formScrollState)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                ) {
                 SectionHeader("接口地址")
                 CompactInput(
                     label = "",
@@ -2438,9 +2712,14 @@ private fun RemoteModelConfigurationSheet(
                         )
                     }
                 }
-                Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(12.dp))
+                }
+                SettingsSheetEdgeFades(
+                    scrollState = formScrollState,
+                    blurState = formEdgeBlurState,
+                    surfaceColor = MaterialTheme.colorScheme.surface,
+                )
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2451,7 +2730,7 @@ private fun RemoteModelConfigurationSheet(
                     RemoteModelSheetMode.Draft -> {
                         Button(
                             onClick = { onTest(draftConnection) },
-                            enabled = canTest && !apiTestState.isTesting,
+                            enabled = canTest && !isTestingDraft,
                             modifier = Modifier.weight(1f).height(46.dp),
                             shape = RoundedCornerShape(8.dp),
                         ) {
@@ -2460,7 +2739,7 @@ private fun RemoteModelConfigurationSheet(
                         if (editingExistingModel) {
                             Button(
                                 onClick = { onDelete(draftConnection.id, draftModelIds) },
-                                enabled = draftModelIds.isNotEmpty() && !apiTestState.isTesting,
+                                enabled = draftModelIds.isNotEmpty() && !isTestingDraft,
                                 modifier = Modifier.weight(1f).height(46.dp),
                                 shape = RoundedCornerShape(8.dp),
                                 colors = ButtonDefaults.buttonColors(
@@ -2486,7 +2765,7 @@ private fun RemoteModelConfigurationSheet(
                     RemoteModelSheetMode.Verified -> {
                         Button(
                             onClick = { onTest(draftConnection) },
-                            enabled = canTest && !apiTestState.isTesting,
+                            enabled = canTest && !isTestingDraft,
                             modifier = Modifier.weight(1f).height(46.dp),
                             shape = RoundedCornerShape(8.dp),
                         ) {
@@ -2494,7 +2773,7 @@ private fun RemoteModelConfigurationSheet(
                         }
                         Button(
                             onClick = { onDelete(draftConnection.id, draftModelIds) },
-                            enabled = draftModelIds.isNotEmpty() && !apiTestState.isTesting,
+                            enabled = draftModelIds.isNotEmpty() && !isTestingDraft,
                             modifier = Modifier.weight(1f).height(46.dp),
                             shape = RoundedCornerShape(8.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -2653,9 +2932,12 @@ internal fun remoteModelSheetMode(
             editingModelId = editingModelId,
             replacingModelId = testState.replacingModelId,
         ) &&
-            (testState.replacingModelId == editingModelId ||
-                (testState.replacingModelId == null &&
-                    editingModelId != null && editingModelId in target.modelIds))
+            testStateTargetsRemoteModelEditor(
+                target = target,
+                editingModelId = editingModelId,
+                replacingModelId = testState.replacingModelId,
+                activeModelId = testState.activeModelId,
+            )
     } == true
     if (testTargetsDraft && testState.isTesting) return RemoteModelSheetMode.Testing
     if (testTargetsDraft && testState.success == true && testState.saved) {
@@ -2674,12 +2956,10 @@ internal fun shouldConfirmRemoteModelSheetDismiss(
     apiKey: String,
     requiresApiKey: Boolean,
     hasDraftChanges: Boolean = true,
-): Boolean = mode == RemoteModelSheetMode.Testing || (
-    mode == RemoteModelSheetMode.Draft &&
-        hasDraftChanges &&
-        apiUrl.isNotBlank() &&
-        (!requiresApiKey || apiKey.isNotBlank())
-    )
+): Boolean = mode == RemoteModelSheetMode.Draft &&
+    hasDraftChanges &&
+    apiUrl.isNotBlank() &&
+    (!requiresApiKey || apiKey.isNotBlank())
 
 @OptIn(ExperimentalMaterial3Api::class)
 internal fun shouldAllowRemoteModelSheetTransition(
@@ -2740,6 +3020,21 @@ internal fun sameRemoteModelEditorTarget(
         draft.modelIds == listOf(editingModelId)
 }
 
+internal fun testStateTargetsRemoteModelEditor(
+    target: ApiConnection,
+    editingModelId: String?,
+    replacingModelId: String?,
+    activeModelId: String? = null,
+): Boolean {
+    if (activeModelId != null && editingModelId != null && activeModelId != editingModelId) {
+        return false
+    }
+    return replacingModelId == editingModelId || (
+        replacingModelId == null &&
+            (editingModelId == null || editingModelId in target.modelIds)
+        )
+}
+
 internal fun removeRemoteModel(
     config: ApiConfig,
     connectionId: String,
@@ -2749,7 +3044,11 @@ internal fun removeRemoteModel(
     if (modelId !in connection.modelIds) return config
 
     val remainingModels = connection.modelIds.filterNot { it == modelId }
-    val removedChat = config.resolvedChatModelRef() == ModelReference(connectionId, modelId)
+    val removedChat = config.resolvedChatModelRef() == ModelReference(connectionId, modelId) || (
+        config.model == modelId &&
+            config.providerId == connection.providerId &&
+            config.apiUrl.trim().trimEnd('/') == connection.apiUrl.trim().trimEnd('/')
+        )
     val removedVision = config.resolvedVisionModelRef() == ModelReference(connectionId, modelId)
     val removedImage = config.resolvedImageModelRef() == ModelReference(connectionId, modelId)
     val trimmedConnection = connection.copy(
@@ -4071,17 +4370,10 @@ private fun OrchestrationModelSlotRow(
                 null
             },
         )
-        DropdownMenu(
+        SettingsGlassDropdown(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            shape = RoundedCornerShape(14.dp),
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-            border = androidx.compose.foundation.BorderStroke(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-            ),
+            modifier = Modifier.align(Alignment.TopEnd),
         ) {
             models.forEach { item ->
                 DropdownMenuItem(
@@ -4490,12 +4782,12 @@ private fun modelDescription(item: AiModelPreset, providerId: String): String {
 private fun AppearanceSettingsContent(
     selectedMode: ThemeMode,
     selectedStyle: InterfaceStyle,
-    liquidGlassTransparency: Float,
+    glassRefractionEnabled: Boolean,
     selectedColor: Long,
     selectedFontSize: FontSizePreference,
     onModeChange: (ThemeMode) -> Unit,
     onStyleChange: (InterfaceStyle) -> Unit,
-    onLiquidGlassTransparencyChange: (Float) -> Unit,
+    onGlassRefractionChange: (Boolean) -> Unit,
     onAccentColorChange: (Long) -> Unit,
     onFontSizeChange: (FontSizePreference) -> Unit,
 ) {
@@ -4515,11 +4807,14 @@ private fun AppearanceSettingsContent(
                 selectedStyle = selectedStyle,
                 onStyleChange = onStyleChange,
             )
-            if (LIQUID_GLASS_STYLE_VISIBLE && selectedStyle == InterfaceStyle.LIQUID_GLASS) {
+            if (selectedStyle == InterfaceStyle.GLASS) {
                 GroupDivider()
-                LiquidGlassTransparencyRow(
-                    transparency = liquidGlassTransparency,
-                    onTransparencyChange = onLiquidGlassTransparencyChange,
+                SwitchSettingRow(
+                    title = "折射效果",
+                    description = "仅安卓13+生效",
+                    checked = glassRefractionEnabled,
+                    enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
+                    onCheckedChange = onGlassRefractionChange,
                 )
             }
         }
@@ -4539,34 +4834,62 @@ private fun InterfaceStyleSelectionRow(
     onStyleChange: (InterfaceStyle) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val visibleSelectedStyle = selectedStyle.takeUnless {
-        it == InterfaceStyle.MATERIAL3 ||
-            (it == InterfaceStyle.LIQUID_GLASS && !LIQUID_GLASS_STYLE_VISIBLE)
-    } ?: InterfaceStyle.ACRYLIC
-    val options = buildList {
-        add(InterfaceStyle.ACRYLIC to "亚克力")
-        if (LIQUID_GLASS_STYLE_VISIBLE) {
-            add(InterfaceStyle.LIQUID_GLASS to "液态玻璃")
-        }
+    val visibleSelectedStyle = when (selectedStyle) {
+        InterfaceStyle.NATIVE -> InterfaceStyle.NATIVE
+        InterfaceStyle.GLASS -> InterfaceStyle.GLASS
+        else -> InterfaceStyle.ACRYLIC
     }
+    data class StyleOption(
+        val style: InterfaceStyle,
+        val label: String,
+        val description: String?,
+    )
+    val options = listOf(
+        StyleOption(
+            style = InterfaceStyle.ACRYLIC,
+            label = "亚克力",
+            description = "仅安卓12+生效",
+        ),
+        StyleOption(
+            style = InterfaceStyle.NATIVE,
+            label = "原生",
+            description = null,
+        ),
+        StyleOption(
+            style = InterfaceStyle.GLASS,
+            label = "玻璃",
+            description = "仅安卓12+生效",
+        ),
+    )
     SelectionSettingRow(
         title = "风格",
-        value = options.first { it.first == visibleSelectedStyle }.second,
+        value = options.first { it.style == visibleSelectedStyle }.label,
         expanded = expanded,
         onClick = { expanded = true },
         onDismiss = { expanded = false },
         menuContent = {
-            options.forEach { (style, label) ->
+            options.forEach { option ->
                 DropdownMenuItem(
-                    text = { Text(label) },
+                    text = {
+                        Column {
+                            Text(option.label)
+                            option.description?.let { description ->
+                                Text(
+                                    text = description,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 12.sp,
+                                )
+                            }
+                        }
+                    },
                     trailingIcon = {
-                        if (style == visibleSelectedStyle) {
+                        if (option.style == visibleSelectedStyle) {
                             Icon(Icons.Outlined.Check, contentDescription = "当前风格")
                         }
                     },
                     onClick = {
                         expanded = false
-                        onStyleChange(style)
+                        onStyleChange(option.style)
                     },
                 )
             }
@@ -4609,166 +4932,6 @@ private fun FontSizeSelectionRow(
             }
         },
     )
-}
-
-@Composable
-private fun LiquidGlassTransparencyRow(
-    transparency: Float,
-    onTransparencyChange: (Float) -> Unit,
-) {
-    var showValueDialog by remember { mutableStateOf(false) }
-    var inputValue by remember { mutableStateOf("") }
-    val inputPercent = inputValue.toIntOrNull()
-    val inputValid = inputPercent != null && inputPercent in 0..100
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "透明度",
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "${(transparency * 100).toInt()}%",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-            )
-            IconButton(
-                onClick = {
-                    inputValue = (transparency * 100).toInt().toString()
-                    showValueDialog = true
-                },
-                modifier = Modifier.size(32.dp),
-            ) {
-                Icon(
-                    Icons.Outlined.Edit,
-                    contentDescription = "输入透明度",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(17.dp),
-                )
-            }
-        }
-        SimpleLineSlider(
-            value = transparency,
-            onValueChange = onTransparencyChange,
-            valueRange = 0f..1f,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-
-    if (showValueDialog) {
-        AlertDialog(
-            onDismissRequest = { showValueDialog = false },
-            title = { Text("输入透明度") },
-            text = {
-                OutlinedTextField(
-                    value = inputValue,
-                    onValueChange = { next ->
-                        if (next.length <= 3 && next.all(Char::isDigit)) {
-                            inputValue = next
-                        }
-                    },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    suffix = { Text("%") },
-                    isError = inputValue.isNotEmpty() && !inputValid,
-                    supportingText = {
-                        if (inputValue.isNotEmpty() && !inputValid) {
-                            Text("请输入 0-100")
-                        }
-                    },
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = inputValid,
-                    onClick = {
-                        val percent = inputPercent ?: return@TextButton
-                        onTransparencyChange(percent / 100f)
-                        showValueDialog = false
-                    },
-                ) {
-                    Text("确定")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showValueDialog = false }) {
-                    Text("取消")
-                }
-            },
-        )
-    }
-}
-
-@Composable
-private fun SimpleLineSlider(
-    value: Float,
-    onValueChange: (Float) -> Unit,
-    valueRange: ClosedFloatingPointRange<Float>,
-    modifier: Modifier = Modifier,
-) {
-    val trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)
-    val thumbColor = MaterialTheme.colorScheme.onSurface
-    val rangeLength = valueRange.endInclusive - valueRange.start
-    val fraction = if (rangeLength == 0f) {
-        0f
-    } else {
-        ((value - valueRange.start) / rangeLength).coerceIn(0f, 1f)
-    }
-
-    Canvas(
-        modifier = modifier
-            .height(32.dp)
-            .semantics {
-                progressBarRangeInfo = ProgressBarRangeInfo(value, valueRange, 0)
-                setProgress { target ->
-                    onValueChange(target.coerceIn(valueRange.start, valueRange.endInclusive))
-                    true
-                }
-            }
-            .pointerInput(valueRange, onValueChange) {
-                fun updateValue(positionX: Float) {
-                    val horizontalInset = 8.dp.toPx()
-                    val usableWidth = (size.width - horizontalInset * 2f).coerceAtLeast(1f)
-                    val nextFraction = ((positionX - horizontalInset) / usableWidth).coerceIn(0f, 1f)
-                    onValueChange(valueRange.start + rangeLength * nextFraction)
-                }
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    updateValue(down.position.x)
-                    var change = down
-                    while (change.pressed) {
-                        val event = awaitPointerEvent()
-                        change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        change.consume()
-                        updateValue(change.position.x)
-                    }
-                }
-            },
-    ) {
-        val horizontalInset = 8.dp.toPx()
-        val centerY = size.height / 2f
-        val trackStart = horizontalInset
-        val trackEnd = size.width - horizontalInset
-        drawLine(
-            color = trackColor,
-            start = Offset(trackStart, centerY),
-            end = Offset(trackEnd, centerY),
-            strokeWidth = 2.dp.toPx(),
-            cap = StrokeCap.Round,
-        )
-        drawCircle(
-            color = thumbColor,
-            radius = 7.dp.toPx(),
-            center = Offset(trackStart + (trackEnd - trackStart) * fraction, centerY),
-        )
-    }
 }
 
 @Composable
@@ -4856,13 +5019,9 @@ private fun SelectionSettingRow(
     onDismiss: () -> Unit,
     menuContent: @Composable ColumnScope.() -> Unit,
 ) {
-    val rowShape = RoundedCornerShape(8.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(rowShape)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.16f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f), rowShape)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -4908,6 +5067,7 @@ private fun SettingsDropdownArrow(
         SettingsPopupMenu(
             expanded = expanded,
             onDismiss = onDismiss,
+            modifier = Modifier.align(Alignment.TopEnd),
             content = menuContent,
         )
     }
@@ -4917,21 +5077,133 @@ private fun SettingsDropdownArrow(
 private fun SettingsPopupMenu(
     expanded: Boolean,
     onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    DropdownMenu(
+    SettingsGlassDropdown(
         expanded = expanded,
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(14.dp),
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-        ),
+        modifier = modifier,
         content = content,
     )
+}
+
+@Composable
+private fun SettingsGlassDropdown(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    if (!expanded) return
+    val density = LocalDensity.current
+    val interfaceEffects = LocalInterfaceEffects.current
+    val popupBackdrop = rememberWindowBackdropSnapshot(
+        enabled = interfaceEffects.backdropBlurEnabled,
+    )
+    val shadowGutter = 24.dp
+    val availableMenuHeight = (
+        LocalConfiguration.current.screenHeightDp.dp - shadowGutter * 2 - 24.dp
+    ).coerceAtLeast(160.dp)
+    val maxMenuHeight = minOf(420.dp, availableMenuHeight)
+    var popupPosition by remember { mutableStateOf(IntOffset.Zero) }
+    val positionProvider = remember(density) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize,
+            ): IntOffset {
+                val gutterPx = with(density) { shadowGutter.roundToPx() }
+                val gapPx = with(density) { 4.dp.roundToPx() }
+                val surfaceWidth = popupContentSize.width - gutterPx * 2
+                val surfaceHeight = popupContentSize.height - gutterPx * 2
+                val surfaceX = (anchorBounds.right - surfaceWidth).coerceIn(
+                    gutterPx,
+                    (windowSize.width - surfaceWidth - gutterPx).coerceAtLeast(gutterPx),
+                )
+                val belowY = anchorBounds.bottom + gapPx
+                val aboveY = anchorBounds.top - gapPx - surfaceHeight
+                val desiredSurfaceY = if (belowY + surfaceHeight + gutterPx <= windowSize.height) {
+                    belowY
+                } else {
+                    aboveY
+                }
+                val surfaceY = desiredSurfaceY.coerceIn(
+                    gutterPx,
+                    (windowSize.height - surfaceHeight - gutterPx).coerceAtLeast(gutterPx),
+                )
+                val surfacePosition = IntOffset(surfaceX, surfaceY)
+                if (popupPosition != surfacePosition) {
+                    popupPosition = surfacePosition
+                }
+                return IntOffset(surfaceX - gutterPx, surfaceY - gutterPx)
+            }
+        }
+    }
+    val shape = RoundedCornerShape(14.dp)
+    val popupSurfaceAlpha by animateFloatAsState(
+        targetValue = if (
+            interfaceEffects.backdropBlurEnabled &&
+            (popupBackdrop == null || popupPosition == IntOffset.Zero)
+        ) {
+            1f
+        } else {
+            interfaceEffects.compactSurfaceAlpha
+        },
+        animationSpec = tween(durationMillis = 120),
+        label = "settings_popup_surface_alpha",
+    )
+    Popup(
+        popupPositionProvider = positionProvider,
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(
+            focusable = true,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Box(modifier = Modifier.padding(shadowGutter)) {
+            Box(
+                modifier = Modifier
+                    .zIndex(2f)
+                    .widthIn(min = 180.dp, max = 220.dp)
+                    .settingsGlassShadow(cornerRadius = 14.dp)
+                    .clip(shape)
+                    .border(
+                        0.5.dp,
+                        settingsGlassOutline.copy(alpha = 0.30f),
+                        shape,
+                    ),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .windowBackdrop(
+                            snapshot = popupBackdrop,
+                            windowPosition = popupPosition,
+                            blurRadius = if (interfaceEffects.glassMaterialEnabled) 18.dp else 15.dp,
+                        ),
+                )
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(
+                            MaterialTheme.colorScheme.surface.copy(alpha = popupSurfaceAlpha),
+                            shape,
+                        ),
+                )
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = maxMenuHeight)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    content = content,
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -5018,14 +5290,8 @@ private fun SettingGroup(
 }
 
 @Composable
-private fun settingsGlassBrush(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f)
-
-@Composable
 private fun GroupDivider(horizontalPadding: Dp = 14.dp) {
-    HorizontalDivider(
-        modifier = Modifier.padding(start = horizontalPadding),
-        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.11f),
-    )
+    Spacer(Modifier.height(0.dp))
 }
 
 @Composable
@@ -5044,17 +5310,10 @@ private fun DropdownSettingRow(
             description = description,
             onClick = { onExpandedChange(true) },
         )
-        DropdownMenu(
+        SettingsGlassDropdown(
             expanded = expanded,
             onDismissRequest = { onExpandedChange(false) },
-            shape = RoundedCornerShape(14.dp),
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-            border = androidx.compose.foundation.BorderStroke(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-            ),
+            modifier = Modifier.align(Alignment.TopEnd),
         ) {
             menuContent()
         }
@@ -5068,13 +5327,9 @@ private fun SettingRow(
     description: String,
     onClick: () -> Unit,
 ) {
-    val rowShape = RoundedCornerShape(8.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(rowShape)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.16f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f), rowShape)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -5235,6 +5490,7 @@ private fun SwitchSettingRow(
     title: String,
     description: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     Row(
@@ -5246,7 +5502,11 @@ private fun SwitchSettingRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 title,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f)
+                },
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
             )
@@ -5254,7 +5514,9 @@ private fun SwitchSettingRow(
                 Spacer(Modifier.height(2.dp))
                 Text(
                     description,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = if (enabled) 1f else 0.48f,
+                    ),
                     fontSize = 12.sp,
                     lineHeight = 17.sp,
                 )
@@ -5263,7 +5525,8 @@ private fun SwitchSettingRow(
         Spacer(Modifier.width(12.dp))
         Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange,
+            onCheckedChange = if (enabled) onCheckedChange else null,
+            enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
                 checkedTrackColor = MaterialTheme.colorScheme.primary,
@@ -5507,13 +5770,7 @@ private fun CacheCleanDialog(
                         Text("正在扫描缓存...", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 } else {
-                    state.items.forEachIndexed { index, item ->
-                        if (index > 0) {
-                            HorizontalDivider(
-                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.14f),
-                                modifier = Modifier.padding(vertical = 8.dp),
-                            )
-                        }
+                    state.items.forEach { item ->
                         CacheCategoryRow(item)
                     }
                 }

@@ -102,6 +102,7 @@ class ApiTestRuntime @Inject constructor() {
                 testedConnection = null,
                 targetConnection = null,
                 replacingModelId = null,
+                activeModelId = null,
             )
             running
         }

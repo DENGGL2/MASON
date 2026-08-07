@@ -65,6 +65,10 @@ class MasonModelRouter @Inject constructor(
     ): RoutedModelResponse {
         val config = configStore.config.first()
         val context = ChatContextParser.parse(messages.lastOrNull { it.role == "user" }?.content.orEmpty())
+        // Tool schemas are expensive for remote relays. Keep ordinary chat requests small,
+        // while preserving the tool round when a model is continuing after tool results.
+        val toolIntent = toolsEnabled && config.phoneToolsEnabled &&
+            (isLikelyToolRequest(context.userText) || messages.hasToolRoundAfterLatestUser())
         val attachmentResult = runCatching { attachmentResolver.resolve(context.attachments) }
         val resolvedAttachments = attachmentResult.getOrDefault(emptyList())
         val attachments = resolvedAttachments.filter { it.inlineText.isNullOrBlank() }
@@ -98,7 +102,7 @@ class MasonModelRouter @Inject constructor(
             selectConfiguredRemoteChatModel(
                 config = config,
                 userText = context.userText,
-                toolsRequested = toolsEnabled && config.phoneToolsEnabled,
+                toolsRequested = toolIntent,
             )
         } else {
             null
@@ -137,7 +141,7 @@ class MasonModelRouter @Inject constructor(
             connectionId = decision.connectionId,
             attachments = attachments,
             toolsEnabled = shouldEnableRemoteTools(
-                requested = toolsEnabled,
+                requested = toolIntent,
                 phoneToolsEnabled = config.phoneToolsEnabled,
                 modelSupportsTools = modelSupportsTools,
                 modality = modality,
@@ -399,11 +403,31 @@ internal fun classifyModelTaskDifficulty(userText: String): ModelTaskDifficulty 
 
 internal fun isLikelyToolRequest(userText: String): Boolean {
     val text = userText.lowercase()
-    return listOf(
+    val directAction = listOf(
         "联网", "搜索", "查询最新", "打开", "发送", "写入", "删除", "创建日程",
         "短信", "电话", "联系人", "日历", "闹钟", "定位", "文件", "github", "mcp",
         "search", "browse", "open", "send", "write", "delete", "calendar", "contact",
-    ).any(text::contains)
+    )
+    if (directAction.any(text::contains)) return true
+
+    // Device inspection requests are phrased in many ways (for example, "查看手机配置")
+    // and must still expose the read-only device tools to the model.
+    val deviceSubject = listOf(
+        "手机", "设备", "本机", "系统信息", "硬件", "电量", "存储", "内存", "cpu",
+        "wifi", "wi-fi", "蓝牙", "phone", "device", "configuration",
+    )
+    val inspectionAction = listOf(
+        "查看", "读取", "检测", "查询", "获取", "检查", "信息", "配置", "check",
+    )
+    return deviceSubject.any(text::contains) && inspectionAction.any(text::contains)
+}
+
+internal fun List<ChatMessage>.hasToolRoundAfterLatestUser(): Boolean {
+    val latestUserIndex = indexOfLast { it.role == "user" }
+    if (latestUserIndex < 0) return false
+    return drop(latestUserIndex + 1).any { message ->
+        message.role == "tool" || !message.tool_calls.isNullOrEmpty()
+    }
 }
 
 private fun modelRoutingStrength(
@@ -507,14 +531,34 @@ internal fun detectModelModality(
     attachments: List<com.denggl2.mason.llm.ModelAttachment>,
 ): ModelModality {
     val text = userText.lowercase()
-    val requestsImage = listOf("生成图片", "画一张", "生图", "create an image", "generate an image")
-        .any(text::contains)
+    val requestsImage = isImageGenerationRequest(text)
     return when {
         requestsImage -> ModelModality.ImageGeneration
         references.any(ChatAttachmentReference::image) ||
             attachments.any { it.mimeType?.startsWith("image/") == true } -> ModelModality.Vision
         else -> ModelModality.Text
     }
+}
+
+internal fun isImageGenerationRequest(userText: String): Boolean {
+    val text = userText.lowercase().replace(Regex("\\s+"), " ").trim()
+    val chineseImageTerms = listOf(
+        "生成图片",
+        "生成图像",
+        "生成一张图",
+        "生成一幅",
+        "生成一个图标",
+        "生成一个头像",
+        "画一张",
+        "画一个",
+        "画一幅",
+        "绘制",
+        "生图",
+    )
+    val englishImagePattern = Regex(
+        """\b(?:create|generate|make|draw|paint|sketch|render)\s+(?:an?\s+)?(?:image|picture|photo|illustration|icon|logo|artwork)\b""",
+    )
+    return chineseImageTerms.any(text::contains) || englishImagePattern.containsMatchIn(text)
 }
 
 internal fun resolveVisionModel(config: ApiConfig): String = config.visionModel.ifBlank {

@@ -92,6 +92,8 @@ class MainActivity : ComponentActivity() {
             MasonTheme(
                 themeMode = uiPreferences.themeMode,
                 accentColor = uiPreferences.accentColor.toComposeColor(),
+                interfaceStyle = uiPreferences.interfaceStyle,
+                glassRefractionEnabled = uiPreferences.glassRefractionEnabled,
             ) {
                 CompositionLocalProvider(
                     LocalDensity provides Density(
@@ -114,9 +116,9 @@ class MainActivity : ComponentActivity() {
                     onInterfaceStyleChange = { style ->
                         scope.launch { uiPreferencesDataStore.updateInterfaceStyle(style) }
                     },
-                    onLiquidGlassTransparencyChange = { transparency ->
+                    onGlassRefractionChange = { enabled ->
                         scope.launch {
-                            uiPreferencesDataStore.updateLiquidGlassTransparency(transparency)
+                            uiPreferencesDataStore.updateGlassRefractionEnabled(enabled)
                         }
                     },
                     onAccentColorChange = { color ->

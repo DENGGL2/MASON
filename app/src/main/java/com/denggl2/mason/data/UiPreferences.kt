@@ -10,8 +10,10 @@ enum class ThemeMode {
 
 enum class InterfaceStyle {
     ACRYLIC,
+    NATIVE,
+    GLASS,
+    // Retained as a hidden compatibility value for older builds.
     MATERIAL3,
-    LIQUID_GLASS,
 }
 
 enum class FontSizePreference(val scale: Float) {
@@ -24,7 +26,7 @@ enum class FontSizePreference(val scale: Float) {
 data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val interfaceStyle: InterfaceStyle = InterfaceStyle.ACRYLIC,
-    val liquidGlassTransparency: Float = 0.72f,
+    val glassRefractionEnabled: Boolean = false,
     val accentColor: Long = DEFAULT_ACCENT_COLOR,
     val regularNotificationsEnabled: Boolean = false,
     val islandNotificationsEnabled: Boolean = false,

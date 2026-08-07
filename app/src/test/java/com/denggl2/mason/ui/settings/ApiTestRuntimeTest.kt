@@ -39,4 +39,29 @@ class ApiTestRuntimeTest {
         )
         assertEquals("已取消测试，配置未保存", runtime.current.message)
     }
+
+    @Test
+    fun hidingSheetDoesNotCancelActiveTest() = runBlocking {
+        val runtime = ApiTestRuntime()
+        val started = CompletableDeferred<Long>()
+        val keepRunning = CompletableDeferred<Unit>()
+
+        assertTrue(
+            runtime.launch { runId ->
+                runtime.update(
+                    runId,
+                    ApiTestUiState(isTesting = true, message = "running"),
+                )
+                started.complete(runId)
+                keepRunning.await()
+            },
+        )
+        withTimeout(1_000) { started.await() }
+
+        runtime.setVisibleDraft(null)
+
+        assertTrue(runtime.current.isTesting)
+        assertTrue(runtime.cancelActiveTest())
+        keepRunning.cancel()
+    }
 }

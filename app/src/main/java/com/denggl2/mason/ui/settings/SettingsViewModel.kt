@@ -17,7 +17,7 @@ import com.denggl2.mason.data.ApiConnection
 import com.denggl2.mason.data.ApiModelCapabilities
 import com.denggl2.mason.data.configuredChatModelRef
 import com.denggl2.mason.data.connection
-import com.denggl2.mason.data.connectionIdForProvider
+import com.denggl2.mason.data.connectionIdForModel
 import com.denggl2.mason.data.connectionForProvider
 import com.denggl2.mason.data.saveConnection
 import com.denggl2.mason.data.selectChatModel
@@ -88,6 +88,7 @@ data class ApiTestUiState(
     val targetConnection: ApiConnection? = null,
     val testedConnection: ApiConnection? = null,
     val replacingModelId: String? = null,
+    val activeModelId: String? = null,
     val observedModelCapabilities: Map<String, ApiModelCapabilities> = emptyMap(),
     val observedFailedModels: Set<String> = emptySet(),
 )
@@ -615,7 +616,11 @@ class SettingsViewModel @Inject constructor(
             if (!apiTestRuntime.isActive(runId)) return@launch
             if (result.success) {
                 val verifiedSignature = AiProviderCatalog.verificationSignature(config)
-                val connectionId = connectionIdForProvider(config.providerId)
+                val connectionId = connectionIdForModel(
+                    config.providerId,
+                    config.apiUrl,
+                    config.model,
+                )
                 val existing = this@SettingsViewModel.config.value.connections
                     .firstOrNull { it.id == connectionId }
                 configDataStore.updateConfig(
@@ -661,6 +666,7 @@ class SettingsViewModel @Inject constructor(
                 saved = result.success,
                 capabilityWarning = result.capabilityWarning,
                 capabilities = result.capabilities,
+                activeModelId = null,
             ))
         }) {
             _toastEvent.tryEmit("已有模型测试正在运行")
@@ -699,6 +705,7 @@ class SettingsViewModel @Inject constructor(
                 message = "正在测试模型...",
                 targetConnection = targetConnection,
                 replacingModelId = replacingModelId,
+                activeModelId = firstModel,
                 observedModelCapabilities = priorState.observedModelCapabilities,
                 observedFailedModels = priorState.observedFailedModels,
             ))) return@launch
@@ -712,6 +719,17 @@ class SettingsViewModel @Inject constructor(
             val failedModelKeys = linkedSetOf<String>()
 
             modelIds.forEach { modelId ->
+                if (!apiTestRuntime.update(
+                        runId,
+                        apiTestRuntime.current.copy(
+                            isTesting = true,
+                            message = "正在测试模型 $modelId...",
+                            targetConnection = targetConnection,
+                            replacingModelId = replacingModelId,
+                            activeModelId = modelId,
+                        ),
+                    )
+                ) return@launch
                 val draftConfig = validationConfig.copy(
                     model = modelId,
                     visionModel = modelId,
@@ -772,6 +790,7 @@ class SettingsViewModel @Inject constructor(
                 targetConnection = tested,
                 testedConnection = tested,
                 replacingModelId = replacingModelId,
+                activeModelId = null,
                 observedModelCapabilities = priorState.observedModelCapabilities +
                     capabilitiesByModel.filterKeys { modelId ->
                         apiTestModelKey(connection.id, modelId) in succeededModelKeys

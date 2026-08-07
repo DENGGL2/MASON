@@ -502,6 +502,7 @@ class ChatViewModel @Inject constructor(
         activeTaskRun = taskRun
         var usageSeen = false
         var modelAnswered = false
+        var handledError = false
         val userMessage = ChatMessage(role = "user", content = content, timestamp = startedAt)
         _uiState.value = _uiState.value.copy(
             messages = if (shouldRecordUserMessage) {
@@ -762,6 +763,7 @@ class ChatViewModel @Inject constructor(
                     }
 
                     is ChatResponse.Error -> {
+                        handledError = true
                         val guidedContent = if (directLocalEnabled) {
                             "本地模型调用失败：${response.message}"
                         } else {
@@ -794,7 +796,17 @@ class ChatViewModel @Inject constructor(
                 return@launchGeneration
             }
 
-            if (_uiState.value.streamingContent.isNotEmpty()) {
+            if (handledError) {
+                _uiState.value = _uiState.value.copy(
+                    isStreaming = false,
+                    streamingContent = "",
+                    toolCallStatus = null,
+                    requestStartedAt = null,
+                    lastUsageMissing = false,
+                    taskRun = activeTaskRun,
+                )
+                updateAgentCheckpoint(null)
+            } else if (_uiState.value.streamingContent.isNotEmpty()) {
                 modelAnswered = true
                 val finalSteps = completeOpenTaskSteps(
                     completeTaskStepUnlessFailed(
@@ -1076,7 +1088,31 @@ class ChatViewModel @Inject constructor(
             return
         }
         val step = _uiState.value.taskSteps.firstOrNull { it.id == stepId && it.retryable } ?: return
-        val call = step.toolCall ?: return
+        val call = step.toolCall
+        if (call == null) {
+            val run = activeTaskRun ?: return
+            val retried = agentRuntime.retry(run.withSteps(_uiState.value.taskSteps), stepId)
+            val resetSteps = retried.steps.map { candidate ->
+                if (candidate.id == "summary" && candidate.status == TaskStepStatus.Failed) {
+                    candidate.copy(
+                        status = TaskStepStatus.Pending,
+                        detail = "等待模型重试完成后生成总结",
+                        error = null,
+                        finishedAt = null,
+                    )
+                } else {
+                    candidate
+                }
+            }
+            val resumed = retried.withSteps(resetSteps)
+            activeTaskRun = resumed
+            _uiState.value = _uiState.value.copy(
+                taskSteps = resumed.steps,
+                taskRun = resumed,
+            )
+            sendMessageWhenIdle(resumed.goal, resumedRun = resumed)
+            return
+        }
         val profile = toolSecurityProfile(call.function.name)
         if ((apiConfig.value.requireToolConfirmation || profile.mandatoryApproval) &&
             profile.risk == ToolRiskLevel.High
@@ -1942,6 +1978,12 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun formatGuidedError(message: String): String {
+        if (!message.contains("API Key", ignoreCase = true)) {
+            return """
+            可以先检查网络、API 地址、模型名称和服务商额度；如果刚切换过模型，建议在设置里测试连接。
+            ${summarizeModelError(message)}
+            """.trimIndent()
+        }
         return if (message.contains("API Key", ignoreCase = true)) {
             """
             请先进入左侧菜单的设置，选择服务商并配置 API Key；如果使用远端模型，也要确认 API 地址和模型名称。
@@ -2171,6 +2213,7 @@ class ChatViewModel @Inject constructor(
                 status = TaskStepStatus.Failed,
                 detail = error,
                 error = error,
+                retryable = isRetryableModelError(error),
                 finishedAt = System.currentTimeMillis(),
             )
             else -> step.copy(
@@ -2381,6 +2424,14 @@ internal fun summarizeConversationTitle(content: String): String {
     return title.replace(Regex("\\s+"), " ").trim().removeSuffix("的问题").let {
         if (it.length <= 28) it else it.take(27).trimEnd() + "…"
     }
+}
+
+internal fun summarizeModelError(message: String): String {
+    return summarizeModelErrorV2(message)
+}
+
+internal fun isRetryableModelError(message: String): Boolean {
+    return isRetryableModelErrorV2(message)
 }
 
 internal fun isTaskContinuationCommand(content: String): Boolean {

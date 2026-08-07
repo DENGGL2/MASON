@@ -2,6 +2,7 @@ package com.denggl2.mason.ui.chat
 
 import android.content.Context
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.ContentValues
 import android.content.ContextWrapper
 import android.content.Intent
@@ -49,6 +50,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -116,6 +118,7 @@ import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DrawerState
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
@@ -153,20 +156,26 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -179,14 +188,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalGraphicsContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
@@ -198,9 +209,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
@@ -242,6 +261,22 @@ import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.ui.conversation.ConversationListItem
 import com.denggl2.mason.ui.conversation.ConversationListViewModel
 import com.denggl2.mason.ui.conversation.RemoteConversationListUiState
+import com.denggl2.mason.ui.theme.LocalInterfaceEffects
+import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
+import com.denggl2.mason.ui.theme.WindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
+import com.denggl2.mason.ui.theme.captureWindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.glassRefraction
+import com.denggl2.mason.ui.theme.progressiveEdgeBlur
+import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
+import com.denggl2.mason.ui.theme.rememberWindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.windowBackdrop
+import com.denggl2.mason.ui.theme.windowBackdropMaterial
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.haze
+import dev.chrisbanes.haze.hazeChild
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -255,36 +290,261 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private const val USER_CONTEXT_HEADER = "Mason 附加上下文"
 private val TOOL_DETAIL_JSON = Json { prettyPrint = true }
+private val masonGlassOutline = Color(0xFFBABFCC)
+private val masonGlassShadowColor = masonGlassOutline.copy(alpha = 0.30f)
+private val masonGlassShadowBlur = 20.dp
+private const val LIVE_BACKDROP_BLUR_ENABLED = true
 
-private class ChatBackdropState(
-    val sourceLayer: GraphicsLayer,
-    val blurredLayer: GraphicsLayer,
-) {
-    var sourcePosition by mutableStateOf(Offset.Zero)
+private fun Modifier.masonGlassShadow(
+    cornerRadius: Dp,
+    blurRadius: Dp = masonGlassShadowBlur,
+): Modifier = composed {
+    val graphicsContext = LocalGraphicsContext.current
+    val density = LocalDensity.current
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        return@composed drawBehind {
+            val blurPx = blurRadius.toPx()
+            val cornerPx = cornerRadius.toPx()
+            val shadowMask = Path().apply {
+                addRoundRect(
+                    RoundRect(
+                        Rect(Offset.Zero, size),
+                        CornerRadius(cornerPx, cornerPx),
+                    ),
+                )
+            }
+            val layers = 12
+            clipPath(shadowMask, clipOp = ClipOp.Difference) {
+                for (layer in layers downTo 1) {
+                    val spread = blurPx * layer / layers
+                    drawRoundRect(
+                        color = masonGlassShadowColor.copy(alpha = 0.012f),
+                        topLeft = Offset(-spread, -spread),
+                        size = Size(size.width + spread * 2f, size.height + spread * 2f),
+                        cornerRadius = CornerRadius(cornerPx + spread),
+                    )
+                }
+            }
+        }
+    }
+    val shadowLayer = remember(graphicsContext, density.density, cornerRadius, blurRadius) {
+        graphicsContext.createGraphicsLayer().also { layer ->
+            // Figma's shadow blur is a diameter-like value; RenderEffect expects sigma.
+            val blurSigmaPx = with(density) { blurRadius.toPx() } * 0.5f
+            layer.renderEffect = BlurEffect(
+                radiusX = blurSigmaPx,
+                radiusY = blurSigmaPx,
+                edgeTreatment = TileMode.Decal,
+            )
+        }
+    }
+    DisposableEffect(graphicsContext, shadowLayer) {
+        onDispose { graphicsContext.releaseGraphicsLayer(shadowLayer) }
+    }
+    drawWithContent {
+        val blurPx = blurRadius.toPx()
+        val cornerPx = cornerRadius.toPx()
+        val contentSize = size
+        val paddingPx = blurPx
+        val layerSize = IntSize(
+            width = (contentSize.width + paddingPx * 2f).toInt().coerceAtLeast(1),
+            height = (contentSize.height + paddingPx * 2f).toInt().coerceAtLeast(1),
+        )
+        shadowLayer.record(layerSize) {
+            drawRoundRect(
+                color = masonGlassShadowColor,
+                topLeft = Offset(paddingPx, paddingPx),
+                size = contentSize,
+                cornerRadius = CornerRadius(cornerPx),
+            )
+        }
+        val shadowMask = Path().apply {
+            addRoundRect(
+                RoundRect(
+                    Rect(Offset.Zero, contentSize),
+                    CornerRadius(cornerPx, cornerPx),
+                ),
+            )
+        }
+        clipPath(shadowMask, clipOp = ClipOp.Difference) {
+            translate(left = -paddingPx, top = -paddingPx) {
+                drawLayer(shadowLayer)
+            }
+        }
+        drawContent()
+    }
 }
 
-private val LocalChatBackdropState = staticCompositionLocalOf<ChatBackdropState?> { null }
+@Composable
+private fun ChatGlassDropdown(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    width: Dp,
+    cornerRadius: Dp,
+    alignEnd: Boolean,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    if (!expanded) return
+    val density = LocalDensity.current
+    val interfaceEffects = LocalInterfaceEffects.current
+    val popupBackdrop = rememberWindowBackdropSnapshot(
+        enabled = interfaceEffects.backdropBlurEnabled,
+    )
+    val shadowGutter = 24.dp
+    var surfacePosition by remember { mutableStateOf(IntOffset.Zero) }
+    val positionProvider = remember(density, alignEnd) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize,
+            ): IntOffset = with(density) {
+                val gutterPx = shadowGutter.roundToPx()
+                val gapPx = 4.dp.roundToPx()
+                val surfaceWidth = popupContentSize.width - gutterPx * 2
+                val surfaceHeight = popupContentSize.height - gutterPx * 2
+                val desiredSurfaceX = if (alignEnd) {
+                    anchorBounds.right - surfaceWidth
+                } else {
+                    anchorBounds.left
+                }
+                val surfaceX = desiredSurfaceX.coerceIn(
+                    gutterPx,
+                    (windowSize.width - surfaceWidth - gutterPx).coerceAtLeast(gutterPx),
+                )
+                val belowY = anchorBounds.bottom + gapPx
+                val aboveY = anchorBounds.top - gapPx - surfaceHeight
+                val desiredSurfaceY = if (belowY + surfaceHeight + gutterPx <= windowSize.height) {
+                    belowY
+                } else {
+                    aboveY
+                }
+                val surfaceY = desiredSurfaceY.coerceIn(
+                    gutterPx,
+                    (windowSize.height - surfaceHeight - gutterPx).coerceAtLeast(gutterPx),
+                )
+                val nextSurfacePosition = IntOffset(surfaceX, surfaceY)
+                if (surfacePosition != nextSurfacePosition) {
+                    surfacePosition = nextSurfacePosition
+                }
+                IntOffset(surfaceX - gutterPx, surfaceY - gutterPx)
+            }
+        }
+    }
+    val shape = RoundedCornerShape(cornerRadius)
+    val popupSurfaceAlpha by animateFloatAsState(
+        targetValue = if (
+            interfaceEffects.backdropBlurEnabled &&
+            (popupBackdrop == null || surfacePosition == IntOffset.Zero)
+        ) {
+            1f
+        } else {
+            interfaceEffects.compactSurfaceAlpha
+        },
+        animationSpec = tween(durationMillis = 120),
+        label = "chat_popup_surface_alpha",
+    )
+    Popup(
+        popupPositionProvider = positionProvider,
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(
+            focusable = true,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Box(modifier = Modifier.padding(shadowGutter)) {
+            Box(
+                modifier = Modifier
+                    .width(width)
+                    .masonGlassShadow(cornerRadius)
+                    .clip(shape)
+                    .border(0.5.dp, masonGlassOutline.copy(alpha = 0.30f), shape),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .windowBackdrop(
+                            snapshot = popupBackdrop,
+                            windowPosition = surfacePosition,
+                            blurRadius = if (interfaceEffects.glassMaterialEnabled) 18.dp else 15.dp,
+                        ),
+                )
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(
+                            MaterialTheme.colorScheme.surface.copy(
+                                alpha = popupSurfaceAlpha,
+                            ),
+                            shape,
+                        ),
+                )
+                Column(content = content)
+            }
+        }
+    }
+}
+
+private enum class ChatBackdropBlur {
+    Strong,
+    Soft,
+    Drawer,
+}
+
+private val LocalChatBackdropState = staticCompositionLocalOf<HazeState?> { null }
 
 private val chatSheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
 
+private fun Modifier.chatSheetContentBackdrop(): Modifier = composed {
+    val interfaceEffects = LocalInterfaceEffects.current
+    if (!interfaceEffects.backdropBlurEnabled) {
+        return@composed this
+    }
+    this
+        .windowBackdropMaterial(
+            enabled = true,
+            blurRadius = 40.dp,
+            fallbackColor = MaterialTheme.colorScheme.surface,
+        )
+        .background(
+            MaterialTheme.colorScheme.surface.copy(
+                alpha = interfaceEffects.largeSurfaceAlpha,
+            ),
+        )
+}
+
 @Composable
-private fun ChatSheetDragHandle() {
+private fun chatSheetSurfaceColor(): Color = MaterialTheme.colorScheme.surface.copy(
+    alpha = if (LocalInterfaceEffects.current.backdropBlurEnabled) 0f else 1f,
+)
+
+@Composable
+private fun ChatSheetDragHandle(
+    modifier: Modifier = Modifier,
+    topPadding: Dp = 10.dp,
+    bottomPadding: Dp = 8.dp,
+) {
     Box(
-        modifier = Modifier
-            .padding(top = 10.dp, bottom = 8.dp)
+        modifier = modifier
+            .padding(top = topPadding, bottom = bottomPadding)
             .size(width = 38.dp, height = 4.dp)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f)),
     )
 }
 
-private fun Modifier.chatSheetEdgeFade(
+@Composable
+private fun BoxScope.ChatSheetEdgeFades(
     scrollState: ScrollState,
+    blurState: HazeState?,
     surfaceColor: Color,
-): Modifier = composed {
+) {
     val topAlpha by animateFloatAsState(
         targetValue = if (scrollState.canScrollBackward) 1f else 0f,
         animationSpec = tween(180),
@@ -295,51 +555,15 @@ private fun Modifier.chatSheetEdgeFade(
         animationSpec = tween(180),
         label = "chat_sheet_bottom_fade",
     )
-    drawWithContent {
-        drawContent()
-        val fadeHeight = 48.dp.toPx()
-        val fadeSurface = surfaceColor.copy(alpha = 0.995f)
-        if (topAlpha > 0f) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to fadeSurface,
-                        0.32f to fadeSurface.copy(alpha = 0.82f),
-                        0.70f to fadeSurface.copy(alpha = 0.28f),
-                        1f to Color.Transparent,
-                    ),
-                    startY = 0f,
-                    endY = fadeHeight,
-                ),
-                topLeft = Offset(0f, 0f),
-                size = Size(size.width, fadeHeight),
-                alpha = topAlpha,
-            )
-        }
-        if (bottomAlpha > 0f) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to Color.Transparent,
-                        0.30f to fadeSurface.copy(alpha = 0.28f),
-                        0.68f to fadeSurface.copy(alpha = 0.82f),
-                        1f to fadeSurface,
-                    ),
-                    startY = size.height - fadeHeight,
-                    endY = size.height,
-                ),
-                topLeft = Offset(0f, size.height - fadeHeight),
-                size = Size(size.width, fadeHeight),
-                alpha = bottomAlpha,
-            )
-        }
-    }
+    ChatSheetEdgeFades(blurState, surfaceColor, topAlpha, bottomAlpha)
 }
 
-private fun Modifier.chatSheetEdgeFade(
+@Composable
+private fun BoxScope.ChatSheetEdgeFades(
     listState: LazyListState,
+    blurState: HazeState?,
     surfaceColor: Color,
-): Modifier = composed {
+) {
     val topAlpha by animateFloatAsState(
         targetValue = if (listState.canScrollBackward) 1f else 0f,
         animationSpec = tween(180),
@@ -350,108 +574,268 @@ private fun Modifier.chatSheetEdgeFade(
         animationSpec = tween(180),
         label = "chat_sheet_list_bottom_fade",
     )
-    drawWithContent {
-        drawContent()
-        val fadeHeight = 48.dp.toPx()
-        val fadeSurface = surfaceColor.copy(alpha = 0.995f)
-        if (topAlpha > 0f) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to fadeSurface,
-                        0.32f to fadeSurface.copy(alpha = 0.82f),
-                        0.70f to fadeSurface.copy(alpha = 0.28f),
-                        1f to Color.Transparent,
-                    ),
-                    startY = 0f,
-                    endY = fadeHeight,
-                ),
-                size = Size(size.width, fadeHeight),
-                alpha = topAlpha,
-            )
-        }
-        if (bottomAlpha > 0f) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to Color.Transparent,
-                        0.30f to fadeSurface.copy(alpha = 0.28f),
-                        0.68f to fadeSurface.copy(alpha = 0.82f),
-                        1f to fadeSurface,
-                    ),
-                    startY = size.height - fadeHeight,
-                    endY = size.height,
-                ),
-                topLeft = Offset(0f, size.height - fadeHeight),
-                size = Size(size.width, fadeHeight),
-                alpha = bottomAlpha,
-            )
-        }
-    }
+    ChatSheetEdgeFades(blurState, surfaceColor, topAlpha, bottomAlpha)
 }
 
 @Composable
-private fun rememberChatBackdropState(): ChatBackdropState? {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
-    val graphicsContext = LocalGraphicsContext.current
-    val density = LocalDensity.current
-    val state = remember(graphicsContext, density.density) {
-        ChatBackdropState(
-            sourceLayer = graphicsContext.createGraphicsLayer(),
-            blurredLayer = graphicsContext.createGraphicsLayer().apply {
-                renderEffect = BlurEffect(
-                    radiusX = with(density) { 32.dp.toPx() },
-                    radiusY = with(density) { 32.dp.toPx() },
-                    edgeTreatment = TileMode.Clamp,
+private fun BoxScope.ChatSheetEdgeFades(
+    blurState: HazeState?,
+    surfaceColor: Color,
+    topAlpha: Float,
+    bottomAlpha: Float,
+) {
+    val glassMaterialEnabled = LocalInterfaceEffects.current.glassMaterialEnabled
+    val fadeSurface = surfaceColor.copy(alpha = if (glassMaterialEnabled) 0.10f else 0.995f)
+    if (topAlpha > 0f) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(48.dp)
+                .graphicsLayer { alpha = topAlpha }
+                .progressiveEdgeBlur(
+                    state = blurState,
+                    edge = ProgressiveBlurEdge.Top,
+                    backgroundColor = surfaceColor,
                 )
-            },
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0f to fadeSurface,
+                            0.32f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.82f),
+                            0.70f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.28f),
+                            1f to Color.Transparent,
+                        ),
+                    ),
+                ),
         )
     }
-    DisposableEffect(graphicsContext, state) {
-        onDispose {
-            graphicsContext.releaseGraphicsLayer(state.blurredLayer)
-            graphicsContext.releaseGraphicsLayer(state.sourceLayer)
-        }
-    }
-    return state
-}
-
-private fun Modifier.captureChatBackdrop(state: ChatBackdropState?): Modifier {
-    if (state == null) return this
-    return this
-        .onGloballyPositioned { coordinates ->
-            state.sourcePosition = coordinates.positionInRoot()
-        }
-        .drawWithContent {
-            state.sourceLayer.record {
-                this@drawWithContent.drawContent()
-            }
-            state.blurredLayer.record {
-                drawLayer(state.sourceLayer)
-            }
-            drawLayer(state.sourceLayer)
-        }
-}
-
-private fun Modifier.chatBackdrop(): Modifier = composed {
-    val state = LocalChatBackdropState.current ?: return@composed this
-    var position by remember { mutableStateOf(Offset.Zero) }
-    onGloballyPositioned { coordinates ->
-        position = coordinates.positionInRoot()
-    }.drawWithContent {
-        val relativePosition = position - state.sourcePosition
-        clipRect {
-            translate(left = -relativePosition.x, top = -relativePosition.y) {
-                drawLayer(state.blurredLayer)
-            }
-        }
-        drawContent()
+    if (bottomAlpha > 0f) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(48.dp)
+                .graphicsLayer { alpha = bottomAlpha }
+                .progressiveEdgeBlur(
+                    state = blurState,
+                    edge = ProgressiveBlurEdge.Bottom,
+                    backgroundColor = surfaceColor,
+                )
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0f to Color.Transparent,
+                            0.30f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.28f),
+                            0.68f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.82f),
+                            1f to fadeSurface,
+                        ),
+                    ),
+                ),
+        )
     }
 }
 
 @Composable
-private fun chatFloatingSurfaceAlpha(blurred: Float, fallback: Float): Float =
-    if (LocalChatBackdropState.current != null) blurred else fallback
+private fun rememberChatBackdropState(enabled: Boolean): HazeState? {
+    if (!enabled || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+    return remember { HazeState() }
+}
+
+private fun Modifier.captureChatBackdrop(state: HazeState?): Modifier {
+    if (state == null) return this
+    return this.haze(state)
+}
+
+private fun Modifier.chatBackdrop(
+    blur: ChatBackdropBlur = ChatBackdropBlur.Strong,
+): Modifier = composed {
+    val state = LocalChatBackdropState.current ?: return@composed this
+    val interfaceEffects = LocalInterfaceEffects.current
+    val backdropBaseColor = MaterialTheme.colorScheme.surface
+    val blurRadius = if (interfaceEffects.glassMaterialEnabled) {
+        when (blur) {
+            ChatBackdropBlur.Strong -> 18.dp
+            ChatBackdropBlur.Soft -> 16.dp
+            ChatBackdropBlur.Drawer -> 24.dp
+        }
+    } else {
+        when (blur) {
+            ChatBackdropBlur.Strong -> 32.dp
+            ChatBackdropBlur.Soft -> 20.dp
+            ChatBackdropBlur.Drawer -> 32.dp
+        }
+    }
+    this.hazeChild(
+        state = state,
+        style = HazeStyle(
+            backgroundColor = backdropBaseColor,
+            tint = HazeTint(Color.Transparent),
+            blurRadius = blurRadius,
+            noiseFactor = 0f,
+            fallbackTint = HazeTint(Color.Transparent),
+        ),
+    ) {
+        blurEnabled = true
+    }
+}
+
+private fun Modifier.drawerListEdgeFadeMask(
+    topProgress: Float,
+    bottomProgress: Float,
+    topFadeHeight: Dp,
+    bottomFadeHeight: Dp,
+): Modifier = graphicsLayer {
+    compositingStrategy = CompositingStrategy.Offscreen
+}.drawWithContent {
+    drawContent()
+    val topStop = (topFadeHeight.toPx() / size.height).coerceIn(0f, 0.45f)
+    val bottomStop = (1f - (bottomFadeHeight.toPx() / size.height)).coerceIn(0.55f, 1f)
+    val bottomRange = 1f - bottomStop
+    fun topMaskAlpha(smoothStep: Float) = 1f - topProgress * (1f - smoothStep)
+    fun bottomMaskAlpha(smoothStep: Float) = 1f - bottomProgress * smoothStep
+    drawRect(
+        brush = Brush.verticalGradient(
+            0f to Color.White.copy(alpha = topMaskAlpha(0f)),
+            topStop * 0.25f to Color.White.copy(alpha = topMaskAlpha(0.15625f)),
+            topStop * 0.50f to Color.White.copy(alpha = topMaskAlpha(0.50f)),
+            topStop * 0.75f to Color.White.copy(alpha = topMaskAlpha(0.84375f)),
+            topStop to Color.White,
+            bottomStop to Color.White,
+            bottomStop + bottomRange * 0.25f to Color.White.copy(alpha = bottomMaskAlpha(0.15625f)),
+            bottomStop + bottomRange * 0.50f to Color.White.copy(alpha = bottomMaskAlpha(0.50f)),
+            bottomStop + bottomRange * 0.75f to Color.White.copy(alpha = bottomMaskAlpha(0.84375f)),
+            1f to Color.White.copy(alpha = bottomMaskAlpha(1f)),
+        ),
+        blendMode = BlendMode.DstIn,
+    )
+}
+
+private fun Modifier.blurLayerOuterEdgeFeather(
+    edge: ProgressiveBlurEdge,
+    featherHeight: Dp,
+): Modifier = graphicsLayer {
+    compositingStrategy = CompositingStrategy.Offscreen
+}.drawWithContent {
+    drawContent()
+    val featherFraction = (featherHeight.toPx() / size.height).coerceIn(0f, 1f)
+    val mask = when (edge) {
+        ProgressiveBlurEdge.Top -> Brush.verticalGradient(
+            0f to Color.Transparent,
+            featherFraction to Color.White,
+            1f to Color.White,
+        )
+        ProgressiveBlurEdge.Bottom -> Brush.verticalGradient(
+            0f to Color.White,
+            (1f - featherFraction) to Color.White,
+            1f to Color.Transparent,
+        )
+    }
+    drawRect(brush = mask, blendMode = BlendMode.DstIn)
+}
+
+private enum class ChatSurfaceRole {
+    Compact,
+    Large,
+}
+
+@Composable
+private fun chatFloatingSurfaceAlpha(
+    role: ChatSurfaceRole,
+    blurred: Float,
+    fallback: Float,
+): Float {
+    val interfaceEffects = LocalInterfaceEffects.current
+    return when {
+        !interfaceEffects.backdropBlurEnabled -> 1f
+        interfaceEffects.glassMaterialEnabled -> when (role) {
+            ChatSurfaceRole.Compact -> interfaceEffects.compactSurfaceAlpha
+            ChatSurfaceRole.Large -> interfaceEffects.largeSurfaceAlpha
+        }
+        LocalChatBackdropState.current != null -> blurred
+        else -> fallback
+    }
+}
+
+@Composable
+private fun BoxScope.ChatGlassMaterial(
+    shape: Shape,
+    cornerRadius: Dp,
+    role: ChatSurfaceRole,
+    blur: ChatBackdropBlur = ChatBackdropBlur.Strong,
+    refraction: Boolean = false,
+    blurredAlpha: Float,
+    fallbackAlpha: Float,
+    borderWidth: Dp = 0.5.dp,
+    borderColor: Color = masonGlassOutline.copy(alpha = 0.30f),
+) {
+    val interfaceEffects = LocalInterfaceEffects.current
+    Box(modifier = Modifier.matchParentSize().clip(shape)) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .glassRefraction(
+                    enabled = refraction && interfaceEffects.glassRefractionEnabled,
+                    cornerRadius = cornerRadius,
+                )
+                .chatBackdrop(blur),
+        )
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    MaterialTheme.colorScheme.surface.copy(
+                        alpha = chatFloatingSurfaceAlpha(
+                            role = role,
+                            blurred = blurredAlpha,
+                            fallback = fallbackAlpha,
+                        ),
+                    ),
+                    shape,
+                ),
+        )
+    }
+    if (borderWidth > 0.dp) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .border(borderWidth, borderColor, shape),
+        )
+    }
+}
+
+@Composable
+private fun GlassIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(48.dp)
+            .masonGlassShadow(cornerRadius = 24.dp)
+            .clip(CircleShape),
+    ) {
+        ChatGlassMaterial(
+            shape = CircleShape,
+            cornerRadius = 24.dp,
+            role = ChatSurfaceRole.Compact,
+            refraction = true,
+            blurredAlpha = 0.80f,
+            fallbackAlpha = 1f,
+        )
+        IconButton(
+            onClick = onClick,
+            modifier = Modifier.matchParentSize(),
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+                content = content,
+            )
+        }
+    }
+}
 
 private data class AnswerSection(val label: String, val text: String)
 private data class ToolExecutionDetail(
@@ -689,6 +1073,8 @@ fun ChatScreen(
         mutableIntStateOf(with(density) { 96.dp.roundToPx() })
     }
     val inputBarHeight = with(density) { inputBarHeightPx.toDp() }
+    val bottomBlurBandHeight = 64.dp
+    val bottomBlurBandOverlap = 8.dp
     val topFadeRevealDistancePx = with(density) { 24.dp.toPx() }
     val topFadeProgress = remember(listState, topFadeRevealDistancePx) {
         derivedStateOf {
@@ -703,8 +1089,9 @@ fun ChatScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val listIsDragged by listState.interactionSource.collectIsDraggedAsState()
     val activity = remember(context) { context.findActivity() }
-    val drawerState = remember(drawerResetGeneration) {
-        DrawerState(initialValue = DrawerValue.Closed)
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    var handledDrawerResetGeneration by rememberSaveable {
+        mutableIntStateOf(drawerResetGeneration)
     }
     val scope = rememberCoroutineScope()
 
@@ -725,11 +1112,12 @@ fun ChatScreen(
     }
 
     LaunchedEffect(drawerResetGeneration) {
-        withFrameNanos { }
-        drawerState.snapTo(DrawerValue.Open)
-        drawerState.snapTo(DrawerValue.Closed)
-        drawerSessionActive = false
-        drawerContentResetGeneration += 1
+        if (handledDrawerResetGeneration != drawerResetGeneration) {
+            drawerState.snapTo(DrawerValue.Closed)
+            drawerSessionActive = false
+            drawerContentResetGeneration += 1
+            handledDrawerResetGeneration = drawerResetGeneration
+        }
     }
 
     BackHandler(enabled = !showExitConfirmation) {
@@ -955,15 +1343,64 @@ fun ChatScreen(
         }
     }
 
-    val chatBackdropState = rememberChatBackdropState()
+    val interfaceEffects = LocalInterfaceEffects.current
+    val chatBackdropState = rememberChatBackdropState(
+        enabled = interfaceEffects.backdropBlurEnabled && LIVE_BACKDROP_BLUR_ENABLED,
+    )
+    val drawerBackdropEnabled =
+        interfaceEffects.backdropBlurEnabled &&
+            LIVE_BACKDROP_BLUR_ENABLED &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    var drawerBackdropSnapshot by remember { mutableStateOf<WindowBackdropSnapshot?>(null) }
+    DisposableEffect(drawerBackdropSnapshot) {
+        val currentSnapshot = drawerBackdropSnapshot
+        val retained = currentSnapshot?.retain() == true
+        onDispose {
+            if (retained) currentSnapshot?.release() else currentSnapshot?.recycleWhenIdle()
+        }
+    }
+    suspend fun refreshDrawerBackdrop() {
+        drawerBackdropSnapshot = if (drawerBackdropEnabled) {
+            captureWindowBackdropSnapshot(context)
+        } else {
+            null
+        }
+    }
+    val navigationLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(navigationLifecycleOwner, drawerState, drawerBackdropEnabled) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && drawerState.currentValue == DrawerValue.Open) {
+                scope.launch { refreshDrawerBackdrop() }
+            }
+        }
+        navigationLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { navigationLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(drawerState.currentValue, drawerState.targetValue) {
+        if (
+            drawerState.currentValue == DrawerValue.Closed &&
+            drawerState.targetValue == DrawerValue.Closed
+        ) {
+            delay(160)
+            if (
+                drawerState.currentValue == DrawerValue.Closed &&
+                drawerState.targetValue == DrawerValue.Closed
+            ) {
+                drawerBackdropSnapshot = null
+            }
+        }
+    }
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val usePermanentDrawer = maxWidth >= 840.dp
+        CompositionLocalProvider(LocalChatBackdropState provides chatBackdropState) {
         AdaptiveChatLayout(
             usePermanentDrawer = usePermanentDrawer,
             drawerState = drawerState,
+            onBeforeDrawerOpen = ::refreshDrawerBackdrop,
             drawerContent = {
                 MasonDrawer(
                     permanent = usePermanentDrawer,
+                    backdropSnapshot = drawerBackdropSnapshot,
                     resetGeneration = drawerContentResetGeneration,
                     onNewChat = {
                         closeThen {
@@ -984,14 +1421,13 @@ fun ChatScreen(
                         historyViewModel.markConversationSeen(conversationId)
                         closeThen { onConversationSelected(conversationId, isRunning) }
                     },
-                    onOpenWorkbench = { closeThen(onOpenWorkbench) },
-                    onSettings = { closeThen(onNavigateToSettings) },
+                    onOpenWorkbench = onOpenWorkbench,
+                    onSettings = onNavigateToSettings,
                     onExportConversations = { ids -> historyViewModel.exportConversations(ids) },
                     onDeleteConversations = { ids -> pendingDrawerDeleteIds = ids },
                 )
             },
         ) {
-        CompositionLocalProvider(LocalChatBackdropState provides chatBackdropState) {
         Scaffold(
             modifier = if (usePermanentDrawer) {
                 Modifier.widthIn(max = 920.dp).fillMaxHeight().align(Alignment.Center)
@@ -1163,13 +1599,27 @@ fun ChatScreen(
                                 alpha = progress
                                 translationY = -topFadeHeight.toPx() * (1f - progress)
                             }
+                            .progressiveEdgeBlur(
+                                state = chatBackdropState,
+                                edge = ProgressiveBlurEdge.Top,
+                                backgroundColor = pageBackgroundColor,
+                                blurRadius = if (interfaceEffects.glassMaterialEnabled) 28.dp else 15.dp,
+                            )
                             .background(
                                 Brush.verticalGradient(
-                                    colors = listOf(
-                                        pageBackgroundColor.copy(alpha = 0.98f),
-                                        pageBackgroundColor.copy(alpha = 0.72f),
-                                        Color.Transparent,
-                                    ),
+                                    colors = if (interfaceEffects.glassMaterialEnabled) {
+                                        listOf(
+                                            pageBackgroundColor.copy(alpha = 0.10f),
+                                            pageBackgroundColor.copy(alpha = 0.04f),
+                                            Color.Transparent,
+                                        )
+                                    } else {
+                                        listOf(
+                                            pageBackgroundColor.copy(alpha = 0.98f),
+                                            pageBackgroundColor.copy(alpha = 0.72f),
+                                            Color.Transparent,
+                                        )
+                                    },
                                 ),
                             ),
                     )
@@ -1184,28 +1634,16 @@ fun ChatScreen(
                                 )
                                 .padding(start = 8.dp, top = 8.dp),
                         ) {
-                            IconButton(
+                            GlassIconButton(
                                 onClick = {
                                     focusManager.clearFocus(force = true)
                                     keyboardController?.hide()
                                     drawerSessionActive = true
-                                    scope.launch { drawerState.open() }
+                                    scope.launch {
+                                        refreshDrawerBackdrop()
+                                        drawerState.open()
+                                    }
                                 },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .clip(CircleShape)
-                                    .chatBackdrop()
-                                    .background(
-                                        MaterialTheme.colorScheme.surface.copy(
-                                            alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.98f),
-                                        ),
-                                        CircleShape,
-                                    )
-                                    .border(
-                                        1.dp,
-                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-                                        CircleShape,
-                                    ),
                             ) {
                                 Box(modifier = Modifier.size(24.dp)) {
                                     Icon(
@@ -1257,7 +1695,7 @@ fun ChatScreen(
                                 .align(Alignment.BottomEnd)
                                 .padding(end = 8.dp, bottom = inputBarHeight + 8.dp),
                         ) {
-                            IconButton(
+                            GlassIconButton(
                                 onClick = {
                                     scrollToBottomInProgress = true
                                     followLatestMessages = true
@@ -1269,21 +1707,6 @@ fun ChatScreen(
                                         }
                                     }
                                 },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .clip(CircleShape)
-                                    .chatBackdrop()
-                                    .background(
-                                        MaterialTheme.colorScheme.surface.copy(
-                                            alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.98f),
-                                        ),
-                                        CircleShape,
-                                    )
-                                    .border(
-                                        1.dp,
-                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-                                        CircleShape,
-                                    ),
                             ) {
                                 Icon(
                                     Icons.Outlined.KeyboardArrowDown,
@@ -1300,17 +1723,60 @@ fun ChatScreen(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .height(inputBarHeight)
+                        .height(
+                            if (interfaceEffects.glassMaterialEnabled) {
+                                bottomBlurBandHeight + inputBarHeight
+                            } else {
+                                bottomBlurBandHeight
+                            },
+                        )
+                        .graphicsLayer {
+                            translationY = if (interfaceEffects.glassMaterialEnabled) {
+                                0f
+                            } else {
+                                -(inputBarHeight - bottomBlurBandOverlap).toPx()
+                            }
+                        }
+                        .progressiveEdgeBlur(
+                            state = chatBackdropState,
+                            edge = ProgressiveBlurEdge.Bottom,
+                            backgroundColor = pageBackgroundColor,
+                            blurRadius = if (interfaceEffects.glassMaterialEnabled) 40.dp else 15.dp,
+                            smoothBoundary = true,
+                        )
                         .background(
                             Brush.verticalGradient(
-                                0f to Color.Transparent,
-                                0.16f to pageBackgroundColor.copy(alpha = 0.18f),
-                                0.34f to pageBackgroundColor.copy(alpha = 0.72f),
-                                0.46f to pageBackgroundColor,
-                                1f to pageBackgroundColor,
+                                colors = if (interfaceEffects.glassMaterialEnabled) {
+                                    listOf(
+                                        Color.Transparent,
+                                        pageBackgroundColor.copy(alpha = 0.02f),
+                                        pageBackgroundColor.copy(alpha = 0.08f),
+                                    )
+                                } else {
+                                    listOf(
+                                        Color.Transparent,
+                                        pageBackgroundColor.copy(alpha = 0.08f),
+                                        pageBackgroundColor.copy(alpha = 0.28f),
+                                    )
+                                },
                             ),
                         ),
                 )
+                if (!interfaceEffects.glassMaterialEnabled) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(inputBarHeight)
+                            .background(
+                                Brush.verticalGradient(
+                                    0f to pageBackgroundColor.copy(alpha = 0.28f),
+                                    0.22f to pageBackgroundColor.copy(alpha = 0.88f),
+                                    1f to pageBackgroundColor,
+                                ),
+                            ),
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -1505,18 +1971,24 @@ private fun ToolApprovalDetailSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        containerColor = chatSheetSurfaceColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
-        dragHandle = { ChatSheetDragHandle() },
+        dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .chatSheetContentBackdrop()
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 2.dp,
+                bottomPadding = 0.dp,
+            )
             Text(
                 if (approval.integrationProtocol == "A2A") "允许应用协作？" else "风险确认",
                 color = MaterialTheme.colorScheme.onSurface,
@@ -1624,6 +2096,7 @@ private fun SkillParameterDialog(
 @Composable
 private fun MasonDrawer(
     permanent: Boolean = false,
+    backdropSnapshot: WindowBackdropSnapshot? = null,
     resetGeneration: Int,
     onNewChat: () -> Unit,
     onDevicePairing: () -> Unit,
@@ -1665,6 +2138,9 @@ private fun MasonDrawer(
         visibleConversations.map { it.conversation.id }.toSet()
     }
     val drawerListState = rememberLazyListState()
+    val drawerTopFadeHeight = 44.dp
+    val drawerBottomFadeHeight = 44.dp
+    val drawerBlurOuterFeather = 6.dp
     val drawerFadeRevealDistancePx = with(LocalDensity.current) { 24.dp.toPx() }
     val drawerTopFadeProgress = remember(drawerListState, drawerFadeRevealDistancePx) {
         derivedStateOf {
@@ -1681,7 +2157,25 @@ private fun MasonDrawer(
         animationSpec = tween(durationMillis = 180),
         label = "drawer_bottom_fade",
     )
-    val drawerSurface = drawerGlassSurface()
+    val interfaceEffects = LocalInterfaceEffects.current
+    var drawerWindowPosition by remember { mutableStateOf(IntOffset.Zero) }
+    val drawerSurfaceAlpha by animateFloatAsState(
+        targetValue = if (
+            !permanent &&
+            interfaceEffects.backdropBlurEnabled &&
+            backdropSnapshot == null
+        ) {
+            1f
+        } else {
+            interfaceEffects.largeSurfaceAlpha
+        },
+        animationSpec = tween(durationMillis = 120),
+        label = "drawer_surface_alpha",
+    )
+    val drawerSurface = drawerGlassSurface(drawerSurfaceAlpha)
+    val drawerEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
 
     LaunchedEffect(allVisibleIds) {
         selectedConversationIds = selectedConversationIds.intersect(allVisibleIds)
@@ -1722,8 +2216,6 @@ private fun MasonDrawer(
         Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .chatBackdrop()
-                    .background(drawerSurface)
                 .padding(top = 14.dp, bottom = 10.dp),
         ) {
             if (!selectionMode) {
@@ -1856,7 +2348,15 @@ private fun MasonDrawer(
             ) {
                 LazyColumn(
                     state = drawerListState,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .drawerListEdgeFadeMask(
+                            topProgress = drawerTopFadeProgress.value,
+                            bottomProgress = drawerBottomFadeProgress,
+                            topFadeHeight = drawerTopFadeHeight,
+                            bottomFadeHeight = drawerBottomFadeHeight,
+                        )
+                        .captureProgressiveEdgeBlur(drawerEdgeBlurState),
                     contentPadding = PaddingValues(top = 4.dp, bottom = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
@@ -1904,44 +2404,60 @@ private fun MasonDrawer(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxWidth()
-                        .height(30.dp)
+                        .height(drawerTopFadeHeight + drawerBlurOuterFeather)
                         .graphicsLayer {
                             val progress = drawerTopFadeProgress.value
                             alpha = progress
-                            translationY = -30.dp.toPx() * (1f - progress)
+                            translationY = -drawerBlurOuterFeather.toPx()
                         }
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    drawerSurface,
-                                    drawerSurface.copy(alpha = 0.72f),
-                                    Color.Transparent,
-                                ),
-                            ),
+                        .blurLayerOuterEdgeFeather(
+                            edge = ProgressiveBlurEdge.Top,
+                            featherHeight = drawerBlurOuterFeather,
                         ),
-                )
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .progressiveEdgeBlur(
+                                state = drawerEdgeBlurState,
+                                edge = ProgressiveBlurEdge.Top,
+                                backgroundColor = Color.Transparent,
+                                smoothBoundary = true,
+                                gradientStartY = drawerBlurOuterFeather,
+                                gradientEndY = drawerBlurOuterFeather + drawerTopFadeHeight,
+                            ),
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .height(34.dp)
-                        .graphicsLayer { alpha = drawerBottomFadeProgress }
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    drawerSurface.copy(alpha = 0.72f),
-                                    drawerSurface,
-                                ),
-                            ),
+                        .height(drawerBottomFadeHeight + drawerBlurOuterFeather)
+                        .graphicsLayer {
+                            alpha = drawerBottomFadeProgress
+                            translationY = drawerBlurOuterFeather.toPx()
+                        }
+                        .blurLayerOuterEdgeFeather(
+                            edge = ProgressiveBlurEdge.Bottom,
+                            featherHeight = drawerBlurOuterFeather,
                         ),
-                )
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .progressiveEdgeBlur(
+                                state = drawerEdgeBlurState,
+                                edge = ProgressiveBlurEdge.Bottom,
+                                backgroundColor = Color.Transparent,
+                                smoothBoundary = true,
+                                gradientStartY = 0.dp,
+                                gradientEndY = drawerBottomFadeHeight,
+                            ),
+                    )
+                }
             }
 
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
-            )
+            Spacer(modifier = Modifier.height(17.dp))
             if (selectionMode) {
                 Row(
                     modifier = Modifier
@@ -1989,9 +2505,22 @@ private fun MasonDrawer(
         ModalDrawerSheet(
             modifier = Modifier
                 .width(292.dp)
-                .chatBackdrop(),
+                .onGloballyPositioned { coordinates ->
+                    val position = coordinates.positionInWindow()
+                    drawerWindowPosition = IntOffset(
+                        x = position.x.roundToInt(),
+                        y = position.y.roundToInt(),
+                    )
+                }
+                .windowBackdrop(
+                    snapshot = backdropSnapshot,
+                    windowPosition = drawerWindowPosition,
+                    blurRadius = if (interfaceEffects.glassMaterialEnabled) 40.dp else 32.dp,
+                    allowZeroPosition = true,
+                )
+                .background(drawerSurface),
             drawerShape = RectangleShape,
-            drawerContainerColor = drawerSurface,
+            drawerContainerColor = Color.Transparent,
             windowInsets = WindowInsets.safeDrawing.only(
                 WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start,
             ),
@@ -2005,6 +2534,7 @@ private fun MasonDrawer(
 private fun AdaptiveChatLayout(
     usePermanentDrawer: Boolean,
     drawerState: DrawerState,
+    onBeforeDrawerOpen: suspend () -> Unit,
     drawerContent: @Composable () -> Unit,
     content: @Composable BoxScope.() -> Unit,
 ) {
@@ -2042,7 +2572,10 @@ private fun AdaptiveChatLayout(
                         )
                     ) {
                         change.consume()
-                        drawerGestureScope.launch { drawerState.open() }
+                        drawerGestureScope.launch {
+                            onBeforeDrawerOpen()
+                            drawerState.open()
+                        }
                         break
                     }
                     if (drag.x < -viewConfiguration.touchSlop ||
@@ -2056,10 +2589,27 @@ private fun AdaptiveChatLayout(
         ModalNavigationDrawer(
             drawerState = drawerState,
             gesturesEnabled = drawerState.currentValue == DrawerValue.Open,
-            scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.12f),
+            scrimColor = Color.Transparent,
             drawerContent = drawerContent,
             content = {
-                Box(modifier = Modifier.fillMaxSize().then(openGestureModifier)) { content() }
+                Box(modifier = Modifier.fillMaxSize().then(openGestureModifier)) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        content()
+                    }
+                    if (
+                        drawerState.currentValue == DrawerValue.Open ||
+                            drawerState.targetValue == DrawerValue.Open
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.12f))
+                                .clickable {
+                                    drawerGestureScope.launch { drawerState.close() }
+                                },
+                        )
+                    }
+                }
             },
         )
     }
@@ -2079,23 +2629,8 @@ private fun TopModelMenuButton(
     onOpenSettings: () -> Unit,
 ) {
     Box {
-        IconButton(
+        GlassIconButton(
             onClick = { onExpandedChange(true) },
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .chatBackdrop()
-                    .background(
-                        MaterialTheme.colorScheme.surface.copy(
-                            alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.98f),
-                    ),
-                    CircleShape,
-                )
-                .border(
-                    1.dp,
-                    MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-                    CircleShape,
-                ),
         ) {
             Icon(
                 imageVector = ImageVector.vectorResource(R.drawable.ic_model_switch),
@@ -2106,21 +2641,16 @@ private fun TopModelMenuButton(
                 modifier = Modifier.size(23.dp),
             )
         }
-        DropdownMenu(
+        ChatGlassDropdown(
             expanded = expanded,
             onDismissRequest = { onExpandedChange(false) },
-            shape = RoundedCornerShape(12.dp),
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-            border = androidx.compose.foundation.BorderStroke(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-            ),
+            width = 180.dp,
+            cornerRadius = 12.dp,
+            alignEnd = true,
         ) {
             Column(
                 modifier = Modifier
-                    .width(180.dp)
+                    .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 8.dp),
             ) {
                 Row(
@@ -2148,7 +2678,7 @@ private fun TopModelMenuButton(
                         )
                     }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.14f))
+                HorizontalDivider(color = Color(0xFFDEE0E6).copy(alpha = 0.50f))
                 CurrentModelMenuRow(label = "聊天", modelName = summary.chatModelName)
                 CurrentModelMenuRow(label = "识图", modelName = summary.visionModelName)
                 CurrentModelMenuRow(label = "图片生成", modelName = summary.imageModelName)
@@ -2188,7 +2718,9 @@ private fun CurrentModelMenuRow(
 }
 
 @Composable
-private fun drawerGlassSurface(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
+private fun drawerGlassSurface(alpha: Float): Color = MaterialTheme.colorScheme.surface.copy(
+    alpha = alpha,
+)
 
 @Composable
 private fun DrawerPrimaryAction(
@@ -3053,6 +3585,7 @@ private fun MasonProcessPanel(
             ?: "已完成目标识别和回答规划"
     }
     var thoughtExpanded by remember(steps.map { it.status }, capabilityRequirement?.id) { mutableStateOf(false) }
+    val thoughtCanExpand = thoughtDetail.isNotBlank() || isActive || modelParticipation != null
 
     Column(
         modifier = Modifier
@@ -3072,9 +3605,9 @@ private fun MasonProcessPanel(
             status = if (thoughtRunning) "进行中" else if (thoughtFailed) "失败" else "",
             active = thoughtRunning,
             expanded = thoughtExpanded,
-            onClick = { thoughtExpanded = !thoughtExpanded },
+            onClick = if (thoughtCanExpand) { { thoughtExpanded = !thoughtExpanded } } else null,
         )
-        if (thoughtExpanded) {
+        if (thoughtExpanded && thoughtCanExpand) {
             Column(
                 modifier = Modifier.padding(
                     start = 42.dp,
@@ -3186,13 +3719,13 @@ private fun ActivitySummaryRow(
     status: String,
     active: Boolean,
     expanded: Boolean,
-    onClick: () -> Unit,
+    onClick: (() -> Unit)?,
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .activityShimmer(active)
-            .clickable(onClick = onClick),
+            .clickable(enabled = onClick != null) { onClick?.invoke() },
     ) {
         Row(
             modifier = Modifier
@@ -3205,7 +3738,7 @@ private fun ActivitySummaryRow(
                 icon,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(21.dp),
             )
             Spacer(Modifier.width(10.dp))
             Text(
@@ -3225,12 +3758,14 @@ private fun ActivitySummaryRow(
                 )
                 Spacer(Modifier.width(6.dp))
             }
-            Icon(
-                if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                contentDescription = if (expanded) "收起" else "展开",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
+            if (onClick != null) {
+                Icon(
+                    if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = if (expanded) "收起" else "展开",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
     }
 }
@@ -3244,6 +3779,19 @@ private fun TaskProcessLine(
     onRetry: () -> Unit,
 ) {
     val active = step.status == TaskStepStatus.Running
+    val toolName = step.toolCall?.function?.name.orEmpty()
+    val taskIconSize = when {
+        step.kind == TaskStepKind.Understand -> 18.dp
+        toolName.contains("memory") -> 18.dp
+        toolName.startsWith("file_") || toolName in setOf("storage", "file_list") -> 17.dp
+        else -> 16.dp
+    }
+    val canResume = step.status == TaskStepStatus.WaitingForUser && allowWaitingResume
+    val canRetry = step.status == TaskStepStatus.Failed && step.retryable
+    val isDocumentKnowledgeFailure = canRetry && isDocumentKnowledgeStep(step)
+    val canOpenDetail = step.toolCall != null
+    val canInteract = canOpenDetail || canResume || canRetry
+    var showRetryConfirmation by remember(step.id, step.status) { mutableStateOf(false) }
     val statusLabel = when (step.status) {
         TaskStepStatus.Pending -> "待处理"
         TaskStepStatus.Running -> "进行中"
@@ -3257,7 +3805,13 @@ private fun TaskProcessLine(
         modifier = Modifier
             .fillMaxWidth()
             .activityShimmer(active)
-            .clickable(enabled = step.toolCall != null) { onOpenDetail() },
+            .clickable(enabled = canInteract) {
+                when {
+                    isDocumentKnowledgeFailure -> showRetryConfirmation = true
+                    canResume || (canRetry && !canOpenDetail) -> onRetry()
+                    canOpenDetail -> onOpenDetail()
+                }
+            },
     ) {
         Row(
             modifier = Modifier
@@ -3266,12 +3820,17 @@ private fun TaskProcessLine(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                taskStepIcon(step),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp),
-            )
+            Box(
+                modifier = Modifier.size(20.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    taskStepIcon(step),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(taskIconSize),
+                )
+            }
             Spacer(Modifier.width(10.dp))
             Text(
                 displayTaskStepTitle(step),
@@ -3282,20 +3841,6 @@ private fun TaskProcessLine(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Box(modifier = Modifier.size(30.dp)) {
-                if ((step.status == TaskStepStatus.Failed && step.retryable) ||
-                    (step.status == TaskStepStatus.WaitingForUser && allowWaitingResume)
-                ) {
-                    IconButton(onClick = onRetry, modifier = Modifier.fillMaxSize()) {
-                        Icon(
-                            if (step.status == TaskStepStatus.WaitingForUser) Icons.Outlined.PlayArrow else Icons.Outlined.Refresh,
-                            contentDescription = if (step.status == TaskStepStatus.WaitingForUser) "继续任务" else "重试此步骤",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                }
-            }
             Box(
                 modifier = Modifier.width(52.dp),
                 contentAlignment = Alignment.CenterEnd,
@@ -3303,18 +3848,64 @@ private fun TaskProcessLine(
                 Text(
                     statusLabel,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 10.sp,
+                    fontSize = 11.sp,
                 )
             }
-            Spacer(Modifier.width(6.dp))
-            Icon(
-                Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                contentDescription = "查看执行详情",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
+            if (canInteract) {
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = "查看执行详情",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            } else {
+                Spacer(Modifier.width(24.dp))
+            }
         }
     }
+
+    if (showRetryConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showRetryConfirmation = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            title = { Text("确认重试") },
+            text = { Text("文档知识处理失败，是否重新尝试？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRetryConfirmation = false
+                        onRetry()
+                    },
+                ) {
+                    Text("重试", color = MaterialTheme.colorScheme.primary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRetryConfirmation = false }) {
+                    Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+        )
+    }
+}
+
+private fun isDocumentKnowledgeStep(step: TaskStep): Boolean {
+    val searchable = buildString {
+        append(step.title)
+        append('\n')
+        append(step.detail)
+        append('\n')
+        append(step.error.orEmpty())
+        append('\n')
+        append(step.toolCall?.function?.name.orEmpty())
+        append('\n')
+        append(step.toolCall?.function?.arguments.orEmpty())
+    }.lowercase(Locale.ROOT)
+    return listOf("文档", "文本", "知识", "document", "text", "knowledge", "file_read")
+        .any(searchable::contains)
 }
 
 @Composable
@@ -3345,6 +3936,7 @@ private fun Modifier.activityShimmer(active: Boolean): Modifier {
     }
 }
 
+@Composable
 private fun taskStepIcon(step: TaskStep): ImageVector {
     val toolName = step.toolCall?.function?.name.orEmpty()
     if (toolName.isNotBlank()) return toolIcon(toolName)
@@ -3353,9 +3945,9 @@ private fun taskStepIcon(step: TaskStep): ImageVector {
         TaskStepKind.PrepareInputs -> Icons.Outlined.AttachFile
         TaskStepKind.Model -> Icons.Outlined.Description
         TaskStepKind.Skill -> Icons.Outlined.Extension
-        TaskStepKind.Tool -> Icons.Outlined.Computer
+        TaskStepKind.Tool -> Icons.Outlined.Terminal
         TaskStepKind.Review -> Icons.Outlined.CheckCircle
-        TaskStepKind.Deliver -> Icons.Outlined.Share
+        TaskStepKind.Deliver -> ImageVector.vectorResource(R.drawable.ic_layers)
     }
 }
 
@@ -3373,7 +3965,7 @@ private fun toolIcon(toolName: String): ImageVector = when {
         Icons.Outlined.Settings
     toolName in setOf("observe", "click_node", "tap", "swipe", "scroll", "set_text", "global_action") ->
         Icons.Outlined.Visibility
-    else -> Icons.Outlined.Computer
+    else -> Icons.Outlined.Terminal
 }
 
 private fun taskStepMeta(step: TaskStep): String? {
@@ -3444,6 +4036,9 @@ private fun ToolExecutionDetailSheet(
 ) {
     val clipboard = LocalClipboardManager.current
     val detailScrollState = rememberScrollState()
+    val detailEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
     val requestText = remember(detail.step.toolCall) { formatToolRequest(detail.step) }
     val responseText = remember(detail.result?.content, detail.step.error) {
         redactSensitiveToolText(detail.result?.content ?: detail.step.error ?: "暂无返回内容")
@@ -3452,18 +4047,24 @@ private fun ToolExecutionDetailSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        containerColor = chatSheetSurfaceColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
-        dragHandle = { ChatSheetDragHandle() },
+        dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.88f)
+                .chatSheetContentBackdrop()
                 .padding(horizontal = 18.dp, vertical = 8.dp),
         ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 2.dp,
+                bottomPadding = 0.dp,
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -3482,22 +4083,33 @@ private fun ToolExecutionDetailSheet(
                 }
             }
             Spacer(Modifier.height(14.dp))
-            Column(
+            Box(
                 modifier = Modifier
                     .weight(1f)
-                    .chatSheetEdgeFade(detailScrollState, MaterialTheme.colorScheme.surface)
-                    .verticalScroll(detailScrollState),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                    .fillMaxWidth(),
             ) {
-                ExecutionDetailSection(
-                    label = "请求",
-                    content = requestText,
-                    onCopy = { clipboard.setText(AnnotatedString(requestText)) },
-                )
-                ExecutionDetailSection(
-                    label = "响应",
-                    content = responseText,
-                    onCopy = { clipboard.setText(AnnotatedString(responseText)) },
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .captureProgressiveEdgeBlur(detailEdgeBlurState)
+                        .verticalScroll(detailScrollState),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    ExecutionDetailSection(
+                        label = "请求",
+                        content = requestText,
+                        onCopy = { clipboard.setText(AnnotatedString(requestText)) },
+                    )
+                    ExecutionDetailSection(
+                        label = "响应",
+                        content = responseText,
+                        onCopy = { clipboard.setText(AnnotatedString(responseText)) },
+                    )
+                }
+                ChatSheetEdgeFades(
+                    scrollState = detailScrollState,
+                    blurState = detailEdgeBlurState,
+                    surfaceColor = MaterialTheme.colorScheme.surface,
                 )
             }
             if (detail.step.status == TaskStepStatus.Failed && detail.step.retryable) {
@@ -4343,17 +4955,23 @@ private fun UserMessageActionSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        containerColor = chatSheetSurfaceColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
-        dragHandle = { ChatSheetDragHandle() },
+        dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .chatSheetContentBackdrop()
                 .padding(horizontal = 14.dp, vertical = 6.dp),
         ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 4.dp,
+                bottomPadding = 2.dp,
+            )
             AssistantActionSheetRow(
                 icon = Icons.Outlined.ContentCopy,
                 label = "复制消息",
@@ -4388,17 +5006,23 @@ private fun AssistantActionSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        containerColor = chatSheetSurfaceColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
-        dragHandle = { ChatSheetDragHandle() },
+        dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .chatSheetContentBackdrop()
                 .padding(horizontal = 14.dp, vertical = 6.dp),
         ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 4.dp,
+                bottomPadding = 2.dp,
+            )
             AssistantActionSheetRow(
                 icon = Icons.Outlined.ContentCopy,
                 label = "复制回答",
@@ -4936,69 +5560,107 @@ private fun ArtifactMentionStrip(artifacts: List<ArtifactMetadata>) {
     Column {
         artifacts.forEachIndexed { index, artifact ->
             if (index > 0) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Outlined.Description,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(9.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        artifact.name,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                if (
+                    isPreviewableImageArtifact(
+                        artifact,
+                        platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+                    ) ||
+                    isPreviewableImageArtifact(
+                        artifacts[index - 1],
+                        platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
                     )
-                    Text(
-                        "产出 · ${formatArtifactSize(artifact.bytes)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 10.sp,
-                    )
+                ) {
+                    Spacer(Modifier.height(12.dp))
+                } else {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
                 }
-                Spacer(Modifier.width(4.dp))
-                MessageActionButton(
-                    icon = Icons.Outlined.Visibility,
-                    contentDescription = "预览产出",
+            }
+            if (
+                isPreviewableImageArtifact(
+                    artifact,
+                    platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+                )
+            ) {
+                ArtifactImageThumbnail(
+                    artifact = artifact,
                     onClick = { previewArtifact = artifact },
                 )
-                MessageActionButton(
-                    icon = Icons.Outlined.FileDownload,
-                    contentDescription = "打开产出",
-                    onClick = { openArtifact(context, artifact, edit = false) },
-                )
-                MessageActionButton(
-                    icon = Icons.Outlined.Edit,
-                    contentDescription = "编辑产出",
-                    onClick = { openArtifact(context, artifact, edit = true) },
-                )
-                MessageActionButton(
-                    icon = Icons.Outlined.Share,
-                    contentDescription = "分享产出",
-                    onClick = { shareArtifact(context, artifact) },
-                )
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Outlined.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            artifact.name,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "产出 · ${formatArtifactSize(artifact.bytes)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 10.sp,
+                        )
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    MessageActionButton(
+                        icon = Icons.Outlined.Visibility,
+                        contentDescription = "预览产出",
+                        onClick = { previewArtifact = artifact },
+                    )
+                    MessageActionButton(
+                        icon = Icons.Outlined.FileDownload,
+                        contentDescription = "打开产出",
+                        onClick = { openArtifact(context, artifact, edit = false) },
+                    )
+                    MessageActionButton(
+                        icon = Icons.Outlined.Edit,
+                        contentDescription = "编辑产出",
+                        onClick = { openArtifact(context, artifact, edit = true) },
+                    )
+                    MessageActionButton(
+                        icon = Icons.Outlined.Share,
+                        contentDescription = "分享产出",
+                        onClick = { shareArtifact(context, artifact) },
+                    )
+                }
             }
         }
     }
 
     previewArtifact?.let { artifact ->
-        ArtifactPreviewDialog(
-            artifact = artifact,
-            onDismiss = { previewArtifact = null },
-            onOpen = { openArtifact(context, artifact, edit = false) },
-            onEdit = { openArtifact(context, artifact, edit = true) },
-            onShare = { shareArtifact(context, artifact) },
-        )
+        if (
+            isPreviewableImageArtifact(
+                artifact,
+                platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+            )
+        ) {
+            ArtifactImagePreviewDialog(
+                artifact = artifact,
+                onDismiss = { previewArtifact = null },
+                onShare = { shareArtifact(context, artifact) },
+            )
+        } else {
+            ArtifactPreviewDialog(
+                artifact = artifact,
+                onDismiss = { previewArtifact = null },
+                onOpen = { openArtifact(context, artifact, edit = false) },
+                onEdit = { openArtifact(context, artifact, edit = true) },
+                onShare = { shareArtifact(context, artifact) },
+            )
+        }
     }
 }
 
@@ -5015,21 +5677,30 @@ private fun ArtifactPreviewDialog(
         buildArtifactPreviewText(artifact)
     }
     val previewScrollState = rememberScrollState()
+    val previewEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        containerColor = chatSheetSurfaceColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
-        dragHandle = { ChatSheetDragHandle() },
+        dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .chatSheetContentBackdrop()
                 .padding(horizontal = 18.dp, vertical = 8.dp),
         ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 2.dp,
+                bottomPadding = 0.dp,
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     Icons.Outlined.Description,
@@ -5069,16 +5740,26 @@ private fun ArtifactPreviewDialog(
                     .fillMaxWidth()
                     .height(190.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.54f))
-                    .chatSheetEdgeFade(previewScrollState, MaterialTheme.colorScheme.surfaceVariant)
-                    .verticalScroll(previewScrollState)
-                    .padding(12.dp),
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.54f)),
             ) {
-                Text(
-                    previewText,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp,
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .captureProgressiveEdgeBlur(previewEdgeBlurState)
+                        .verticalScroll(previewScrollState)
+                        .padding(12.dp),
+                ) {
+                    Text(
+                        previewText,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                    )
+                }
+                ChatSheetEdgeFades(
+                    scrollState = previewScrollState,
+                    blurState = previewEdgeBlurState,
+                    surfaceColor = MaterialTheme.colorScheme.surfaceVariant,
                 )
             }
             Spacer(Modifier.height(10.dp))
@@ -5389,15 +6070,8 @@ private fun InputBar(
         text.isNotBlank() ||
             attachments.isNotEmpty() ||
             selectedSkill != null
-        )
-    val borderColor = if (active) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
-    } else {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.11f)
-    }
-    val panelSurface = MaterialTheme.colorScheme.surface.copy(
-            alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.99f),
     )
+    val borderColor = masonGlassOutline.copy(alpha = 0.30f)
     var addMenuExpanded by remember { mutableStateOf(false) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
     var restoreFocusAfterExpansion by remember { mutableStateOf(false) }
@@ -5442,16 +6116,25 @@ private fun InputBar(
             Spacer(Modifier.height(7.dp))
         }
 
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .masonGlassShadow(cornerRadius = 18.dp)
                 .clip(panelShape)
-                .chatBackdrop()
-                .background(panelSurface)
-                .border(1.dp, borderColor, panelShape)
-                .animateContentSize(animationSpec = tween(durationMillis = 180))
-                .padding(horizontal = 7.dp, vertical = 5.dp),
+                .animateContentSize(animationSpec = tween(durationMillis = 180)),
         ) {
+            ChatGlassMaterial(
+                shape = panelShape,
+                cornerRadius = 18.dp,
+                role = ChatSurfaceRole.Large,
+                blur = ChatBackdropBlur.Soft,
+                blurredAlpha = 0.80f,
+                fallbackAlpha = 0.99f,
+                borderColor = borderColor,
+            )
+            Column(
+                modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+            ) {
             if (expanded && (attachments.isNotEmpty() || selectedSkill != null)) {
                 InputContextStrip(
                     attachments = attachments,
@@ -5475,17 +6158,12 @@ private fun InputBar(
                             addMenuExpanded = true
                         },
                     )
-                    DropdownMenu(
+                    ChatGlassDropdown(
                         expanded = addMenuExpanded,
                         onDismissRequest = { addMenuExpanded = false },
-                        shape = RoundedCornerShape(14.dp),
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-                        tonalElevation = 0.dp,
-                        shadowElevation = 0.dp,
-                        border = androidx.compose.foundation.BorderStroke(
-                            1.dp,
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-                        ),
+                        width = 180.dp,
+                        cornerRadius = 14.dp,
+                        alignEnd = false,
                     ) {
                         AttachmentMenuRow(
                             label = "添加图片",
@@ -5637,6 +6315,7 @@ private fun InputBar(
                     )
                 }
             }
+            }
         }
     }
 }
@@ -5648,58 +6327,65 @@ private fun RiskApprovalPill(
     onApproveOnce: () -> Unit,
 ) {
     val shape = RoundedCornerShape(12.dp)
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
-            .chatBackdrop()
-            .background(
-                MaterialTheme.colorScheme.surface.copy(
-                    alpha = chatFloatingSurfaceAlpha(blurred = 0.88f, fallback = 0.97f),
-                ),
-            )
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f), shape)
-            .clickable(onClick = onOpenDetails)
-            .padding(start = 13.dp, end = 7.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clickable(onClick = onOpenDetails),
     ) {
-        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-            val underlineColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f)
-            Text(
-                text = "风险确认：${displayApprovalAction(approval)}",
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.drawBehind {
-                    drawLine(
-                        color = underlineColor,
-                        start = Offset(0f, size.height - 1.dp.toPx()),
-                        end = Offset(size.width, size.height - 1.dp.toPx()),
-                        strokeWidth = 1.dp.toPx(),
-                        pathEffect = PathEffect.dashPathEffect(
-                            intervals = floatArrayOf(3.dp.toPx(), 2.dp.toPx()),
-                        ),
-                    )
-                },
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Box(
+        ChatGlassMaterial(
+            shape = shape,
+            cornerRadius = 12.dp,
+            role = ChatSurfaceRole.Large,
+            blurredAlpha = 0.88f,
+            fallbackAlpha = 0.97f,
+            borderWidth = 1.dp,
+            borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
+        )
+        Row(
             modifier = Modifier
-                .size(30.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-                .clickable(onClick = onApproveOnce),
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .padding(start = 13.dp, end = 7.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                Icons.Outlined.Check,
-                contentDescription = "允许一次",
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.size(17.dp),
-            )
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                val underlineColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f)
+                Text(
+                    text = "风险确认：${displayApprovalAction(approval)}",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.drawBehind {
+                        drawLine(
+                            color = underlineColor,
+                            start = Offset(0f, size.height - 1.dp.toPx()),
+                            end = Offset(size.width, size.height - 1.dp.toPx()),
+                            strokeWidth = 1.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(
+                                intervals = floatArrayOf(3.dp.toPx(), 2.dp.toPx()),
+                            ),
+                        )
+                    },
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary)
+                    .clickable(onClick = onApproveOnce),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.Check,
+                    contentDescription = "允许一次",
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
         }
     }
 }
@@ -5725,49 +6411,52 @@ private fun ApiAttentionPill(
 ) {
     val accent = MaterialTheme.colorScheme.primary
     val shape = RoundedCornerShape(10.dp)
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
-            .chatBackdrop()
-            .background(
-                MaterialTheme.colorScheme.surface.copy(
-                    alpha = chatFloatingSurfaceAlpha(blurred = 0.94f, fallback = 0.96f),
-                ),
-            )
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
-                shape,
-            )
-            .clickable(onClick = onClick)
-            .padding(start = 9.dp, end = 8.dp, top = 5.dp, bottom = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clickable(onClick = onClick),
     ) {
-        Icon(
-            Icons.Outlined.Warning,
-            contentDescription = null,
-            tint = accent.copy(alpha = 0.82f),
-            modifier = Modifier.size(14.dp),
+        ChatGlassMaterial(
+            shape = shape,
+            cornerRadius = 10.dp,
+            role = ChatSurfaceRole.Large,
+            blurredAlpha = 0.94f,
+            fallbackAlpha = 0.96f,
+            borderWidth = 1.dp,
+            borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
         )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            message,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "前往",
-            color = accent,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 9.dp, end = 8.dp, top = 5.dp, bottom = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Warning,
+                contentDescription = null,
+                tint = accent.copy(alpha = 0.82f),
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                message,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "前往",
+                color = accent,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -5815,17 +6504,12 @@ private fun ModelModeSwitcher(
             )
         }
 
-        DropdownMenu(
+        ChatGlassDropdown(
             expanded = expanded,
             onDismissRequest = { onExpandedChange(false) },
-            shape = RoundedCornerShape(16.dp),
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-            border = androidx.compose.foundation.BorderStroke(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-            ),
+            width = 184.dp,
+            cornerRadius = 16.dp,
+            alignEnd = true,
         ) {
             Text(
                 "模式 · $providerName",
@@ -6020,21 +6704,30 @@ private fun SkillPickerSheet(
     onSelect: (SkillOption) -> Unit,
 ) {
     val skillListState = rememberLazyListState()
+    val skillEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.985f),
+        containerColor = chatSheetSurfaceColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
-        dragHandle = { ChatSheetDragHandle() },
+        dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .chatSheetContentBackdrop()
                 .padding(horizontal = 16.dp, vertical = 5.dp)
                 .padding(bottom = 28.dp),
         ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 5.dp,
+                bottomPadding = 3.dp,
+            )
             Text(
                 "使用 Skill",
                 color = MaterialTheme.colorScheme.onSurface,
@@ -6057,19 +6750,30 @@ private fun SkillPickerSheet(
                     fontSize = 13.sp,
                     modifier = Modifier.padding(vertical = 22.dp),
                 )
-                else -> LazyColumn(
-                    state = skillListState,
+                else -> Box(
                     modifier = Modifier
-                        .chatSheetEdgeFade(skillListState, MaterialTheme.colorScheme.surface)
+                        .fillMaxWidth()
                         .heightIn(max = 420.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    items(skills, key = { it.path }) { skill ->
-                        SkillPickerRow(
-                            skill = skill,
-                            onClick = { onSelect(skill) },
-                        )
+                    LazyColumn(
+                        state = skillListState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .captureProgressiveEdgeBlur(skillEdgeBlurState),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(skills, key = { it.path }) { skill ->
+                            SkillPickerRow(
+                                skill = skill,
+                                onClick = { onSelect(skill) },
+                            )
+                        }
                     }
+                    ChatSheetEdgeFades(
+                        listState = skillListState,
+                        blurState = skillEdgeBlurState,
+                        surfaceColor = MaterialTheme.colorScheme.surface,
+                    )
                 }
             }
         }
@@ -6242,15 +6946,19 @@ private fun parseUserMessagePresentation(content: String): UserMessagePresentati
 
 private fun extractReferenceUrls(content: String): List<String> =
     Regex("""https?://[^\s)）\]】]+""")
-        .findAll(content)
+        .findAll(stripDiagnosticErrorLines(content))
         .map { it.value.trimEnd('.', ',', '，', '。') }
+        .filterNot { url ->
+            url.startsWith("http://www.w3.org/2000/svg") ||
+                url.startsWith("http://www.w3.org/1999/xlink")
+        }
         .distinct()
         .take(4)
         .toList()
 
 private fun extractOutputMentions(content: String): List<String> =
     Regex(
-        """(?i)([A-Za-z]:\\[^\n]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|pdf|csv)|/[^\s]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|pdf|csv)|[\w./-]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|pdf|csv))""",
+        """(?i)([A-Za-z]:\\[^\n]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|gif|svg|bmp|heif|heic|avif|ico|pdf|csv)|/[^\s]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|gif|svg|bmp|heif|heic|avif|ico|pdf|csv)|[\w./-]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|gif|svg|bmp|heif|heic|avif|ico|pdf|csv))""",
     )
         .findAll(content)
         .map { it.value.trimEnd('.', ',', '，', '。') }
@@ -6322,16 +7030,35 @@ private fun openArtifact(context: Context, artifact: ArtifactMetadata, edit: Boo
 }
 
 private fun shareArtifact(context: Context, artifact: ArtifactMetadata) {
-    val file = File(artifact.path)
+    val validatedImage = if (
+        isPreviewableImageArtifact(
+            artifact,
+            platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+        )
+    ) {
+        validateImageArtifact(context, artifact).getOrElse { error ->
+            Toast.makeText(
+                context,
+                "图片无法分享：${error.message ?: "文件校验失败"}",
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+    } else {
+        null
+    }
+    val file = validatedImage?.file ?: File(artifact.path)
     if (!file.exists() || file.isDirectory) {
         Toast.makeText(context, "文件不存在或无法分享", Toast.LENGTH_SHORT).show()
         return
     }
 
+    val uri = file.toArtifactUri(context)
     val intent = Intent(Intent.ACTION_SEND).apply {
-        type = artifact.mimeType.ifBlank { file.artifactMimeType() }
-        putExtra(Intent.EXTRA_STREAM, file.toArtifactUri(context))
+        type = validatedImage?.mimeType ?: artifact.mimeType.ifBlank { file.artifactMimeType() }
+        putExtra(Intent.EXTRA_STREAM, uri)
         putExtra(Intent.EXTRA_SUBJECT, artifact.name)
+        clipData = ClipData.newUri(context.contentResolver, artifact.name, uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
@@ -6357,6 +7084,12 @@ private fun File.artifactMimeType(): String {
         "jpg", "jpeg" -> "image/jpeg"
         "webp" -> "image/webp"
         "gif" -> "image/gif"
+        "svg" -> "image/svg+xml"
+        "bmp" -> "image/bmp"
+        "heif" -> "image/heif"
+        "heic" -> "image/heic"
+        "avif" -> "image/avif"
+        "ico" -> "image/x-icon"
         "pdf" -> "application/pdf"
         else -> "*/*"
     }

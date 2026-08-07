@@ -5,6 +5,7 @@ import com.denggl2.mason.data.ApiConfigDataStore
 import com.denggl2.mason.data.AiProviderCatalog
 import com.denggl2.mason.data.LocalModelStore
 import com.denggl2.mason.data.connection
+import com.denggl2.mason.data.modelForReference
 import com.denggl2.mason.data.resolvedChatModelRef
 import com.denggl2.mason.llm.ApiConfigProvider
 import com.denggl2.mason.llm.LiteRtModelEngine
@@ -51,7 +52,7 @@ object ApiConfigModule {
                 val selectedRef = config.resolvedChatModelRef()
                 val selected = config.connection(connectionId ?: selectedRef.connectionId)
                 if (selected == null) return super<ApiConfigProvider>.resolve(connectionId)
-                val model = selected.modelIds.firstOrNull().orEmpty()
+                val model = selected.modelForReference(selectedRef)
                 return ResolvedApiConfig(
                     apiUrl = selected.apiUrl,
                     apiKey = selected.apiKey,

@@ -9,6 +9,26 @@ import org.junit.Test
 
 class ApiConfigLogicTest {
     @Test
+    fun connectionUsesSelectedModelInsteadOfFirstModel() {
+        val connection = ApiConnection(
+            id = "custom",
+            providerId = "custom",
+            name = "Remote",
+            apiUrl = "https://example.invalid/v1",
+            modelIds = listOf("kimi-k3-free", "deepseek-v4-flash-free"),
+        )
+
+        assertEquals(
+            "deepseek-v4-flash-free",
+            connection.modelForReference(ModelReference(connection.id, "deepseek-v4-flash-free")),
+        )
+        assertEquals(
+            "kimi-k3-free",
+            connection.modelForReference(ModelReference(connection.id, "missing")),
+        )
+    }
+
+    @Test
     fun emptyConfigDoesNotInventAProviderOrModel() {
         val config = ApiConfig()
 
@@ -291,5 +311,142 @@ class ApiConfigLogicTest {
         assertNotNull(vision)
         assertEquals("gemini", vision?.connectionId)
         assertEquals("gemini-key", config.connection(vision!!.connectionId)?.apiKey)
+    }
+
+    @Test
+    fun customEndpointsGetIndependentConnectionIds() {
+        val first = connectionIdForEndpoint("custom", "https://relay-a.example/v1")
+        val second = connectionIdForEndpoint("custom", "https://relay-b.example/v1")
+
+        assertTrue(first.startsWith("custom:"))
+        assertTrue(second.startsWith("custom:"))
+        assertFalse(first == second)
+        assertEquals(first, connectionIdForEndpoint("custom", "https://relay-a.example/v1/"))
+    }
+
+    @Test
+    fun legacyMergedCustomConnectionSplitsModelsByVerificationEndpoint() {
+        val endpointA = "https://apiarc.ai/v1"
+        val endpointB = "https://oneai-gw-api.shiyue.com/v1"
+        val merged = ApiConnection(
+            id = "custom",
+            providerId = "custom",
+            name = "远端模型",
+            apiUrl = endpointB,
+            apiKey = "shared-key",
+            modelIds = listOf("kimi-k3-free", "gpt-5.6-luna"),
+            modelCapabilities = mapOf(
+                "kimi-k3-free" to ApiModelCapabilities(supportsChat = true, supportsTools = true),
+                "gpt-5.6-luna" to ApiModelCapabilities(supportsChat = true),
+            ),
+            verifiedModelSignatures = mapOf(
+                "kimi-k3-free" to "custom|$endpointA|kimi-k3-free|1",
+                "gpt-5.6-luna" to "custom|$endpointB|gpt-5.6-luna|2",
+            ),
+        )
+
+        val split = splitEndpointScopedConnections(listOf(merged))
+
+        assertEquals(2, split.size)
+        val kimi = split.single { "kimi-k3-free" in it.modelIds }
+        val selected = ApiConfig(connections = split).selectChatModel(
+            ModelReference(kimi.id, "kimi-k3-free"),
+        )
+        assertEquals(endpointA, selected.apiUrl)
+        assertEquals("shared-key", selected.apiKey)
+        assertTrue(selected.toolsEnabled)
+    }
+
+    @Test
+    fun activeCustomEndpointDoesNotRecombineOtherConnections() {
+        val first = ApiConnection(
+            id = connectionIdForEndpoint("custom", "https://relay-a.example/v1"),
+            providerId = "custom",
+            name = "A",
+            apiUrl = "https://relay-a.example/v1",
+            apiKey = "a-key",
+            modelIds = listOf("a-model"),
+        )
+        val second = ApiConnection(
+            id = connectionIdForEndpoint("custom", "https://relay-b.example/v1"),
+            providerId = "custom",
+            name = "B",
+            apiUrl = "https://relay-b.example/v1",
+            apiKey = "b-key",
+            modelIds = listOf("b-model"),
+        )
+        val config = ApiConfig(connections = listOf(first, second))
+            .selectChatModel(ModelReference(second.id, "b-model"))
+
+        val normalized = config.withActiveConnection()
+
+        assertEquals(2, normalized.connections.size)
+        assertEquals("https://relay-b.example/v1", normalized.apiUrl)
+        val normalizedFirst = normalized.connections.single { "a-model" in it.modelIds }
+        val normalizedSecond = normalized.connections.single { "b-model" in it.modelIds }
+        assertEquals("a-key", normalizedFirst.apiKey)
+        assertEquals("b-key", normalizedSecond.apiKey)
+        assertEquals(
+            connectionIdForModel("custom", first.apiUrl, "a-model"),
+            normalizedFirst.id,
+        )
+        assertEquals(
+            connectionIdForModel("custom", second.apiUrl, "b-model"),
+            normalizedSecond.id,
+        )
+    }
+
+    @Test
+    fun sameEndpointModelsUseIndependentModelScopedConnectionIds() {
+        val endpoint = "https://relay.example/v1"
+        val first = ApiConnection(
+            id = connectionIdForModel("custom", endpoint, "model-a"),
+            providerId = "custom",
+            name = "A",
+            apiUrl = endpoint,
+            apiKey = "a-key",
+            modelIds = listOf("model-a"),
+        )
+        val second = ApiConnection(
+            id = connectionIdForModel("custom", endpoint, "model-b"),
+            providerId = "custom",
+            name = "B",
+            apiUrl = endpoint,
+            apiKey = "b-key",
+            modelIds = listOf("model-b"),
+        )
+
+        val normalized = splitModelScopedConnections(listOf(first, second))
+
+        assertEquals(2, normalized.size)
+        assertEquals("a-key", normalized.single { it.modelIds == listOf("model-a") }.apiKey)
+        assertEquals("b-key", normalized.single { it.modelIds == listOf("model-b") }.apiKey)
+        assertFalse(
+            connectionIdForModel("custom", endpoint, "model-a") ==
+                connectionIdForModel("custom", endpoint, "model-b"),
+        )
+    }
+
+    @Test
+    fun legacyMultiModelConnectionIsSplitIntoSingleModelRecords() {
+        val legacy = ApiConnection(
+            id = "custom",
+            providerId = "custom",
+            name = "Legacy",
+            apiUrl = "https://relay.example/v1",
+            apiKey = "legacy-key",
+            modelIds = listOf("model-a", "model-b"),
+            modelCapabilities = mapOf(
+                "model-a" to ApiModelCapabilities(supportsChat = true),
+                "model-b" to ApiModelCapabilities(supportsChat = true, supportsTools = true),
+            ),
+        )
+
+        val split = splitModelScopedConnections(listOf(legacy))
+
+        assertEquals(2, split.size)
+        assertTrue(split.all { it.modelIds.size == 1 })
+        assertEquals("legacy-key", split.single { it.modelIds == listOf("model-a") }.apiKey)
+        assertTrue(split.single { it.modelIds == listOf("model-b") }.toolsSupported)
     }
 }

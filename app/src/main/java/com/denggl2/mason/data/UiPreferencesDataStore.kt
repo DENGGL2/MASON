@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -22,7 +21,7 @@ class UiPreferencesDataStore @Inject constructor(
     private companion object {
         val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         val KEY_INTERFACE_STYLE = stringPreferencesKey("interface_style")
-        val KEY_LIQUID_GLASS_TRANSPARENCY = floatPreferencesKey("liquid_glass_transparency")
+        val KEY_GLASS_REFRACTION_ENABLED = booleanPreferencesKey("glass_refraction_enabled")
         val KEY_ACCENT_COLOR = longPreferencesKey("accent_color")
         // Legacy keys are retained for a one-way migration from older builds.
         val KEY_NOTIFICATION_ISLAND_ENABLED = booleanPreferencesKey("notification_island_enabled")
@@ -37,12 +36,8 @@ class UiPreferencesDataStore @Inject constructor(
             themeMode = prefs[KEY_THEME_MODE]
                 ?.let { value -> ThemeMode.entries.firstOrNull { it.name == value } }
                 ?: ThemeMode.SYSTEM,
-            interfaceStyle = prefs[KEY_INTERFACE_STYLE]
-                ?.let { value -> InterfaceStyle.entries.firstOrNull { it.name == value } }
-                ?: InterfaceStyle.ACRYLIC,
-            liquidGlassTransparency = prefs[KEY_LIQUID_GLASS_TRANSPARENCY]
-                ?.coerceIn(0f, 1f)
-                ?: 0.72f,
+            interfaceStyle = decodeInterfaceStyle(prefs[KEY_INTERFACE_STYLE]),
+            glassRefractionEnabled = prefs[KEY_GLASS_REFRACTION_ENABLED] ?: false,
             accentColor = prefs[KEY_ACCENT_COLOR] ?: DEFAULT_ACCENT_COLOR,
             regularNotificationsEnabled = prefs[KEY_REGULAR_NOTIFICATIONS_ENABLED]
                 ?: legacyNotificationsEnabled(
@@ -68,9 +63,9 @@ class UiPreferencesDataStore @Inject constructor(
         }
     }
 
-    suspend fun updateLiquidGlassTransparency(transparency: Float) {
+    suspend fun updateGlassRefractionEnabled(enabled: Boolean) {
         context.uiPreferencesStore.edit { prefs ->
-            prefs[KEY_LIQUID_GLASS_TRANSPARENCY] = transparency.coerceIn(0f, 1f)
+            prefs[KEY_GLASS_REFRACTION_ENABLED] = enabled
         }
     }
 
@@ -97,6 +92,13 @@ class UiPreferencesDataStore @Inject constructor(
             prefs[KEY_FONT_SIZE] = fontSize.name
         }
     }
+}
+
+internal fun decodeInterfaceStyle(value: String?): InterfaceStyle = when (value) {
+    InterfaceStyle.NATIVE.name -> InterfaceStyle.NATIVE
+    InterfaceStyle.GLASS.name -> InterfaceStyle.GLASS
+    InterfaceStyle.ACRYLIC.name -> InterfaceStyle.ACRYLIC
+    else -> InterfaceStyle.ACRYLIC
 }
 
 internal fun legacyNotificationsEnabled(

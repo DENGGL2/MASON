@@ -47,6 +47,10 @@ data class ApiConnection(
     }
 }
 
+fun ApiConnection.modelForReference(reference: ModelReference?): String =
+    reference?.modelId?.takeIf { it in modelIds }
+        ?: modelIds.firstOrNull().orEmpty()
+
 data class ApiConfig(
     val providerId: String = "",
     val apiUrl: String = "",
@@ -73,7 +77,10 @@ fun ApiConfig.resolvedConnections(): List<ApiConnection> {
         providerId.isNotBlank() && apiUrl.isNotBlank() && model.isNotBlank()
     }
     if (connections.isEmpty()) return listOfNotNull(legacy)
-    return if (legacy == null || connections.any { it.id == legacy.id }) {
+    return if (legacy == null || connections.any { candidate ->
+            candidate.id == legacy.id ||
+                candidate.modelIds.any(legacy.modelIds::contains)
+        }) {
         connections
     } else {
         connections + legacy
@@ -88,7 +95,7 @@ fun ApiConfig.connectionForProvider(providerId: String): ApiConnection? =
 
 fun ApiConfig.resolvedChatModelRef(): ModelReference =
     chatModelRef?.takeIf { it.isValid }
-        ?: ModelReference(connectionIdForProvider(providerId), model)
+        ?: ModelReference(connectionIdForModel(providerId, apiUrl, model), model)
 
 fun ApiConfig.configuredChatModelRef(): ModelReference? {
     return configuredModelReference(resolvedChatModelRef(), ApiModelCapabilities::supportsChatModel)
@@ -144,8 +151,9 @@ fun ApiModelCapabilities.supportsChatModel(): Boolean =
 
 fun ApiConfig.resolvedVisionModelRef(): ModelReference? =
     visionModelRef?.takeIf { it.isValid }
-        ?: visionModel.takeIf(String::isNotBlank)?.let {
-            ModelReference(resolvedChatModelRef().connectionId, it)
+        ?: visionModel.takeIf(String::isNotBlank)?.let { modelId ->
+            resolvedConnections().firstOrNull { modelId in it.modelIds }
+                ?.let { connection -> ModelReference(connection.id, modelId) }
         }
         ?: resolvedChatModelRef().takeIf { ref ->
             val provider = connection(ref.connectionId)?.providerId.orEmpty()
@@ -155,8 +163,9 @@ fun ApiConfig.resolvedVisionModelRef(): ModelReference? =
 
 fun ApiConfig.resolvedImageModelRef(): ModelReference? =
     imageModelRef?.takeIf { it.isValid }
-        ?: imageModel.takeIf(String::isNotBlank)?.let {
-            ModelReference(resolvedChatModelRef().connectionId, it)
+        ?: imageModel.takeIf(String::isNotBlank)?.let { modelId ->
+            resolvedConnections().firstOrNull { modelId in it.modelIds }
+                ?.let { connection -> ModelReference(connection.id, modelId) }
         }
 
 fun ApiConfig.upsertConnection(connection: ApiConnection): ApiConfig = copy(
@@ -225,8 +234,21 @@ fun ApiConfig.selectChatModel(reference: ModelReference): ApiConfig {
 
 fun ApiConfig.withActiveConnection(): ApiConfig {
     if (providerId.isBlank() || apiUrl.isBlank() || model.isBlank()) return this
-    val activeId = connectionIdForProvider(providerId)
-    val existing = connections.firstOrNull { it.id == activeId }
+    val modelScopedConnections = splitModelScopedConnections(resolvedConnections())
+    val requestedChatRef = chatModelRef?.takeIf { it.isValid }
+    val activeModelId = requestedChatRef?.modelId ?: model
+    val existing = modelScopedConnections.firstOrNull { connection ->
+        requestedChatRef?.let { reference ->
+            connection.id == reference.connectionId && activeModelId in connection.modelIds
+        } == true
+    } ?: modelScopedConnections.firstOrNull { connection ->
+        connection.providerId == providerId &&
+            activeModelId in connection.modelIds &&
+            connection.apiUrl.trim().trimEnd('/') == apiUrl.trim().trimEnd('/')
+    }
+    val activeId = existing?.id
+        ?: requestedChatRef?.connectionId
+        ?: connectionIdForModel(providerId, apiUrl, activeModelId)
     val active = ApiConnection(
         id = activeId,
         providerId = providerId,
@@ -235,20 +257,25 @@ fun ApiConfig.withActiveConnection(): ApiConfig {
             ?: providerId,
         apiUrl = apiUrl,
         apiKey = apiKey,
-        modelIds = buildList {
-            addAll(existing?.modelIds.orEmpty())
-            listOf(model, visionModel, imageModel).filterTo(this) { it.isNotBlank() }
-        }.distinct(),
-        toolsSupported = toolsEnabled,
-        verifiedSignature = verifiedSignature,
+        modelIds = listOf(activeModelId),
+        toolsSupported = existing?.modelCapabilities?.get(activeModelId)?.supportsTools
+            ?: toolsEnabled,
+        verifiedSignature = existing?.verifiedModelSignatures?.get(activeModelId)
+            ?: verifiedSignature,
         workspaceId = existing?.workspaceId.orEmpty(),
-        modelCapabilities = existing?.modelCapabilities.orEmpty(),
-        verifiedModelSignatures = existing?.verifiedModelSignatures.orEmpty(),
-        modelTestErrors = existing?.modelTestErrors.orEmpty(),
+        modelCapabilities = existing?.modelCapabilities
+            ?.filterKeys { it == activeModelId }
+            .orEmpty(),
+        verifiedModelSignatures = existing?.verifiedModelSignatures
+            ?.filterKeys { it == activeModelId }
+            .orEmpty(),
+        modelTestErrors = existing?.modelTestErrors
+            ?.filterKeys { it == activeModelId }
+            .orEmpty(),
     )
-    val selectedRef = chatModelRef?.takeIf { it.isValid }
-        ?: ModelReference(activeId, model)
-    return upsertConnection(active).copy(chatModelRef = selectedRef)
+    return copy(connections = modelScopedConnections)
+        .upsertConnection(active)
+        .copy(chatModelRef = ModelReference(activeId, activeModelId))
 }
 
 fun ApiConfig.configuredConnections(): List<ApiConnection> = resolvedConnections().filter { item ->
@@ -259,8 +286,100 @@ fun ApiConfig.configuredConnections(): List<ApiConnection> = resolvedConnections
 
 fun connectionIdForProvider(providerId: String): String = providerId
 
+/** Keep custom models on different OpenAI-compatible endpoints isolated. */
+fun connectionIdForEndpoint(providerId: String, apiUrl: String): String {
+    if (providerId != AiProviderCatalog.CUSTOM_PROVIDER_ID) return connectionIdForProvider(providerId)
+    val normalizedUrl = apiUrl.trim().trimEnd('/').lowercase()
+    if (normalizedUrl.isBlank()) return connectionIdForProvider(providerId)
+    return "$providerId:${Integer.toHexString(normalizedUrl.hashCode())}"
+}
+
+/** Keep each model's endpoint, key, capabilities, and verification state isolated. */
+fun connectionIdForModel(providerId: String, apiUrl: String, modelId: String): String {
+    val normalizedUrl = apiUrl.trim().trimEnd('/').lowercase()
+    val normalizedModel = modelId.trim()
+    if (normalizedModel.isBlank()) return connectionIdForEndpoint(providerId, normalizedUrl)
+    val fingerprint = "$normalizedUrl::$normalizedModel".hashCode()
+    return "$providerId:model:${Integer.toHexString(fingerprint)}"
+}
+
+/** Split legacy connections that stored multiple Model IDs together. */
+fun splitModelScopedConnections(connections: List<ApiConnection>): List<ApiConnection> {
+    val result = linkedMapOf<String, ApiConnection>()
+    connections.forEach { connection ->
+        if (connection.providerId != AiProviderCatalog.CUSTOM_PROVIDER_ID || connection.modelIds.isEmpty()) {
+            if (connection.modelIds.size <= 1) {
+                val modelId = connection.modelIds.firstOrNull()
+                val id = modelId?.let {
+                    connectionIdForModel(connection.providerId, connection.apiUrl, it)
+                } ?: connection.id
+                result[id] = connection.copy(id = id)
+            } else {
+                connection.modelIds.forEach { modelId ->
+                    val id = connectionIdForModel(connection.providerId, connection.apiUrl, modelId)
+                    result[id] = connection.copy(
+                        id = id,
+                        modelIds = listOf(modelId),
+                        modelCapabilities = connection.modelCapabilities.filterKeys { it == modelId },
+                        verifiedModelSignatures = connection.verifiedModelSignatures.filterKeys { it == modelId },
+                        modelTestErrors = connection.modelTestErrors.filterKeys { it == modelId },
+                        toolsSupported = connection.modelCapabilities[modelId]?.supportsTools
+                            ?: connection.toolsSupported,
+                    )
+                }
+            }
+            return@forEach
+        }
+        connection.modelIds.forEach { modelId ->
+            val endpoint = signatureEndpoint(connection.verifiedModelSignatures[modelId], connection.providerId)
+                ?: connection.apiUrl.trim().trimEnd('/')
+            val id = connectionIdForModel(connection.providerId, endpoint, modelId)
+            val capabilities = connection.modelCapabilities.filterKeys { it == modelId }
+            val signatures = connection.verifiedModelSignatures.filterKeys { it == modelId }
+            val errors = connection.modelTestErrors.filterKeys { it == modelId }
+            val split = connection.copy(
+                id = id,
+                apiUrl = endpoint,
+                modelIds = listOf(modelId),
+                toolsSupported = capabilities.values.any(ApiModelCapabilities::supportsTools),
+                verifiedSignature = signatures[modelId].orEmpty(),
+                modelCapabilities = capabilities,
+                verifiedModelSignatures = signatures,
+                modelTestErrors = errors,
+            )
+            val previous = result[id]
+            result[id] = if (previous == null) {
+                split
+            } else {
+                split.copy(
+                    name = previous.name,
+                    modelIds = listOf(modelId),
+                    toolsSupported = previous.toolsSupported || split.toolsSupported,
+                    modelCapabilities = previous.modelCapabilities + split.modelCapabilities,
+                    verifiedModelSignatures = previous.verifiedModelSignatures + split.verifiedModelSignatures,
+                    modelTestErrors = previous.modelTestErrors + split.modelTestErrors,
+                    verifiedSignature = split.verifiedSignature.ifBlank { previous.verifiedSignature },
+                )
+            }
+        }
+    }
+    return result.values.toList()
+}
+
+/** Compatibility name for callers and older tests. */
+fun splitEndpointScopedConnections(connections: List<ApiConnection>): List<ApiConnection> =
+    splitModelScopedConnections(connections)
+
+private fun signatureEndpoint(signature: String?, providerId: String): String? =
+    signature?.split('|', limit = 4)
+        ?.takeIf { parts -> parts.size == 4 && parts[0] == providerId }
+        ?.get(1)
+        ?.trim()
+        ?.trimEnd('/')
+        ?.takeIf(String::isNotBlank)
+
 private fun ApiConfig.legacyConnection(): ApiConnection {
-    val id = connectionIdForProvider(providerId)
+    val id = connectionIdForModel(providerId, apiUrl, model)
     return ApiConnection(
         id = id,
         providerId = providerId,

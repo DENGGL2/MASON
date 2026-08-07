@@ -98,6 +98,31 @@ class ModelRoutingLogicTest {
     }
 
     @Test
+    fun toolIntentRecognizesDeviceInspectionButNotOrdinaryChat() {
+        assertTrue(isLikelyToolRequest("查看手机配置"))
+        assertTrue(isLikelyToolRequest("检查本机设备信息"))
+        assertFalse(isLikelyToolRequest("hello"))
+        assertFalse(isLikelyToolRequest("帮我写一段关于手机的介绍"))
+    }
+
+    @Test
+    fun oldToolRoundsDoNotEnableToolsForANewUserTurn() {
+        val oldRound = listOf(
+            ChatMessage(role = "user", content = "查看手机配置"),
+            ChatMessage(role = "assistant", tool_calls = listOf(
+                com.denggl2.mason.llm.model.ToolCall(
+                    id = "call_1",
+                    function = com.denggl2.mason.llm.model.FunctionCall("get_device_info", "{}"),
+                ),
+            )),
+            ChatMessage(role = "tool", content = "model: test"),
+        )
+        assertTrue(oldRound.hasToolRoundAfterLatestUser())
+        assertFalse((oldRound + ChatMessage(role = "user", content = "hello"))
+            .hasToolRoundAfterLatestUser())
+    }
+
+    @Test
     fun disabledDynamicRoutingAlwaysKeepsTheCurrentModel() {
         val config = routingConfig(dynamic = false)
 
@@ -122,6 +147,30 @@ class ModelRoutingLogicTest {
         assertEquals(
             ModelModality.ImageGeneration,
             detectModelModality("请生成图片：一座未来城市", emptyList(), emptyList()),
+        )
+    }
+
+    @Test
+    fun imageIntentRecognizesCommonNaturalLanguageRequests() {
+        assertEquals(
+            ModelModality.ImageGeneration,
+            detectModelModality("画一个红苹果", emptyList(), emptyList()),
+        )
+        assertEquals(
+            ModelModality.ImageGeneration,
+            detectModelModality("生成一幅白底红苹果", emptyList(), emptyList()),
+        )
+        assertEquals(
+            ModelModality.ImageGeneration,
+            detectModelModality("create a picture of a red apple", emptyList(), emptyList()),
+        )
+        assertEquals(
+            ModelModality.ImageGeneration,
+            detectModelModality("draw an icon for a weather app", emptyList(), emptyList()),
+        )
+        assertEquals(
+            ModelModality.Text,
+            detectModelModality("generate a report about the image pipeline", emptyList(), emptyList()),
         )
     }
 

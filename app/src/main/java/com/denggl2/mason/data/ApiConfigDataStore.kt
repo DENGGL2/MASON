@@ -62,39 +62,96 @@ class ApiConfigDataStore @Inject constructor(
         val provider = providerId?.let(AiProviderCatalog::getProvider)
         val storedModel = prefs[KEY_MODEL]
         val secrets = decodeSecrets(prefs[KEY_CONNECTION_SECRETS].orEmpty())
-        val storedConnections = decodeConnections(prefs[KEY_CONNECTIONS].orEmpty()).map { item ->
-            item.copy(apiKey = secrets[item.id].orEmpty())
+        val storedConnections = splitModelScopedConnections(
+            decodeConnections(prefs[KEY_CONNECTIONS].orEmpty()).map { item ->
+                item.copy(apiKey = secrets[item.id].orEmpty())
+            },
+        )
+        val activeConnectionId = provider?.id?.let {
+            connectionIdForModel(it, storedUrl.orEmpty(), storedModel.orEmpty())
         }
-        val activeConnectionId = provider?.id?.let(::connectionIdForProvider)
+        val rawChatModelRef = decodeModelReference(prefs[KEY_CHAT_MODEL_REF])
+        val rawVisionModelRef = decodeModelReference(prefs[KEY_VISION_MODEL_REF])
+        val rawImageModelRef = decodeModelReference(prefs[KEY_IMAGE_MODEL_REF])
+
+        fun remapReference(reference: ModelReference?): ModelReference? {
+            if (reference == null) return null
+            storedConnections.firstOrNull { connection ->
+                connection.id == reference.connectionId && reference.modelId in connection.modelIds
+            }?.let { return reference }
+            return storedConnections.firstOrNull { connection ->
+                reference.modelId in connection.modelIds
+            }?.let { ModelReference(it.id, reference.modelId) } ?: reference
+        }
+
+        val chatModelRef = remapReference(rawChatModelRef)
+        val activeChatConnection = chatModelRef?.let { reference ->
+            storedConnections.firstOrNull { connection ->
+                connection.id == reference.connectionId && reference.modelId in connection.modelIds
+            }
+        } ?: storedModel?.let { modelId ->
+            storedConnections.firstOrNull { connection -> modelId in connection.modelIds }
+        }
+        val activeChatCapabilities = activeChatConnection?.capabilitiesFor(
+            chatModelRef?.modelId ?: storedModel.orEmpty(),
+        )
 
         ApiConfig(
-            providerId = provider?.id.orEmpty(),
-            apiUrl = storedUrl ?: provider?.apiUrl.orEmpty(),
-            apiKey = activeConnectionId?.let(secrets::get) ?: prefs[KEY_API_KEY].orEmpty(),
-            model = when (storedModel) {
+            providerId = activeChatConnection?.providerId ?: provider?.id.orEmpty(),
+            apiUrl = activeChatConnection?.apiUrl ?: storedUrl ?: provider?.apiUrl.orEmpty(),
+            apiKey = activeChatConnection?.apiKey
+                ?: activeConnectionId?.let(secrets::get)
+                ?: providerId?.let { provider -> secrets[connectionIdForProvider(provider)] }
+                ?: prefs[KEY_API_KEY].orEmpty(),
+            model = when (chatModelRef?.modelId ?: storedModel) {
                 "openrouter/free" -> provider?.defaultModel.orEmpty()
                 null -> provider?.defaultModel.orEmpty()
-                else -> storedModel
+                else -> chatModelRef?.modelId ?: storedModel.orEmpty()
             },
             visionModel = prefs[KEY_VISION_MODEL] ?: "",
             imageModel = prefs[KEY_IMAGE_MODEL] ?: "",
             localModel = prefs[KEY_LOCAL_MODEL] ?: "",
             localModelDirectEnabled = prefs[KEY_LOCAL_MODEL_DIRECT_ENABLED] ?: false,
             offlineFallbackEnabled = prefs[KEY_OFFLINE_FALLBACK_ENABLED] ?: false,
-            toolsEnabled = prefs[KEY_TOOLS_ENABLED] ?: provider?.toolsEnabledByDefault ?: false,
+            toolsEnabled = activeChatCapabilities?.supportsTools
+                ?: prefs[KEY_TOOLS_ENABLED]
+                ?: provider?.toolsEnabledByDefault
+                ?: false,
             requireToolConfirmation = prefs[KEY_REQUIRE_TOOL_CONFIRMATION] ?: true,
-            verifiedSignature = prefs[KEY_VERIFIED_SIGNATURE] ?: "",
+            verifiedSignature = activeChatConnection?.verifiedModelSignatures
+                ?.get(chatModelRef?.modelId ?: storedModel.orEmpty())
+                ?: activeChatConnection?.verifiedSignature
+                ?: prefs[KEY_VERIFIED_SIGNATURE]
+                ?: "",
             connections = storedConnections,
-            chatModelRef = decodeModelReference(prefs[KEY_CHAT_MODEL_REF]),
-            visionModelRef = decodeModelReference(prefs[KEY_VISION_MODEL_REF]),
-            imageModelRef = decodeModelReference(prefs[KEY_IMAGE_MODEL_REF]),
+            chatModelRef = chatModelRef,
+            visionModelRef = remapReference(rawVisionModelRef),
+            imageModelRef = remapReference(rawImageModelRef),
             dynamicLocalRoutingEnabled = prefs[KEY_DYNAMIC_LOCAL_ROUTING] ?: false,
             phoneToolsEnabled = prefs[KEY_PHONE_TOOLS_ENABLED] ?: false,
         )
     }
 
     suspend fun updateConfig(config: ApiConfig) {
-        val normalized = config.withActiveConnection()
+        val active = config.withActiveConnection()
+        val normalizedConnections = splitModelScopedConnections(active.resolvedConnections())
+
+        fun remapReference(reference: ModelReference?): ModelReference? {
+            if (reference == null) return null
+            normalizedConnections.firstOrNull { connection ->
+                connection.id == reference.connectionId && reference.modelId in connection.modelIds
+            }?.let { return reference }
+            return normalizedConnections.firstOrNull { connection ->
+                reference.modelId in connection.modelIds
+            }?.let { connection -> ModelReference(connection.id, reference.modelId) } ?: reference
+        }
+
+        val normalized = active.copy(
+            connections = normalizedConnections,
+            chatModelRef = remapReference(active.resolvedChatModelRef()),
+            visionModelRef = remapReference(active.resolvedVisionModelRef()),
+            imageModelRef = remapReference(active.resolvedImageModelRef()),
+        )
         val connectionsWithoutSecrets = normalized.resolvedConnections().map { it.copy(apiKey = "") }
         val encryptedSecrets = credentialVault.encrypt(
             json.encodeToString(
@@ -123,8 +180,8 @@ class ApiConfigDataStore @Inject constructor(
             )
             prefs[KEY_CONNECTION_SECRETS] = encryptedSecrets
             writeModelReference(prefs, KEY_CHAT_MODEL_REF, normalized.resolvedChatModelRef())
-            writeModelReference(prefs, KEY_VISION_MODEL_REF, normalized.visionModelRef)
-            writeModelReference(prefs, KEY_IMAGE_MODEL_REF, normalized.imageModelRef)
+            writeModelReference(prefs, KEY_VISION_MODEL_REF, normalized.resolvedVisionModelRef())
+            writeModelReference(prefs, KEY_IMAGE_MODEL_REF, normalized.resolvedImageModelRef())
             prefs[KEY_DYNAMIC_LOCAL_ROUTING] = normalized.dynamicLocalRoutingEnabled
             prefs[KEY_PHONE_TOOLS_ENABLED] = normalized.phoneToolsEnabled
         }
@@ -137,9 +194,23 @@ class ApiConfigDataStore @Inject constructor(
             val providerId = prefs[KEY_PROVIDER_ID]
                 ?: prefs[KEY_API_URL]?.let(AiProviderCatalog::inferProviderId)
                 ?: AiProviderCatalog.DEFAULT_PROVIDER_ID
+            val modelId = prefs[KEY_MODEL].orEmpty()
+            val legacySecretIds = buildMap {
+                put(connectionIdForProvider(providerId), legacyKey)
+                if (modelId.isNotBlank()) {
+                    put(
+                        connectionIdForModel(
+                            providerId,
+                            prefs[KEY_API_URL].orEmpty(),
+                            modelId,
+                        ),
+                        legacyKey,
+                    )
+                }
+            }
             val payload = json.encodeToString(
                 PersistedApiSecrets.serializer(),
-                PersistedApiSecrets(mapOf(connectionIdForProvider(providerId) to legacyKey)),
+                PersistedApiSecrets(legacySecretIds),
             )
             runCatching { credentialVault.encrypt(payload) }
                 .onSuccess { encrypted ->

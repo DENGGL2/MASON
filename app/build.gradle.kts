@@ -14,8 +14,8 @@ android {
     namespace = "com.denggl2.mason"
     defaultConfig {
         applicationId = "com.denggl2.mason"
-        versionCode = 4
-        versionName = "0.2.2"
+        versionCode = 5
+        versionName = "0.2.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         if (masonArm64Only) {
             ndk {
@@ -71,6 +71,7 @@ dependencies {
     implementation(libs.camerax.view)
     implementation(libs.mlkit.barcode.scanning)
     implementation(libs.pdfbox.android)
+    implementation(libs.haze)
     runtimeOnly(libs.litertlm.android)
 
     implementation(project(":llm-client"))

@@ -1,9 +1,15 @@
 package com.denggl2.mason.llm
 
 import com.denggl2.mason.llm.model.ChatMessage
+import com.denggl2.mason.llm.model.FunctionCall
+import com.denggl2.mason.llm.model.ToolCall
 import com.denggl2.mason.tool.ToolRegistry
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -111,6 +117,176 @@ class ChatClientMultimodalProtocolTest {
         assertTrue(result.message.contains("接口返回：model not found"))
         assertTrue(result.message.contains("HTTP 429"))
         assertTrue(result.message.contains("接口返回：quota exceeded"))
+    }
+    @Test
+    fun connectionTestVerifiesToolResultRoundTrip() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"choices":[{"message":{"role":"assistant","content":"OK"}}]}""",
+        ))
+        server.enqueue(MockResponse().setResponseCode(400).setBody(
+            """{"error":{"message":"vision unsupported"}}""",
+        ))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_probe","type":"function","function":{"name":"mason_connection_probe","arguments":"{}"}}]}}]}""",
+        ))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"choices":[{"message":{"role":"assistant","content":"OK"}}]}""",
+        ))
+
+        val result = client.testConnection(
+            apiUrl = server.url("/v1").toString().trimEnd('/'),
+            apiKey = "",
+            model = "tool-model",
+            visionModel = "tool-model",
+            requiresApiKey = false,
+            testTools = true,
+        )
+
+        assertTrue(result.capabilities.last().success)
+        server.takeRequest()
+        server.takeRequest()
+        val firstToolRequest = server.takeRequest()
+        val followUpRequest = server.takeRequest()
+        val firstToolJson = Json.parseToJsonElement(firstToolRequest.body.readUtf8()).jsonObject
+        assertTrue(firstToolJson["tools"]!!.jsonArray.any { tool ->
+            tool.jsonObject["function"]!!.jsonObject["name"]!!.jsonPrimitive.content ==
+                "mason_connection_probe"
+        })
+        val followUpJson = Json.parseToJsonElement(followUpRequest.body.readUtf8()).jsonObject
+        val followUpMessages = followUpJson["messages"]!!.jsonArray
+        assertEquals("mason-msg-0", followUpMessages[0].jsonObject["id"]!!.jsonPrimitive.content)
+        val assistantMessage = followUpMessages[1].jsonObject
+        val assistantToolCall = assistantMessage["tool_calls"]!!.jsonArray.single().jsonObject
+        assertFalse(assistantMessage.containsKey("content"))
+        assertEquals("mason-msg-1", assistantMessage["id"]!!.jsonPrimitive.content)
+        assertEquals("call_probe", assistantToolCall["id"]!!.jsonPrimitive.content)
+        assertEquals("function", assistantToolCall["type"]!!.jsonPrimitive.content)
+        val toolMessage = followUpMessages[2].jsonObject
+        assertEquals("mason-msg-2", toolMessage["id"]!!.jsonPrimitive.content)
+        assertEquals("call_probe", toolMessage["tool_call_id"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun chatToolResultRoundTripIncludesRelayToolResultId() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_main","type":"function","function":{"name":"mason_connection_probe","arguments":"{}"}}]}}]}""",
+        ))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"choices":[{"message":{"role":"assistant","content":"done"}}]}""",
+        ))
+
+        val call = ToolCall(
+            id = "call_main",
+            function = FunctionCall("mason_connection_probe", "{}"),
+        )
+        val user = ChatMessage(role = "user", content = "check")
+        val first = client.chat(listOf(user), toolsEnabled = true).toList()
+        assertTrue(first.single() is ChatResponse.ToolCallsRequested)
+        server.takeRequest()
+
+        client.chat(
+            listOf(
+                user,
+                ChatMessage(role = "assistant", tool_calls = listOf(call)),
+                ChatMessage(role = "tool", content = "ok", tool_call_id = call.id),
+            ),
+            toolsEnabled = true,
+        ).toList()
+        val followUpJson = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        val followUpMessages = followUpJson["messages"]!!.jsonArray
+        assertEquals("mason-msg-0", followUpMessages[0].jsonObject["id"]!!.jsonPrimitive.content)
+        assertEquals("mason-msg-1", followUpMessages[1].jsonObject["id"]!!.jsonPrimitive.content)
+        val assistantMessage = followUpMessages[2].jsonObject
+        val assistantToolCall = assistantMessage["tool_calls"]!!.jsonArray.single().jsonObject
+        assertFalse(assistantMessage.containsKey("content"))
+        assertEquals("mason-msg-2", assistantMessage["id"]!!.jsonPrimitive.content)
+        assertEquals("call_main", assistantToolCall["id"]!!.jsonPrimitive.content)
+        assertEquals("function", assistantToolCall["type"]!!.jsonPrimitive.content)
+        val toolMessage = followUpMessages[3].jsonObject
+        assertEquals("mason-msg-3", toolMessage["id"]!!.jsonPrimitive.content)
+        assertEquals("call_main", toolMessage["tool_call_id"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun chatRetriesMissingMessageIdWithOriginalToolCallIds() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_relay","type":"function","function":{"name":"mason_connection_probe","arguments":"{}"}}]}}]}""",
+        ))
+        server.enqueue(MockResponse().setResponseCode(400).setBody(
+            """{"error":"messages[2]: missing field id"}""",
+        ))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"choices":[{"message":{"role":"assistant","content":"done"}}]}""",
+        ))
+
+        val call = ToolCall(
+            id = "call_relay",
+            function = FunctionCall("mason_connection_probe", "{}"),
+        )
+        val user = ChatMessage(role = "user", content = "check")
+        client.chat(listOf(user), toolsEnabled = true).toList()
+        server.takeRequest()
+
+        val responses = client.chat(
+            listOf(
+                user,
+                ChatMessage(role = "assistant", tool_calls = listOf(call)),
+                ChatMessage(role = "tool", content = "ok", tool_call_id = call.id),
+            ),
+            toolsEnabled = true,
+        ).toList()
+
+        assertTrue("responses=$responses" , responses.any { it is ChatResponse.TextChunk && it.text == "done" })
+        server.takeRequest()
+        val retryJson = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        val retryMessages = retryJson["messages"]!!.jsonArray
+        assertFalse(retryMessages[0].jsonObject.containsKey("id"))
+        assertFalse(retryMessages[1].jsonObject.containsKey("id"))
+        val assistant = retryMessages.first { it.jsonObject["role"]!!.jsonPrimitive.content == "assistant" }.jsonObject
+        val tool = retryMessages.first { it.jsonObject["role"]!!.jsonPrimitive.content == "tool" }.jsonObject
+        assertTrue(assistant["content"]!!.jsonPrimitive.content.isNotBlank())
+        assertEquals("call_relay", assistant["id"]!!.jsonPrimitive.content)
+        assertEquals("call_relay", tool["id"]!!.jsonPrimitive.content)
+        assertEquals("call_relay", tool["tool_call_id"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun chatRetriesInvalidAssistantToolRoundWithRelayContent() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_content","type":"function","function":{"name":"mason_connection_probe","arguments":"{}"}}]}}]}""",
+        ))
+        server.enqueue(MockResponse().setResponseCode(400).setBody(
+            """{"error":"Invalid assistant message: content or tool_calls must be set"}""",
+        ))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(
+            """{"choices":[{"message":{"role":"assistant","content":"done"}}]}""",
+        ))
+
+        val call = ToolCall(
+            id = "call_content",
+            function = FunctionCall("mason_connection_probe", "{}"),
+        )
+        val user = ChatMessage(role = "user", content = "check")
+        client.chat(listOf(user), toolsEnabled = true).toList()
+        server.takeRequest()
+
+        val responses = client.chat(
+            listOf(
+                user,
+                ChatMessage(role = "assistant", tool_calls = listOf(call)),
+                ChatMessage(role = "tool", content = "ok", tool_call_id = call.id),
+            ),
+            toolsEnabled = true,
+        ).toList()
+
+        assertTrue(responses.any { it is ChatResponse.TextChunk && it.text == "done" })
+        server.takeRequest()
+        val retryJson = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        val assistant = retryJson["messages"]!!.jsonArray.first {
+            it.jsonObject["role"]!!.jsonPrimitive.content == "assistant"
+        }.jsonObject
+        assertTrue(assistant["content"]!!.jsonPrimitive.content.isNotBlank())
+        assertEquals("call_content", assistant["id"]!!.jsonPrimitive.content)
     }
 }
 

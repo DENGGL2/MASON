@@ -146,21 +146,124 @@ class ChatClient @Inject constructor(
 
         val toolDefinitions = if (resolvedToolsEnabled) toolRegistry.getDefinitions() else emptyList()
 
+        val apiMessages = buildApiMessages(listOf(systemPrompt()) + messages, attachments)
+        val requestMessages = if (apiMessages.any { !it.tool_calls.isNullOrEmpty() }) {
+            trimToCurrentTurn(apiMessages)
+        } else {
+            apiMessages
+        }
         val request = ChatRequest(
             model = model,
-            messages = buildApiMessages(listOf(systemPrompt()) + messages, attachments),
+            messages = requestMessages,
             stream = false,
             tools = toolDefinitions.ifEmpty { null },
             tool_choice = "auto".takeIf { toolDefinitions.isNotEmpty() },
         )
-
         var response = withContext(Dispatchers.IO) {
             executeTestRequest(apiUrl, apiKey, request, connection.additionalHeaders)
         }
-        if (response.code == 400 && request.tool_choice != null) {
+        if (response.code == 400 && request.messages.any { !it.tool_calls.isNullOrEmpty() }) {
+            val initialError = response.body?.string().orEmpty()
             response.close()
-            response = withContext(Dispatchers.IO) {
-                executeTestRequest(apiUrl, apiKey, request.copy(tool_choice = null), connection.additionalHeaders)
+
+            // A few relays validate tool rounds as a message graph and reject
+            // generated Mason message IDs even though the payload is otherwise
+            // OpenAI-compatible. Retry once with the provider's original
+            // call_* IDs before falling back to the legacy no-tool-choice retry.
+            if (initialError.contains("missing field", ignoreCase = true) &&
+                initialError.contains("id", ignoreCase = true) &&
+                request.messages.any { !it.tool_calls.isNullOrEmpty() }
+            ) {
+                val relayMessages = useToolRoundRelayVariant(request.messages)
+                response = withContext(Dispatchers.IO) {
+                    executeTestRequest(
+                        apiUrl,
+                        apiKey,
+                        request.copy(messages = relayMessages),
+                        connection.additionalHeaders,
+                    )
+                }
+            }
+
+            // Some OpenAI-compatible relays reject an assistant tool message
+            // when content is omitted, even though the OpenAI schema permits
+            // null content alongside tool_calls. Retry the same tool round
+            // with a short non-empty assistant content before flattening it.
+            if (!response.isSuccessful &&
+                initialError.contains("Invalid assistant message", ignoreCase = true)
+            ) {
+                val relayMessages = useToolRoundRelayVariant(request.messages)
+                response = withContext(Dispatchers.IO) {
+                    executeTestRequest(
+                        apiUrl,
+                        apiKey,
+                        request.copy(messages = relayMessages),
+                        connection.additionalHeaders,
+                    )
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val retryError = response.body?.string().orEmpty()
+                response.close()
+                if (retryError.contains("missing field", ignoreCase = true) &&
+                    retryError.contains("id", ignoreCase = true)
+                ) {
+                    val messageIdVariant = useToolRoundMessageIdsVariant(request.messages)
+                    response = withContext(Dispatchers.IO) {
+                        executeTestRequest(
+                            apiUrl,
+                            apiKey,
+                            request.copy(messages = messageIdVariant),
+                            connection.additionalHeaders,
+                        )
+                    }
+                    if (!response.isSuccessful) {
+                        response.body?.string()
+                        response.close()
+                    }
+                }
+                if (!response.isSuccessful && retryError.contains("missing field", ignoreCase = true) &&
+                    retryError.contains("id", ignoreCase = true)
+                ) {
+                    val legacyMessages = useLegacyFunctionRoundVariant(request.messages)
+                    response = withContext(Dispatchers.IO) {
+                        executeTestRequest(
+                            apiUrl,
+                            apiKey,
+                            request.copy(messages = legacyMessages),
+                            connection.additionalHeaders,
+                        )
+                    }
+                }
+                if (!response.isSuccessful) {
+                    response.body?.string()
+                    response.close()
+                    val flattenedRequest = flattenToolRoundForRelay(request)
+                    response = withContext(Dispatchers.IO) {
+                        executeTestRequest(
+                            apiUrl,
+                            apiKey,
+                            flattenedRequest,
+                            connection.additionalHeaders,
+                        )
+                    }
+                }
+                if (!response.isSuccessful) {
+                    val retryMessages = if (initialError.contains("Invalid assistant message", ignoreCase = true)) {
+                        trimToCurrentTurn(request.messages)
+                    } else {
+                        request.messages
+                    }
+                    response = withContext(Dispatchers.IO) {
+                        executeTestRequest(
+                            apiUrl,
+                            apiKey,
+                            request.copy(messages = retryMessages, tool_choice = null),
+                            connection.additionalHeaders,
+                        )
+                    }
+                }
             }
         }
 
@@ -558,6 +661,7 @@ class ChatClient @Inject constructor(
                     content = kotlinx.serialization.json.JsonPrimitive(
                         "Call the mason_connection_probe tool now. Do not answer with text.",
                     ),
+                    id = "mason-msg-0",
                 ),
             ),
             stream = false,
@@ -573,8 +677,27 @@ class ChatClient @Inject constructor(
                 httpClient = testClient,
             ).use { response ->
                 val body = response.body?.string().orEmpty()
-                if (response.isSuccessful && CONNECTION_PROBE_TOOL in responseToolNames(body)) {
-                    return ToolProbeResult(available = true)
+                val calls = if (response.isSuccessful) responseToolCalls(body) else emptyList()
+                if (calls.isNotEmpty()) {
+                    val followUp = buildToolProbeFollowUp(model, calls)
+                    executeTestRequest(
+                        apiUrl,
+                        apiKey,
+                        followUp,
+                        additionalHeaders,
+                        httpClient = testClient,
+                    ).use { followUpResponse ->
+                        val followUpBody = followUpResponse.body?.string().orEmpty()
+                        if (followUpResponse.isSuccessful && responseHasMessage(followUpBody)) {
+                            return ToolProbeResult(available = true)
+                        }
+                        lastFailure = if (followUpResponse.isSuccessful) {
+                            "宸ュ叿缁撴灉鍥炰紶鍚庢湇鍔″晢鏈繑鍥炲彲鐢ㄥ洖澶?"
+                        } else {
+                            apiTestHttpFailureDetail(followUpResponse.code, followUpBody)
+                        }
+                    }
+                    continue
                 }
                 lastFailure = if (response.isSuccessful) {
                     "中转站或模型未返回 function calling"
@@ -584,6 +707,39 @@ class ChatClient @Inject constructor(
             }
         }
         return ToolProbeResult(available = false, warning = "工具调用不可用：$lastFailure")
+    }
+
+    private fun buildToolProbeFollowUp(model: String, calls: List<ToolCall>): ChatRequest {
+        val toolMessages = calls.map { call ->
+            ApiChatMessage(
+                role = "tool",
+                content = kotlinx.serialization.json.JsonPrimitive("ok"),
+                tool_call_id = call.id,
+                id = call.id,
+            )
+        }
+        return ChatRequest(
+            model = model,
+            messages = listOf(
+                ApiChatMessage(
+                    role = "user",
+                    content = kotlinx.serialization.json.JsonPrimitive(
+                        "Call the mason_connection_probe tool now. Do not answer with text.",
+                    ),
+                    id = "mason-msg-0",
+                ),
+                ApiChatMessage(
+                    role = "assistant",
+                    tool_calls = calls,
+                    id = "mason-msg-1",
+                ),
+                *toolMessages.mapIndexed { index, message ->
+                    message.copy(id = "mason-msg-${index + 2}")
+                }.toTypedArray(),
+            ),
+            stream = false,
+            tools = listOf(connectionProbeTool()),
+        )
     }
 
     private fun apiTestHttpFailureDetail(responseCode: Int, body: String): String {
@@ -617,7 +773,7 @@ class ChatClient @Inject constructor(
             ?.take(maxLength)
     }
 
-    private fun responseToolNames(responseBody: String): List<String> = runCatching {
+    private fun responseToolCalls(responseBody: String): List<ToolCall> = runCatching {
         val message = json.parseToJsonElement(responseBody).jsonObject["choices"]
             ?.jsonArray
             ?.firstOrNull()
@@ -625,8 +781,21 @@ class ChatClient @Inject constructor(
             ?.get("message")
             ?.jsonObject
             ?: return@runCatching emptyList()
-        parseToolCalls(message).map { it.function.name }
+        parseToolCalls(message)
     }.getOrDefault(emptyList())
+
+    private fun responseHasMessage(responseBody: String): Boolean = runCatching {
+        val message = json.parseToJsonElement(responseBody).jsonObject["choices"]
+            ?.jsonArray
+            ?.firstOrNull()
+            ?.jsonObject
+            ?.get("message")
+            ?.jsonObject
+        message != null && (
+            !message["content"].displayText().isNullOrBlank() ||
+                parseToolCalls(message).isNotEmpty()
+            )
+    }.getOrDefault(false)
 
     private fun connectionProbeTool(): ToolDefinition = ToolDefinition(
         type = "function",
@@ -677,8 +846,8 @@ class ChatClient @Inject constructor(
     private fun buildApiMessages(
         messages: List<ChatMessage>,
         attachments: List<ModelAttachment> = emptyList(),
-    ) =
-        buildList {
+    ): List<ApiChatMessage> {
+        val built = buildList {
             val pendingToolIds = mutableSetOf<String>()
 
             messages.forEachIndexed { index, message ->
@@ -713,6 +882,124 @@ class ChatClient @Inject constructor(
                 }
             }
         }
+        // Console Go validates a tool round as a message graph and requires a
+        // top-level id on every node, including system/user messages. Keep the
+        // extra ids scoped to tool rounds so ordinary chat payloads stay standard.
+        return if (built.any { !it.tool_calls.isNullOrEmpty() }) {
+            built.mapIndexed { index, message -> message.copy(id = "mason-msg-$index") }
+        } else {
+            built
+        }
+    }
+
+    /**
+     * Some relays reject an otherwise valid tool request when older assistant
+     * messages are present. Keep the current turn and system context for a
+     * compatibility retry; the normal request remains history-aware.
+     */
+    private fun trimToCurrentTurn(messages: List<ApiChatMessage>): List<ApiChatMessage> {
+        val lastUserIndex = messages.indexOfLast { it.role == "user" }
+        if (lastUserIndex < 0) return messages
+        return messages.filterIndexed { index, message ->
+            message.role == "system" || index >= lastUserIndex
+        }
+    }
+
+    /**
+     * Console Go's provider adapter accepts the original call_* IDs on the
+     * assistant/tool pair, but does not accept Mason-generated IDs on ordinary
+     * system/user messages. It also requires assistant tool messages to carry
+     * non-empty content. Keep this shape as a narrowly-scoped retry.
+     */
+    private fun useToolRoundRelayVariant(messages: List<ApiChatMessage>): List<ApiChatMessage> =
+        messages.map { message ->
+            when (message.role) {
+                "assistant" -> message.copy(
+                    content = message.content?.displayText()
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(::JsonPrimitive)
+                        ?: JsonPrimitive("正在调用工具"),
+                    id = message.tool_calls?.firstOrNull()?.id ?: message.id,
+                )
+                "tool" -> message.copy(id = message.tool_call_id ?: message.id)
+                else -> message.copy(id = null)
+            }
+        }
+
+    private fun useLegacyFunctionRoundVariant(messages: List<ApiChatMessage>): List<ApiChatMessage> {
+        val functionNamesByCallId = messages
+            .flatMap { it.tool_calls.orEmpty() }
+            .associate { it.id to it.function.name }
+        return messages.map { message ->
+            when (message.role) {
+                "assistant" -> message.copy(
+                    content = message.content?.displayText()
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(::JsonPrimitive)
+                        ?: JsonPrimitive("正在调用工具"),
+                    id = message.tool_calls?.firstOrNull()?.id ?: message.id,
+                )
+                "tool" -> message.copy(
+                    role = "function",
+                    name = message.tool_call_id?.let(functionNamesByCallId::get),
+                    tool_calls = null,
+                    tool_call_id = null,
+                    id = message.tool_call_id ?: message.id,
+                )
+                else -> message.copy(id = null)
+            }
+        }
+    }
+
+    private fun useToolRoundMessageIdsVariant(messages: List<ApiChatMessage>): List<ApiChatMessage> =
+        messages.map { message ->
+            when (message.role) {
+                "assistant" -> message.copy(
+                    content = message.content?.displayText()
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(::JsonPrimitive)
+                        ?: JsonPrimitive("正在调用工具"),
+                )
+                else -> message
+            }
+        }
+
+    private fun flattenToolRoundForRelay(request: ChatRequest): ChatRequest {
+        val functionNamesByCallId = request.messages
+            .flatMap { it.tool_calls.orEmpty() }
+            .associate { it.id to it.function.name }
+        val originalPrompt = request.messages
+            .lastOrNull { it.role == "user" }
+            ?.content
+            ?.displayText()
+            .orEmpty()
+        val resultText = buildString {
+            append("用户原始请求：")
+            append(originalPrompt)
+            append("\n\n以下是 Mason 已经执行完成的工具结果。不要再次调用工具，请直接基于这些真实结果用简洁中文回答用户：\n")
+            request.messages
+                .filter { it.role == "tool" && !it.tool_call_id.isNullOrBlank() }
+                .forEach { message ->
+                    append("\n[工具 ")
+                    append(functionNamesByCallId[message.tool_call_id] ?: message.tool_call_id)
+                    append("]\n")
+                    append(message.content.displayText().orEmpty())
+                    append('\n')
+                }
+        }
+        val system = request.messages.firstOrNull { it.role == "system" }
+            ?.copy(id = null)
+        return ChatRequest(
+            model = request.model,
+            messages = buildList {
+                system?.let(::add)
+                add(ApiChatMessage(role = "user", content = JsonPrimitive(resultText)))
+            },
+            stream = false,
+            tools = null,
+            tool_choice = null,
+        )
+    }
 
     private fun parseToolCalls(message: JsonObject): List<ToolCall> {
         val toolCalls = message["tool_calls"]?.jsonArray ?: return emptyList()
