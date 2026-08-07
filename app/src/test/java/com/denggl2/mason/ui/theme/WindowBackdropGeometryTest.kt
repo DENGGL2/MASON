@@ -1,9 +1,12 @@
 package com.denggl2.mason.ui.theme
 
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WindowBackdropGeometryTest {
@@ -79,6 +82,46 @@ class WindowBackdropGeometryTest {
                 windowSize = IntSize(100, 200),
                 imageSize = IntSize(50, 100),
                 bleedPixels = 10,
+            ),
+        )
+    }
+
+    @Test
+    fun `matching viewport signature does not refresh backdrop`() {
+        val signature = WindowBackdropViewportSignature(
+            windowSize = IntSize(1080, 2400),
+            visibleFrame = IntRect(0, 72, 1080, 2328),
+            imeBottomInset = 0,
+        )
+
+        assertFalse(shouldRefreshWindowBackdrop(signature, signature.copy()))
+    }
+
+    @Test
+    fun `window visible frame and ime changes refresh backdrop`() {
+        val signature = WindowBackdropViewportSignature(
+            windowSize = IntSize(1080, 2400),
+            visibleFrame = IntRect(0, 72, 1080, 2328),
+            imeBottomInset = 0,
+        )
+
+        assertTrue(shouldRefreshWindowBackdrop(null, signature))
+        assertTrue(
+            shouldRefreshWindowBackdrop(
+                signature,
+                signature.copy(windowSize = IntSize(1080, 1600)),
+            ),
+        )
+        assertTrue(
+            shouldRefreshWindowBackdrop(
+                signature,
+                signature.copy(visibleFrame = IntRect(0, 72, 1080, 1500)),
+            ),
+        )
+        assertTrue(
+            shouldRefreshWindowBackdrop(
+                signature,
+                signature.copy(imeBottomInset = 828),
             ),
         )
     }

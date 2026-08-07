@@ -27,8 +27,29 @@ class InterfaceEffectsTest {
         assertTrue(effects.progressiveEdgeBlurEnabled)
         assertTrue(effects.glassMaterialEnabled)
         assertFalse(effects.glassRefractionEnabled)
-        assertEquals(0.42f, effects.compactSurfaceAlpha)
-        assertEquals(0.72f, effects.largeSurfaceAlpha)
+        assertEquals(0.42f, effects.compactSurfaceAlpha, 0.0001f)
+        assertEquals(0.72f, effects.largeSurfaceAlpha, 0.0001f)
+    }
+
+    @Test
+    fun `glass transparency preserves the compact and large material relationship`() {
+        val clear = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = false,
+            requestedGlassTransparency = 0.75f,
+            sdkInt = 31,
+        )
+        val opaque = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = false,
+            requestedGlassTransparency = -1f,
+            sdkInt = 31,
+        )
+
+        assertEquals(0.25f, clear.compactSurfaceAlpha, 0.0001f)
+        assertEquals(0.55f, clear.largeSurfaceAlpha, 0.0001f)
+        assertEquals(1f, opaque.compactSurfaceAlpha, 0.0001f)
+        assertEquals(1f, opaque.largeSurfaceAlpha, 0.0001f)
     }
 
     @Test

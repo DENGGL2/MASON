@@ -27,6 +27,7 @@ data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val interfaceStyle: InterfaceStyle = InterfaceStyle.ACRYLIC,
     val glassRefractionEnabled: Boolean = false,
+    val glassTransparency: Float = DEFAULT_GLASS_TRANSPARENCY,
     val accentColor: Long = DEFAULT_ACCENT_COLOR,
     val regularNotificationsEnabled: Boolean = false,
     val islandNotificationsEnabled: Boolean = false,
@@ -49,5 +50,9 @@ val MasonAccentPresets = listOf(
 )
 
 const val DEFAULT_ACCENT_COLOR: Long = 0xFF20201F
+const val DEFAULT_GLASS_TRANSPARENCY: Float = 0.58f
+
+internal fun normalizeGlassTransparency(value: Float): Float =
+    if (value.isFinite()) value.coerceIn(0f, 1f) else DEFAULT_GLASS_TRANSPARENCY
 
 fun Long.toComposeColor(): Color = Color(this)

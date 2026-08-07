@@ -3,6 +3,7 @@ package com.denggl2.mason.data
 import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -22,6 +23,7 @@ class UiPreferencesDataStore @Inject constructor(
         val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         val KEY_INTERFACE_STYLE = stringPreferencesKey("interface_style")
         val KEY_GLASS_REFRACTION_ENABLED = booleanPreferencesKey("glass_refraction_enabled")
+        val KEY_GLASS_TRANSPARENCY = floatPreferencesKey("glass_transparency")
         val KEY_ACCENT_COLOR = longPreferencesKey("accent_color")
         // Legacy keys are retained for a one-way migration from older builds.
         val KEY_NOTIFICATION_ISLAND_ENABLED = booleanPreferencesKey("notification_island_enabled")
@@ -38,6 +40,9 @@ class UiPreferencesDataStore @Inject constructor(
                 ?: ThemeMode.SYSTEM,
             interfaceStyle = decodeInterfaceStyle(prefs[KEY_INTERFACE_STYLE]),
             glassRefractionEnabled = prefs[KEY_GLASS_REFRACTION_ENABLED] ?: false,
+            glassTransparency = normalizeGlassTransparency(
+                prefs[KEY_GLASS_TRANSPARENCY] ?: DEFAULT_GLASS_TRANSPARENCY,
+            ),
             accentColor = prefs[KEY_ACCENT_COLOR] ?: DEFAULT_ACCENT_COLOR,
             regularNotificationsEnabled = prefs[KEY_REGULAR_NOTIFICATIONS_ENABLED]
                 ?: legacyNotificationsEnabled(
@@ -66,6 +71,12 @@ class UiPreferencesDataStore @Inject constructor(
     suspend fun updateGlassRefractionEnabled(enabled: Boolean) {
         context.uiPreferencesStore.edit { prefs ->
             prefs[KEY_GLASS_REFRACTION_ENABLED] = enabled
+        }
+    }
+
+    suspend fun updateGlassTransparency(transparency: Float) {
+        context.uiPreferencesStore.edit { prefs ->
+            prefs[KEY_GLASS_TRANSPARENCY] = normalizeGlassTransparency(transparency)
         }
     }
 

@@ -3,11 +3,13 @@ package com.denggl2.mason.ui.theme
 import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.PixelCopy
 import android.view.View
+import android.view.ViewTreeObserver
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.animation.core.animateFloatAsState
@@ -39,13 +41,18 @@ import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.math.roundToInt
 import kotlin.coroutines.resume
 
 private const val BACKDROP_FADE_IN_MILLIS = 120
 private const val BACKDROP_RELEASE_FALLBACK_MILLIS = 1_000L
+private const val BACKDROP_REFRESH_DEBOUNCE_MILLIS = 100L
 
 internal class WindowBackdropSnapshot internal constructor(
     val image: ImageBitmap,
@@ -154,6 +161,17 @@ internal data class WindowBackdropSampleGeometry(
     val destinationSize: IntSize,
 )
 
+internal data class WindowBackdropViewportSignature(
+    val windowSize: IntSize,
+    val visibleFrame: IntRect,
+    val imeBottomInset: Int,
+)
+
+internal fun shouldRefreshWindowBackdrop(
+    previous: WindowBackdropViewportSignature?,
+    current: WindowBackdropViewportSignature,
+): Boolean = previous != current
+
 internal fun calculateWindowBackdropSampleGeometry(
     windowPosition: IntOffset,
     layerSize: IntSize,
@@ -204,12 +222,45 @@ internal fun calculateWindowBackdropSampleGeometry(
 }
 
 @Composable
-internal fun rememberWindowBackdropSnapshot(enabled: Boolean): WindowBackdropSnapshot? {
+internal fun rememberWindowBackdropSnapshot(
+    enabled: Boolean,
+    refreshKey: Any? = Unit,
+): WindowBackdropSnapshot? {
     val context = LocalContext.current
+    val captureEnabled = enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val rootView = remember(context) {
+        context.findComponentActivity()?.window?.decorView
+    }
+    var viewportSignature by remember(rootView, captureEnabled) {
+        mutableStateOf(
+            if (captureEnabled) rootView?.windowBackdropViewportSignature() else null,
+        )
+    }
     var snapshot by remember { mutableStateOf<WindowBackdropSnapshot?>(null) }
-    LaunchedEffect(enabled, context) {
+
+    DisposableEffect(captureEnabled, rootView) {
+        if (!captureEnabled || rootView == null) return@DisposableEffect onDispose { }
+
+        var lastSignature = rootView.windowBackdropViewportSignature()
+        viewportSignature = lastSignature
+        val observer = rootView.viewTreeObserver
+        val listener = ViewTreeObserver.OnGlobalLayoutListener {
+            val nextSignature = rootView.windowBackdropViewportSignature()
+            if (shouldRefreshWindowBackdrop(lastSignature, nextSignature)) {
+                lastSignature = nextSignature
+                viewportSignature = nextSignature
+            }
+        }
+        observer.addOnGlobalLayoutListener(listener)
+        onDispose {
+            if (observer.isAlive) observer.removeOnGlobalLayoutListener(listener)
+        }
+    }
+
+    LaunchedEffect(captureEnabled, context, refreshKey, viewportSignature) {
         snapshot = null
-        if (!enabled || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return@LaunchedEffect
+        if (!captureEnabled) return@LaunchedEffect
+        delay(BACKDROP_REFRESH_DEBOUNCE_MILLIS)
         withFrameNanos { }
         snapshot = captureWindowBackdropSnapshot(context)
     }
@@ -221,6 +272,25 @@ internal fun rememberWindowBackdropSnapshot(enabled: Boolean): WindowBackdropSna
         }
     }
     return snapshot
+}
+
+private fun View.windowBackdropViewportSignature(): WindowBackdropViewportSignature {
+    val visibleFrame = Rect()
+    getWindowVisibleDisplayFrame(visibleFrame)
+    val imeBottomInset = ViewCompat.getRootWindowInsets(this)
+        ?.getInsets(WindowInsetsCompat.Type.ime())
+        ?.bottom
+        ?: 0
+    return WindowBackdropViewportSignature(
+        windowSize = IntSize(width, height),
+        visibleFrame = IntRect(
+            left = visibleFrame.left,
+            top = visibleFrame.top,
+            right = visibleFrame.right,
+            bottom = visibleFrame.bottom,
+        ),
+        imeBottomInset = imeBottomInset,
+    )
 }
 
 internal fun Modifier.windowBackdrop(
@@ -302,8 +372,11 @@ internal fun Modifier.windowBackdropMaterial(
     blurRadius: Dp,
     fallbackColor: Color,
 ): Modifier = composed {
-    val snapshot = rememberWindowBackdropSnapshot(enabled)
     var windowPosition by remember { mutableStateOf(IntOffset.Zero) }
+    val snapshot = rememberWindowBackdropSnapshot(
+        enabled = enabled,
+        refreshKey = windowPosition,
+    )
     val fallbackAlpha by animateFloatAsState(
         targetValue = if (enabled && snapshot == null) 1f else 0f,
         animationSpec = tween(durationMillis = BACKDROP_FADE_IN_MILLIS),

@@ -391,11 +391,12 @@ private fun ChatGlassDropdown(
     if (!expanded) return
     val density = LocalDensity.current
     val interfaceEffects = LocalInterfaceEffects.current
+    var surfacePosition by remember { mutableStateOf(IntOffset.Zero) }
     val popupBackdrop = rememberWindowBackdropSnapshot(
         enabled = interfaceEffects.backdropBlurEnabled,
+        refreshKey = surfacePosition,
     )
     val shadowGutter = 24.dp
-    var surfacePosition by remember { mutableStateOf(IntOffset.Zero) }
     val positionProvider = remember(density, alignEnd) {
         object : PopupPositionProvider {
             override fun calculatePosition(
@@ -1073,8 +1074,6 @@ fun ChatScreen(
         mutableIntStateOf(with(density) { 96.dp.roundToPx() })
     }
     val inputBarHeight = with(density) { inputBarHeightPx.toDp() }
-    val bottomBlurBandHeight = 64.dp
-    val bottomBlurBandOverlap = 8.dp
     val topFadeRevealDistancePx = with(density) { 24.dp.toPx() }
     val topFadeProgress = remember(listState, topFadeRevealDistancePx) {
         derivedStateOf {
@@ -1599,11 +1598,16 @@ fun ChatScreen(
                                 alpha = progress
                                 translationY = -topFadeHeight.toPx() * (1f - progress)
                             }
+                            .blurLayerOuterEdgeFeather(
+                                edge = ProgressiveBlurEdge.Bottom,
+                                featherHeight = 12.dp,
+                            )
                             .progressiveEdgeBlur(
                                 state = chatBackdropState,
                                 edge = ProgressiveBlurEdge.Top,
                                 backgroundColor = pageBackgroundColor,
                                 blurRadius = if (interfaceEffects.glassMaterialEnabled) 28.dp else 15.dp,
+                                smoothBoundary = true,
                             )
                             .background(
                                 Brush.verticalGradient(
@@ -1723,20 +1727,11 @@ fun ChatScreen(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .height(
-                            if (interfaceEffects.glassMaterialEnabled) {
-                                bottomBlurBandHeight + inputBarHeight
-                            } else {
-                                bottomBlurBandHeight
-                            },
+                        .height(inputBarHeight)
+                        .blurLayerOuterEdgeFeather(
+                            edge = ProgressiveBlurEdge.Top,
+                            featherHeight = 12.dp,
                         )
-                        .graphicsLayer {
-                            translationY = if (interfaceEffects.glassMaterialEnabled) {
-                                0f
-                            } else {
-                                -(inputBarHeight - bottomBlurBandOverlap).toPx()
-                            }
-                        }
                         .progressiveEdgeBlur(
                             state = chatBackdropState,
                             edge = ProgressiveBlurEdge.Bottom,

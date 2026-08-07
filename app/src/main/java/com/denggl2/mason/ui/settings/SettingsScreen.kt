@@ -21,8 +21,14 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -61,6 +67,7 @@ import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -94,6 +101,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -103,6 +111,9 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
@@ -116,6 +127,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -125,9 +138,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalGraphicsContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -136,7 +152,11 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -149,6 +169,10 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -576,6 +600,8 @@ fun SettingsScreen(
     onThemeModeChange: (ThemeMode) -> Unit = {},
     onInterfaceStyleChange: (InterfaceStyle) -> Unit = {},
     onGlassRefractionChange: (Boolean) -> Unit = {},
+    onGlassTransparencyPreview: (Float) -> Unit = {},
+    onGlassTransparencyCommit: (Float) -> Unit = {},
     onAccentColorChange: (Long) -> Unit = {},
     onRegularNotificationsChange: (Boolean) -> Unit = {},
     onIslandNotificationsChange: (Boolean) -> Unit = {},
@@ -956,11 +982,14 @@ fun SettingsScreen(
                     selectedMode = uiPreferences.themeMode,
                     selectedStyle = uiPreferences.interfaceStyle,
                     glassRefractionEnabled = uiPreferences.glassRefractionEnabled,
+                    glassTransparency = uiPreferences.glassTransparency,
                     selectedColor = uiPreferences.accentColor,
                     selectedFontSize = uiPreferences.fontSize,
                     onModeChange = onThemeModeChange,
                     onStyleChange = onInterfaceStyleChange,
                     onGlassRefractionChange = onGlassRefractionChange,
+                    onGlassTransparencyPreview = onGlassTransparencyPreview,
+                    onGlassTransparencyCommit = onGlassTransparencyCommit,
                     onAccentColorChange = onAccentColorChange,
                     onFontSizeChange = onFontSizeChange,
                 )
@@ -3675,10 +3704,10 @@ private fun SettingsOverviewContent(
                             )
                                 if (
                                     mode == TaskNotificationMode.Island &&
-                                    Build.VERSION.SDK_INT < 36
+                                    android12RequirementDescription(Build.VERSION.SDK_INT) != null
                                 ) {
                                     Text(
-                                        text = "仅安卓16+可用",
+                                        text = android12RequirementDescription(Build.VERSION.SDK_INT).orEmpty(),
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         fontSize = 12.sp,
                                     )
@@ -4783,11 +4812,14 @@ private fun AppearanceSettingsContent(
     selectedMode: ThemeMode,
     selectedStyle: InterfaceStyle,
     glassRefractionEnabled: Boolean,
+    glassTransparency: Float,
     selectedColor: Long,
     selectedFontSize: FontSizePreference,
     onModeChange: (ThemeMode) -> Unit,
     onStyleChange: (InterfaceStyle) -> Unit,
     onGlassRefractionChange: (Boolean) -> Unit,
+    onGlassTransparencyPreview: (Float) -> Unit,
+    onGlassTransparencyCommit: (Float) -> Unit,
     onAccentColorChange: (Long) -> Unit,
     onFontSizeChange: (FontSizePreference) -> Unit,
 ) {
@@ -4811,10 +4843,16 @@ private fun AppearanceSettingsContent(
                 GroupDivider()
                 SwitchSettingRow(
                     title = "折射效果",
-                    description = "仅安卓13+生效",
+                    description = android13RequirementDescription(Build.VERSION.SDK_INT).orEmpty(),
                     checked = glassRefractionEnabled,
                     enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
                     onCheckedChange = onGlassRefractionChange,
+                )
+                GroupDivider()
+                GlassTransparencyRow(
+                    transparency = glassTransparency,
+                    onTransparencyPreview = onGlassTransparencyPreview,
+                    onTransparencyCommit = onGlassTransparencyCommit,
                 )
             }
         }
@@ -4825,6 +4863,216 @@ private fun AppearanceSettingsContent(
                 onAccentColorChange = onAccentColorChange,
             )
         }
+    }
+}
+
+@Composable
+private fun GlassTransparencyRow(
+    transparency: Float,
+    onTransparencyPreview: (Float) -> Unit,
+    onTransparencyCommit: (Float) -> Unit,
+) {
+    var previewValue by remember { mutableFloatStateOf(transparency.coerceIn(0f, 1f)) }
+    var editingValue by remember { mutableStateOf(false) }
+    var inputValue by remember { mutableStateOf(TextFieldValue()) }
+    var inputHadFocus by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    fun finishEditing() {
+        val percent = inputValue.text.toIntOrNull()
+        if (percent != null && percent in 0..100) {
+            val value = percent / 100f
+            previewValue = value
+            onTransparencyPreview(value)
+            onTransparencyCommit(value)
+        }
+        editingValue = false
+        inputHadFocus = false
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
+
+    LaunchedEffect(transparency) {
+        previewValue = transparency.coerceIn(0f, 1f)
+    }
+    LaunchedEffect(editingValue) {
+        if (editingValue) {
+            withFrameNanos { }
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "透明度",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f),
+            )
+            if (editingValue) {
+                BasicTextField(
+                    value = inputValue,
+                    onValueChange = { next ->
+                        val text = next.text
+                        val parsed = text.toIntOrNull()
+                        if (
+                            text.length <= 3 &&
+                            text.all(Char::isDigit) &&
+                            (text.isEmpty() || (parsed != null && parsed in 0..100))
+                        ) {
+                            inputValue = next
+                            parsed?.let { percent ->
+                                val value = percent / 100f
+                                previewValue = value
+                                onTransparencyPreview(value)
+                                onTransparencyCommit(value)
+                            }
+                        }
+                    },
+                    textStyle = MaterialTheme.typography.bodySmall.copy(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.End,
+                    ),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { finishEditing() }),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
+                    modifier = Modifier
+                        .width(42.dp)
+                        .focusRequester(focusRequester)
+                        .onFocusChanged { state ->
+                            if (state.isFocused) {
+                                inputHadFocus = true
+                            } else if (editingValue && inputHadFocus) {
+                                finishEditing()
+                            }
+                        },
+                )
+                Text(
+                    text = "%",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(start = 2.dp, end = 7.dp),
+                )
+            } else {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clickable {
+                            val text = (previewValue * 100).toInt().toString()
+                            inputValue = TextFieldValue(
+                                text = text,
+                                selection = TextRange(0, text.length),
+                            )
+                            inputHadFocus = false
+                            editingValue = true
+                        }
+                        .padding(start = 6.dp, top = 5.dp, bottom = 5.dp),
+                ) {
+                    Text(
+                        text = "${(previewValue * 100).toInt()}%",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = "输入透明度",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .padding(start = 8.dp)
+                            .size(17.dp),
+                    )
+                }
+            }
+        }
+        SimpleLineSlider(
+            value = previewValue,
+            onValueChange = { value ->
+                previewValue = value
+                onTransparencyPreview(value)
+            },
+            onValueChangeFinished = onTransparencyCommit,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
+private fun SimpleLineSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val clampedValue = value.coerceIn(0f, 1f)
+    val trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)
+    val thumbColor = MaterialTheme.colorScheme.onSurface
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
+    val currentOnValueChangeFinished by rememberUpdatedState(onValueChangeFinished)
+
+    Canvas(
+        modifier = modifier
+            .height(32.dp)
+            .semantics {
+                progressBarRangeInfo = ProgressBarRangeInfo(clampedValue, 0f..1f, 0)
+                setProgress { target ->
+                    val next = target.coerceIn(0f, 1f)
+                    currentOnValueChange(next)
+                    currentOnValueChangeFinished(next)
+                    true
+                }
+            }
+            .pointerInput(Unit) {
+                fun valueForPosition(positionX: Float): Float {
+                    val horizontalInset = 8.dp.toPx()
+                    val usableWidth = (size.width - horizontalInset * 2f).coerceAtLeast(1f)
+                    return ((positionX - horizontalInset) / usableWidth).coerceIn(0f, 1f)
+                }
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var latestValue = valueForPosition(down.position.x)
+                    currentOnValueChange(latestValue)
+                    var change = down
+                    while (change.pressed) {
+                        val event = awaitPointerEvent()
+                        change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        change.consume()
+                        latestValue = valueForPosition(change.position.x)
+                        currentOnValueChange(latestValue)
+                    }
+                    currentOnValueChangeFinished(latestValue)
+                }
+            },
+    ) {
+        val horizontalInset = 8.dp.toPx()
+        val centerY = size.height / 2f
+        val trackStart = horizontalInset
+        val trackEnd = size.width - horizontalInset
+        drawLine(
+            color = trackColor,
+            start = Offset(trackStart, centerY),
+            end = Offset(trackEnd, centerY),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Round,
+        )
+        drawCircle(
+            color = thumbColor,
+            radius = 7.dp.toPx(),
+            center = Offset(trackStart + (trackEnd - trackStart) * clampedValue, centerY),
+        )
     }
 }
 
@@ -4844,11 +5092,12 @@ private fun InterfaceStyleSelectionRow(
         val label: String,
         val description: String?,
     )
+    val android12Requirement = android12RequirementDescription(Build.VERSION.SDK_INT)
     val options = listOf(
         StyleOption(
             style = InterfaceStyle.ACRYLIC,
             label = "亚克力",
-            description = "仅安卓12+生效",
+            description = android12Requirement,
         ),
         StyleOption(
             style = InterfaceStyle.NATIVE,
@@ -4858,7 +5107,7 @@ private fun InterfaceStyleSelectionRow(
         StyleOption(
             style = InterfaceStyle.GLASS,
             label = "玻璃",
-            description = "仅安卓12+生效",
+            description = android12Requirement,
         ),
     )
     SelectionSettingRow(
@@ -4896,6 +5145,12 @@ private fun InterfaceStyleSelectionRow(
         },
     )
 }
+
+internal fun android12RequirementDescription(sdkInt: Int): String? =
+    if (sdkInt < Build.VERSION_CODES.S) "仅安卓12+生效" else null
+
+internal fun android13RequirementDescription(sdkInt: Int): String? =
+    if (sdkInt < Build.VERSION_CODES.TIRAMISU) "仅安卓13+生效" else null
 
 @Composable
 private fun FontSizeSelectionRow(
@@ -5098,15 +5353,16 @@ private fun SettingsGlassDropdown(
     if (!expanded) return
     val density = LocalDensity.current
     val interfaceEffects = LocalInterfaceEffects.current
+    var popupPosition by remember { mutableStateOf(IntOffset.Zero) }
     val popupBackdrop = rememberWindowBackdropSnapshot(
         enabled = interfaceEffects.backdropBlurEnabled,
+        refreshKey = popupPosition,
     )
     val shadowGutter = 24.dp
     val availableMenuHeight = (
         LocalConfiguration.current.screenHeightDp.dp - shadowGutter * 2 - 24.dp
     ).coerceAtLeast(160.dp)
     val maxMenuHeight = minOf(420.dp, availableMenuHeight)
-    var popupPosition by remember { mutableStateOf(IntOffset.Zero) }
     val positionProvider = remember(density) {
         object : PopupPositionProvider {
             override fun calculatePosition(

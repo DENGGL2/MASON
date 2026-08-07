@@ -13,8 +13,12 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
@@ -60,6 +64,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             val uiPreferences by uiPreferencesDataStore.preferences.collectAsState(initial = UiPreferences())
             val scope = rememberCoroutineScope()
+            var glassTransparencyPreview by remember {
+                mutableFloatStateOf(uiPreferences.glassTransparency)
+            }
+            LaunchedEffect(uiPreferences.glassTransparency) {
+                glassTransparencyPreview = uiPreferences.glassTransparency
+            }
             val baseDensity = LocalDensity.current
             val systemDark = isSystemInDarkTheme()
             val useDarkTheme = when (uiPreferences.themeMode) {
@@ -94,6 +104,7 @@ class MainActivity : ComponentActivity() {
                 accentColor = uiPreferences.accentColor.toComposeColor(),
                 interfaceStyle = uiPreferences.interfaceStyle,
                 glassRefractionEnabled = uiPreferences.glassRefractionEnabled,
+                glassTransparency = glassTransparencyPreview,
             ) {
                 CompositionLocalProvider(
                     LocalDensity provides Density(
@@ -106,7 +117,9 @@ class MainActivity : ComponentActivity() {
                         window.decorView.setBackgroundColor(windowBackground)
                     }
                     MasonNavGraph(
-                    uiPreferences = uiPreferences,
+                    uiPreferences = uiPreferences.copy(
+                        glassTransparency = glassTransparencyPreview,
+                    ),
                     openConversationId = notificationConversationId.value,
                     notificationTaskCommand = notificationTaskCommand.value,
                     notificationArtifactPath = notificationArtifactPath.value,
@@ -119,6 +132,14 @@ class MainActivity : ComponentActivity() {
                     onGlassRefractionChange = { enabled ->
                         scope.launch {
                             uiPreferencesDataStore.updateGlassRefractionEnabled(enabled)
+                        }
+                    },
+                    onGlassTransparencyPreview = { transparency ->
+                        glassTransparencyPreview = transparency
+                    },
+                    onGlassTransparencyCommit = { transparency ->
+                        scope.launch {
+                            uiPreferencesDataStore.updateGlassTransparency(transparency)
                         }
                     },
                     onAccentColorChange = { color ->

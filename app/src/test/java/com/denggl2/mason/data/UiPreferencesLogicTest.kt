@@ -18,4 +18,12 @@ class UiPreferencesLogicTest {
         assertEquals(InterfaceStyle.ACRYLIC, decodeInterfaceStyle("UNKNOWN"))
         assertEquals(InterfaceStyle.ACRYLIC, decodeInterfaceStyle(null))
     }
+
+    @Test
+    fun `glass transparency defaults and clamps invalid stored values`() {
+        assertEquals(DEFAULT_GLASS_TRANSPARENCY, UiPreferences().glassTransparency)
+        assertEquals(0f, normalizeGlassTransparency(-0.2f))
+        assertEquals(1f, normalizeGlassTransparency(1.2f))
+        assertEquals(DEFAULT_GLASS_TRANSPARENCY, normalizeGlassTransparency(Float.NaN))
+    }
 }
