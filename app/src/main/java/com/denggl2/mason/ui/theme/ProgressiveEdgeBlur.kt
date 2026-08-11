@@ -47,13 +47,9 @@ internal fun Modifier.progressiveEdgeBlur(
     state ?: return@composed this
     val density = LocalDensity.current
     val interfaceEffects = LocalInterfaceEffects.current
-    val effectiveBlurRadius = if (
-        interfaceEffects.glassMaterialEnabled && blurRadius < 32.dp
-    ) {
-        32.dp
-    } else {
-        blurRadius
-    }
+    val effectiveBlurRadius = interfaceEffects.resolveBackdropBlurRadius(
+        nonGlassRadius = blurRadius,
+    )
     hazeChild(
         state = state,
         style = HazeStyle(

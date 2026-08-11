@@ -270,6 +270,9 @@ import com.denggl2.mason.ui.theme.glassRefraction
 import com.denggl2.mason.ui.theme.progressiveEdgeBlur
 import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
 import com.denggl2.mason.ui.theme.rememberWindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.requiresBackdropSample
+import com.denggl2.mason.ui.theme.resolveBackdropCaptureScale
+import com.denggl2.mason.ui.theme.resolveBackdropBlurRadius
 import com.denggl2.mason.ui.theme.windowBackdrop
 import com.denggl2.mason.ui.theme.windowBackdropMaterial
 import dev.chrisbanes.haze.HazeState
@@ -415,8 +418,18 @@ private fun ChatGlassDropdown(
     val interfaceEffects = LocalInterfaceEffects.current
     var surfacePosition by remember { mutableStateOf(IntOffset.Zero) }
     var opensAbove by remember { mutableStateOf(false) }
+    val backdropBlurRadius = interfaceEffects.resolveBackdropBlurRadius(
+        nonGlassRadius = 15.dp,
+    )
+    val backdropRequired = interfaceEffects.requiresBackdropSample(
+        blurRadius = backdropBlurRadius,
+        includeRefraction = true,
+    )
     val popupBackdrop = rememberWindowBackdropSnapshot(
-        enabled = interfaceEffects.backdropBlurEnabled,
+        enabled = backdropRequired,
+        captureScale = interfaceEffects.resolveBackdropCaptureScale(
+            includeRefraction = true,
+        ),
     )
     val shadowGutter = 24.dp
     val positionProvider = remember(density, alignEnd) {
@@ -467,8 +480,8 @@ private fun ChatGlassDropdown(
     val positionReady = surfacePosition != IntOffset.Zero
     val backdropReady = popupBackdrop != null && positionReady
     var opaqueFallbackLocked by remember { mutableStateOf(false) }
-    LaunchedEffect(interfaceEffects.backdropBlurEnabled, backdropReady) {
-        if (!interfaceEffects.backdropBlurEnabled) {
+    LaunchedEffect(backdropRequired, backdropReady) {
+        if (!backdropRequired) {
             opaqueFallbackLocked = false
         } else if (!backdropReady && !opaqueFallbackLocked) {
             delay(CHAT_POPUP_BACKDROP_WAIT_MILLIS)
@@ -477,12 +490,12 @@ private fun ChatGlassDropdown(
     }
     val useBackdrop = backdropReady && !opaqueFallbackLocked
     val popupReady = positionReady && (
-        !interfaceEffects.backdropBlurEnabled ||
+        !backdropRequired ||
             useBackdrop ||
             opaqueFallbackLocked
         )
     val popupSurfaceAlpha = if (
-        interfaceEffects.backdropBlurEnabled &&
+        backdropRequired &&
         !useBackdrop
     ) {
         1f
@@ -548,7 +561,7 @@ private fun ChatGlassDropdown(
                         .windowBackdrop(
                             snapshot = if (useBackdrop) popupBackdrop else null,
                             windowPosition = surfacePosition,
-                            blurRadius = if (interfaceEffects.glassMaterialEnabled) 18.dp else 15.dp,
+                            blurRadius = backdropBlurRadius,
                             effectAlpha = interfaceEffects.backdropEffectAlpha,
                         ),
                 )
@@ -586,7 +599,9 @@ private fun Modifier.chatSheetContentBackdrop(): Modifier = composed {
     this
         .windowBackdropMaterial(
             enabled = true,
-            blurRadius = 40.dp,
+            blurRadius = interfaceEffects.resolveBackdropBlurRadius(
+                nonGlassRadius = 40.dp,
+            ),
             fallbackColor = MaterialTheme.colorScheme.surface,
             effectAlpha = interfaceEffects.backdropEffectAlpha,
         )
@@ -731,19 +746,13 @@ private fun Modifier.chatBackdrop(
     val state = LocalChatBackdropState.current ?: return@composed this
     val interfaceEffects = LocalInterfaceEffects.current
     val backdropBaseColor = MaterialTheme.colorScheme.surface
-    val blurRadius = if (interfaceEffects.glassMaterialEnabled) {
-        when (blur) {
-            ChatBackdropBlur.Strong -> 18.dp
-            ChatBackdropBlur.Soft -> 16.dp
-            ChatBackdropBlur.Drawer -> 24.dp
-        }
-    } else {
-        when (blur) {
+    val blurRadius = interfaceEffects.resolveBackdropBlurRadius(
+        nonGlassRadius = when (blur) {
             ChatBackdropBlur.Strong -> 32.dp
             ChatBackdropBlur.Soft -> 20.dp
             ChatBackdropBlur.Drawer -> 32.dp
-        }
-    }
+        },
+    )
     this.hazeChild(
         state = state,
         style = HazeStyle(
@@ -1424,8 +1433,11 @@ fun ChatScreen(
     val chatBackdropState = rememberChatBackdropState(
         enabled = interfaceEffects.backdropBlurEnabled && LIVE_BACKDROP_BLUR_ENABLED,
     )
+    val drawerBackdropBlurRadius = interfaceEffects.resolveBackdropBlurRadius(
+        nonGlassRadius = 32.dp,
+    )
     val drawerBackdropEnabled =
-        interfaceEffects.backdropBlurEnabled &&
+        interfaceEffects.requiresBackdropSample(drawerBackdropBlurRadius) &&
             LIVE_BACKDROP_BLUR_ENABLED &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     var drawerBackdropSnapshot by remember { mutableStateOf<WindowBackdropSnapshot?>(null) }
@@ -1684,7 +1696,7 @@ fun ChatScreen(
                                 state = chatBackdropState,
                                 edge = ProgressiveBlurEdge.Top,
                                 backgroundColor = pageBackgroundColor,
-                                blurRadius = if (interfaceEffects.glassMaterialEnabled) 28.dp else 15.dp,
+                                blurRadius = 15.dp,
                                 smoothBoundary = true,
                             )
                             .background(
@@ -1814,7 +1826,7 @@ fun ChatScreen(
                             state = chatBackdropState,
                             edge = ProgressiveBlurEdge.Bottom,
                             backgroundColor = pageBackgroundColor,
-                            blurRadius = if (interfaceEffects.glassMaterialEnabled) 40.dp else 15.dp,
+                            blurRadius = 15.dp,
                             smoothBoundary = true,
                         )
                         .background(
@@ -2231,11 +2243,17 @@ private fun MasonDrawer(
         label = "drawer_bottom_fade",
     )
     val interfaceEffects = LocalInterfaceEffects.current
+    val drawerBackdropBlurRadius = interfaceEffects.resolveBackdropBlurRadius(
+        nonGlassRadius = 32.dp,
+    )
+    val drawerBackdropRequired = interfaceEffects.requiresBackdropSample(
+        blurRadius = drawerBackdropBlurRadius,
+    )
     var drawerWindowPosition by remember { mutableStateOf(IntOffset.Zero) }
     val drawerSurfaceAlpha by animateFloatAsState(
         targetValue = if (
             !permanent &&
-            interfaceEffects.backdropBlurEnabled &&
+            drawerBackdropRequired &&
             backdropSnapshot == null
         ) {
             1f
@@ -2588,7 +2606,7 @@ private fun MasonDrawer(
                 .windowBackdrop(
                     snapshot = backdropSnapshot,
                     windowPosition = drawerWindowPosition,
-                    blurRadius = if (interfaceEffects.glassMaterialEnabled) 40.dp else 32.dp,
+                    blurRadius = drawerBackdropBlurRadius,
                     effectAlpha = interfaceEffects.backdropEffectAlpha,
                     allowZeroPosition = true,
                 )

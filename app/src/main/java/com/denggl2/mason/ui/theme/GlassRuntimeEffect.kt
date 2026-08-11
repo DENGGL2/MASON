@@ -26,12 +26,12 @@ private const val GLASS_REFRACTION_SHADER = """
     uniform float edgeWidth;
     uniform float strength;
     uniform float dispersion;
-    uniform float saturation;
 
     float roundedRectDistance(float2 point) {
         float2 halfSize = size * 0.5;
-        float2 q = abs(point - halfSize) - (halfSize - cornerRadius);
-        return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - cornerRadius;
+        float radius = min(cornerRadius, min(halfSize.x, halfSize.y));
+        float2 q = abs(point - halfSize) - (halfSize - radius);
+        return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
     }
 
     float2 roundedRectNormal(float2 point) {
@@ -59,10 +59,7 @@ private const val GLASS_REFRACTION_SHADER = """
         float distanceToEdge = -roundedRectDistance(point);
         float band = min(edgeWidth, min(size.x, size.y) * 0.44);
         if (distanceToEdge <= 0.0 || distanceToEdge >= band) {
-            half4 flat = content.eval(safeSample(point));
-            half flatLuminance = dot(flat.rgb, half3(0.2126, 0.7152, 0.0722));
-            half3 flatSaturated = mix(half3(flatLuminance), flat.rgb, half(saturation));
-            return half4(flatSaturated, flat.a);
+            return content.eval(safeSample(point));
         }
 
         float u = clamp(distanceToEdge / band, 0.0, 1.0);
@@ -85,9 +82,7 @@ private const val GLASS_REFRACTION_SHADER = """
         half red = content.eval(safeSample(redPoint)).r;
         half blue = content.eval(safeSample(bluePoint)).b;
         half3 refracted = half3(red, base.g, blue);
-        half luminance = dot(refracted, half3(0.2126, 0.7152, 0.0722));
-        half3 saturated = mix(half3(luminance), refracted, half(saturation));
-        return half4(saturated, base.a);
+        return half4(refracted, base.a);
     }
 """
 
@@ -96,7 +91,7 @@ private const val GLASS_REFRACTION_LOG_TAG = "MasonGlass"
 internal fun Modifier.glassRefraction(
     enabled: Boolean,
     cornerRadius: Dp,
-    strength: Dp = 8.dp,
+    strength: Dp = 10.dp,
     dispersion: Dp = 0.5.dp,
 ): Modifier = composed {
     if (!enabled || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -122,7 +117,6 @@ internal fun Modifier.glassRefraction(
                     setFloatUniform("edgeWidth", with(density) { 20.dp.toPx() })
                     setFloatUniform("strength", with(density) { strength.toPx() })
                     setFloatUniform("dispersion", with(density) { dispersion.toPx() })
-                    setFloatUniform("saturation", 1.18f)
                 }.let { shader ->
                     AndroidRenderEffect.createRuntimeShaderEffect(shader, "content")
                         .asComposeRenderEffect()

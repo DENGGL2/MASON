@@ -222,9 +222,14 @@ internal fun calculateWindowBackdropSampleGeometry(
 internal fun rememberWindowBackdropSnapshot(
     enabled: Boolean,
     refreshKey: Any? = Unit,
+    captureScale: Float = 0.5f,
 ): WindowBackdropSnapshot? {
     val context = LocalContext.current
     val captureEnabled = enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val resolvedCaptureScale = captureScale
+        .takeIf(Float::isFinite)
+        ?.coerceIn(0.5f, 1f)
+        ?: 0.5f
     val rootView = remember(context) {
         context.findComponentActivity()?.window?.decorView
     }
@@ -257,7 +262,13 @@ internal fun rememberWindowBackdropSnapshot(
         }
     }
 
-    LaunchedEffect(captureEnabled, context, refreshKey, viewportSignature) {
+    LaunchedEffect(
+        captureEnabled,
+        context,
+        refreshKey,
+        viewportSignature,
+        resolvedCaptureScale,
+    ) {
         if (!captureEnabled) {
             snapshot = null
             lastCapturedViewport = null
@@ -270,7 +281,10 @@ internal fun rememberWindowBackdropSnapshot(
             delay(BACKDROP_REFRESH_DEBOUNCE_MILLIS)
         }
         withFrameNanos { }
-        captureWindowBackdropSnapshot(context)?.let { nextSnapshot ->
+        captureWindowBackdropSnapshot(
+            context = context,
+            captureScale = resolvedCaptureScale,
+        )?.let { nextSnapshot ->
             snapshot = nextSnapshot
             lastCapturedViewport = viewportSignature
         }
@@ -325,11 +339,15 @@ internal fun Modifier.windowBackdrop(
     val blurredLayer = remember(graphicsContext, density.density, blurRadius, snapshot) {
         graphicsContext.createGraphicsLayer().also { layer ->
             val blurPx = with(density) { blurRadius.toPx() }
-            layer.renderEffect = BlurEffect(
-                radiusX = blurPx,
-                radiusY = blurPx,
-                edgeTreatment = TileMode.Clamp,
-            )
+            layer.renderEffect = if (blurPx > 0.01f) {
+                BlurEffect(
+                    radiusX = blurPx,
+                    radiusY = blurPx,
+                    edgeTreatment = TileMode.Clamp,
+                )
+            } else {
+                null
+            }
         }
     }
     DisposableEffect(graphicsContext, blurredLayer, snapshot, renderView) {
@@ -383,10 +401,11 @@ internal fun Modifier.windowBackdropMaterial(
     effectAlpha: Float = 1f,
 ): Modifier = composed {
     var windowPosition by remember { mutableStateOf(IntOffset.Zero) }
+    val backdropRequired = enabled && blurRadius.value > 0f
     val snapshot = rememberWindowBackdropSnapshot(
-        enabled = enabled,
+        enabled = backdropRequired,
     )
-    val fallbackAlpha = if (enabled && snapshot == null) 1f else 0f
+    val fallbackAlpha = if (backdropRequired && snapshot == null) 1f else 0f
     this
         .onGloballyPositioned { coordinates ->
             val position = coordinates.positionInWindow()
@@ -402,18 +421,25 @@ internal fun Modifier.windowBackdropMaterial(
         .background(fallbackColor.copy(alpha = fallbackColor.alpha * fallbackAlpha))
 }
 
-internal suspend fun captureWindowBackdropSnapshot(context: Context): WindowBackdropSnapshot? {
+internal suspend fun captureWindowBackdropSnapshot(
+    context: Context,
+    captureScale: Float = 0.5f,
+): WindowBackdropSnapshot? {
     val activity = context.findComponentActivity() ?: return null
     val rootView = activity.window.decorView
     val windowWidth = rootView.width
     val windowHeight = rootView.height
     if (windowWidth <= 0 || windowHeight <= 0) return null
 
-    // Half-resolution capture keeps transient popup blur inexpensive while the
-    // local GPU layer performs the final blur at display resolution.
+    val resolvedCaptureScale = captureScale
+        .takeIf(Float::isFinite)
+        ?.coerceIn(0.5f, 1f)
+        ?: 0.5f
+    // Frosted-only surfaces use a half-resolution snapshot. Refraction requests
+    // full resolution so a clear lens does not soften the sampled background.
     val bitmap = Bitmap.createBitmap(
-        (windowWidth * 0.5f).roundToInt().coerceAtLeast(1),
-        (windowHeight * 0.5f).roundToInt().coerceAtLeast(1),
+        (windowWidth * resolvedCaptureScale).roundToInt().coerceAtLeast(1),
+        (windowHeight * resolvedCaptureScale).roundToInt().coerceAtLeast(1),
         Bitmap.Config.ARGB_8888,
     )
     return suspendCancellableCoroutine { continuation ->

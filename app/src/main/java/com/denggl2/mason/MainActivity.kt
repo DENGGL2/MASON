@@ -67,8 +67,14 @@ class MainActivity : ComponentActivity() {
             var glassTransparencyPreview by remember {
                 mutableFloatStateOf(uiPreferences.glassTransparency)
             }
+            var glassFrostPreview by remember {
+                mutableFloatStateOf(uiPreferences.glassFrost)
+            }
             LaunchedEffect(uiPreferences.glassTransparency) {
                 glassTransparencyPreview = uiPreferences.glassTransparency
+            }
+            LaunchedEffect(uiPreferences.glassFrost) {
+                glassFrostPreview = uiPreferences.glassFrost
             }
             val baseDensity = LocalDensity.current
             val systemDark = isSystemInDarkTheme()
@@ -105,6 +111,7 @@ class MainActivity : ComponentActivity() {
                 interfaceStyle = uiPreferences.interfaceStyle,
                 glassRefractionEnabled = uiPreferences.glassRefractionEnabled,
                 glassTransparency = glassTransparencyPreview,
+                glassFrost = glassFrostPreview,
             ) {
                 CompositionLocalProvider(
                     LocalDensity provides Density(
@@ -119,6 +126,7 @@ class MainActivity : ComponentActivity() {
                     MasonNavGraph(
                     uiPreferences = uiPreferences.copy(
                         glassTransparency = glassTransparencyPreview,
+                        glassFrost = glassFrostPreview,
                     ),
                     openConversationId = notificationConversationId.value,
                     notificationTaskCommand = notificationTaskCommand.value,
@@ -140,6 +148,14 @@ class MainActivity : ComponentActivity() {
                     onGlassTransparencyCommit = { transparency ->
                         scope.launch {
                             uiPreferencesDataStore.updateGlassTransparency(transparency)
+                        }
+                    },
+                    onGlassFrostPreview = { frost ->
+                        glassFrostPreview = frost
+                    },
+                    onGlassFrostCommit = { frost ->
+                        scope.launch {
+                            uiPreferencesDataStore.updateGlassFrost(frost)
                         }
                     },
                     onAccentColorChange = { color ->

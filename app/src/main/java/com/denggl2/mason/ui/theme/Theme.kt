@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import com.denggl2.mason.data.InterfaceStyle
+import com.denggl2.mason.data.DEFAULT_GLASS_FROST
 import com.denggl2.mason.data.DEFAULT_GLASS_TRANSPARENCY
 import com.denggl2.mason.data.ThemeMode
 import kotlin.math.pow
@@ -20,6 +21,7 @@ val LocalInterfaceEffects = staticCompositionLocalOf {
         requestedStyle = InterfaceStyle.ACRYLIC,
         requestedGlassRefraction = false,
         requestedGlassTransparency = DEFAULT_GLASS_TRANSPARENCY,
+        requestedGlassFrost = DEFAULT_GLASS_FROST,
         sdkInt = Build.VERSION.SDK_INT,
     )
 }
@@ -85,6 +87,7 @@ fun MasonTheme(
     interfaceStyle: InterfaceStyle = InterfaceStyle.ACRYLIC,
     glassRefractionEnabled: Boolean = false,
     glassTransparency: Float = DEFAULT_GLASS_TRANSPARENCY,
+    glassFrost: Float = DEFAULT_GLASS_FROST,
     content: @Composable () -> Unit,
 ) {
     val darkTheme = when (themeMode) {
@@ -97,6 +100,7 @@ fun MasonTheme(
         requestedStyle = interfaceStyle,
         requestedGlassRefraction = glassRefractionEnabled,
         requestedGlassTransparency = glassTransparency,
+        requestedGlassFrost = glassFrost,
         sdkInt = Build.VERSION.SDK_INT,
     )
     CompositionLocalProvider(

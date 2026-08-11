@@ -26,4 +26,12 @@ class UiPreferencesLogicTest {
         assertEquals(1f, normalizeGlassTransparency(1.2f))
         assertEquals(DEFAULT_GLASS_TRANSPARENCY, normalizeGlassTransparency(Float.NaN))
     }
+
+    @Test
+    fun `glass frost defaults to Frame 9 and clamps invalid stored values`() {
+        assertEquals(DEFAULT_GLASS_FROST, UiPreferences().glassFrost)
+        assertEquals(0f, normalizeGlassFrost(-0.2f))
+        assertEquals(1f, normalizeGlassFrost(1.2f))
+        assertEquals(DEFAULT_GLASS_FROST, normalizeGlassFrost(Float.NaN))
+    }
 }

@@ -1,5 +1,6 @@
 package com.denggl2.mason.ui.theme
 
+import androidx.compose.ui.unit.dp
 import com.denggl2.mason.data.InterfaceStyle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,8 +21,13 @@ class InterfaceEffectsTest {
     }
 
     @Test
-    fun `glass uses performance blur without refraction on Android 12`() {
-        val effects = resolveInterfaceEffects(InterfaceStyle.GLASS, true, sdkInt = 31)
+    fun `glass uses frost without refraction on Android 12`() {
+        val effects = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = true,
+            requestedGlassFrost = 0.5f,
+            sdkInt = 31,
+        )
 
         assertEquals(InterfaceStyle.GLASS, effects.effectiveStyle)
         assertTrue(effects.backdropBlurEnabled)
@@ -50,14 +56,14 @@ class InterfaceEffectsTest {
 
         assertEquals(0.25f, clear.compactSurfaceAlpha, 0.0001f)
         assertEquals(0.42857143f, clear.largeSurfaceAlpha, 0.0001f)
-        assertEquals(0.5952381f, clear.backdropEffectAlpha, 0.0001f)
+        assertEquals(1f, clear.backdropEffectAlpha, 0.0001f)
         assertEquals(1f, opaque.compactSurfaceAlpha, 0.0001f)
         assertEquals(1f, opaque.largeSurfaceAlpha, 0.0001f)
         assertEquals(1f, opaque.backdropEffectAlpha, 0.0001f)
     }
 
     @Test
-    fun `fully transparent glass removes both surface and backdrop blur`() {
+    fun `fully transparent glass keeps the backdrop available for frost and refraction`() {
         val effects = resolveInterfaceEffects(
             requestedStyle = InterfaceStyle.GLASS,
             requestedGlassRefraction = true,
@@ -67,7 +73,67 @@ class InterfaceEffectsTest {
 
         assertEquals(0f, effects.compactSurfaceAlpha, 0.0001f)
         assertEquals(0f, effects.largeSurfaceAlpha, 0.0001f)
-        assertEquals(0f, effects.backdropEffectAlpha, 0.0001f)
+        assertEquals(1f, effects.backdropEffectAlpha, 0.0001f)
+    }
+
+    @Test
+    fun `glass frost maps from Frame 9 zero to the bounded blur radius`() {
+        val clear = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = false,
+            requestedGlassFrost = 0f,
+            sdkInt = 31,
+        )
+        val half = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = false,
+            requestedGlassFrost = 0.5f,
+            sdkInt = 31,
+        )
+        val frosted = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = false,
+            requestedGlassFrost = 1f,
+            sdkInt = 31,
+        )
+
+        assertFalse(clear.progressiveEdgeBlurEnabled)
+        assertEquals(0.dp, clear.resolveBackdropBlurRadius(nonGlassRadius = 15.dp))
+        assertEquals(20.dp, half.resolveBackdropBlurRadius(nonGlassRadius = 15.dp))
+        assertEquals(40.dp, frosted.resolveBackdropBlurRadius(nonGlassRadius = 15.dp))
+    }
+
+    @Test
+    fun `clear glass skips snapshots unless the surface applies refraction`() {
+        val clear = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = false,
+            requestedGlassFrost = 0f,
+            sdkInt = 33,
+        )
+        val clearLens = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = true,
+            requestedGlassFrost = 0f,
+            sdkInt = 33,
+        )
+        val frosted = resolveInterfaceEffects(
+            requestedStyle = InterfaceStyle.GLASS,
+            requestedGlassRefraction = false,
+            requestedGlassFrost = 0.5f,
+            sdkInt = 33,
+        )
+
+        assertFalse(clear.requiresBackdropSample(blurRadius = 0.dp))
+        assertTrue(
+            clearLens.requiresBackdropSample(
+                blurRadius = 0.dp,
+                includeRefraction = true,
+            ),
+        )
+        assertEquals(1f, clearLens.resolveBackdropCaptureScale(includeRefraction = true))
+        assertTrue(frosted.requiresBackdropSample(blurRadius = 20.dp))
+        assertEquals(0.5f, frosted.resolveBackdropCaptureScale())
     }
 
     @Test

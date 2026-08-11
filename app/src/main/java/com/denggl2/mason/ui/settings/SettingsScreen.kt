@@ -228,6 +228,9 @@ import com.denggl2.mason.ui.theme.glassRefraction
 import com.denggl2.mason.ui.theme.progressiveEdgeBlur
 import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
 import com.denggl2.mason.ui.theme.rememberWindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.requiresBackdropSample
+import com.denggl2.mason.ui.theme.resolveBackdropCaptureScale
+import com.denggl2.mason.ui.theme.resolveBackdropBlurRadius
 import com.denggl2.mason.ui.theme.windowBackdrop
 import com.denggl2.mason.ui.theme.windowBackdropMaterial
 import dev.chrisbanes.haze.HazeState
@@ -307,7 +310,9 @@ private fun Modifier.settingsSheetContentBackdrop(): Modifier = composed {
     this
         .windowBackdropMaterial(
             enabled = true,
-            blurRadius = 40.dp,
+            blurRadius = interfaceEffects.resolveBackdropBlurRadius(
+                nonGlassRadius = 40.dp,
+            ),
             fallbackColor = MaterialTheme.colorScheme.surface,
             effectAlpha = interfaceEffects.backdropEffectAlpha,
         )
@@ -611,6 +616,8 @@ fun SettingsScreen(
     onGlassRefractionChange: (Boolean) -> Unit = {},
     onGlassTransparencyPreview: (Float) -> Unit = {},
     onGlassTransparencyCommit: (Float) -> Unit = {},
+    onGlassFrostPreview: (Float) -> Unit = {},
+    onGlassFrostCommit: (Float) -> Unit = {},
     onAccentColorChange: (Long) -> Unit = {},
     onRegularNotificationsChange: (Boolean) -> Unit = {},
     onIslandNotificationsChange: (Boolean) -> Unit = {},
@@ -992,6 +999,7 @@ fun SettingsScreen(
                     selectedStyle = uiPreferences.interfaceStyle,
                     glassRefractionEnabled = uiPreferences.glassRefractionEnabled,
                     glassTransparency = uiPreferences.glassTransparency,
+                    glassFrost = uiPreferences.glassFrost,
                     selectedColor = uiPreferences.accentColor,
                     selectedFontSize = uiPreferences.fontSize,
                     onModeChange = onThemeModeChange,
@@ -999,6 +1007,8 @@ fun SettingsScreen(
                     onGlassRefractionChange = onGlassRefractionChange,
                     onGlassTransparencyPreview = onGlassTransparencyPreview,
                     onGlassTransparencyCommit = onGlassTransparencyCommit,
+                    onGlassFrostPreview = onGlassFrostPreview,
+                    onGlassFrostCommit = onGlassFrostCommit,
                     onAccentColorChange = onAccentColorChange,
                     onFontSizeChange = onFontSizeChange,
                 )
@@ -4822,6 +4832,7 @@ private fun AppearanceSettingsContent(
     selectedStyle: InterfaceStyle,
     glassRefractionEnabled: Boolean,
     glassTransparency: Float,
+    glassFrost: Float,
     selectedColor: Long,
     selectedFontSize: FontSizePreference,
     onModeChange: (ThemeMode) -> Unit,
@@ -4829,6 +4840,8 @@ private fun AppearanceSettingsContent(
     onGlassRefractionChange: (Boolean) -> Unit,
     onGlassTransparencyPreview: (Float) -> Unit,
     onGlassTransparencyCommit: (Float) -> Unit,
+    onGlassFrostPreview: (Float) -> Unit,
+    onGlassFrostCommit: (Float) -> Unit,
     onAccentColorChange: (Long) -> Unit,
     onFontSizeChange: (FontSizePreference) -> Unit,
 ) {
@@ -4859,10 +4872,20 @@ private fun AppearanceSettingsContent(
                     onCheckedChange = onGlassRefractionChange,
                 )
                 GroupDivider()
-                GlassTransparencyRow(
-                    transparency = glassTransparency,
-                    onTransparencyPreview = onGlassTransparencyPreview,
-                    onTransparencyCommit = onGlassTransparencyCommit,
+                GlassValueRow(
+                    title = "透明度",
+                    value = glassTransparency,
+                    inputContentDescription = "输入透明度",
+                    onValuePreview = onGlassTransparencyPreview,
+                    onValueCommit = onGlassTransparencyCommit,
+                )
+                GroupDivider()
+                GlassValueRow(
+                    title = "霜冻",
+                    value = glassFrost,
+                    inputContentDescription = "输入霜冻强度",
+                    onValuePreview = onGlassFrostPreview,
+                    onValueCommit = onGlassFrostCommit,
                 )
             }
         }
@@ -4877,12 +4900,14 @@ private fun AppearanceSettingsContent(
 }
 
 @Composable
-private fun GlassTransparencyRow(
-    transparency: Float,
-    onTransparencyPreview: (Float) -> Unit,
-    onTransparencyCommit: (Float) -> Unit,
+private fun GlassValueRow(
+    title: String,
+    value: Float,
+    inputContentDescription: String,
+    onValuePreview: (Float) -> Unit,
+    onValueCommit: (Float) -> Unit,
 ) {
-    var previewValue by remember { mutableFloatStateOf(transparency.coerceIn(0f, 1f)) }
+    var previewValue by remember { mutableFloatStateOf(value.coerceIn(0f, 1f)) }
     var editingValue by remember { mutableStateOf(false) }
     var inputValue by remember { mutableStateOf(TextFieldValue()) }
     var inputHadFocus by remember { mutableStateOf(false) }
@@ -4895,8 +4920,8 @@ private fun GlassTransparencyRow(
         if (percent != null && percent in 0..100) {
             val value = percent / 100f
             previewValue = value
-            onTransparencyPreview(value)
-            onTransparencyCommit(value)
+            onValuePreview(value)
+            onValueCommit(value)
         }
         editingValue = false
         inputHadFocus = false
@@ -4904,8 +4929,8 @@ private fun GlassTransparencyRow(
         keyboardController?.hide()
     }
 
-    LaunchedEffect(transparency) {
-        previewValue = transparency.coerceIn(0f, 1f)
+    LaunchedEffect(value) {
+        previewValue = value.coerceIn(0f, 1f)
     }
     LaunchedEffect(editingValue) {
         if (editingValue) {
@@ -4922,7 +4947,7 @@ private fun GlassTransparencyRow(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "透明度",
+                text = title,
                 color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
@@ -4943,8 +4968,7 @@ private fun GlassTransparencyRow(
                             parsed?.let { percent ->
                                 val value = percent / 100f
                                 previewValue = value
-                                onTransparencyPreview(value)
-                                onTransparencyCommit(value)
+                                onValuePreview(value)
                             }
                         }
                     },
@@ -4999,7 +5023,7 @@ private fun GlassTransparencyRow(
                     )
                     Icon(
                         Icons.Outlined.Edit,
-                        contentDescription = "输入透明度",
+                        contentDescription = inputContentDescription,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
                             .padding(start = 8.dp)
@@ -5012,9 +5036,9 @@ private fun GlassTransparencyRow(
             value = previewValue,
             onValueChange = { value ->
                 previewValue = value
-                onTransparencyPreview(value)
+                onValuePreview(value)
             },
-            onValueChangeFinished = onTransparencyCommit,
+            onValueChangeFinished = onValueCommit,
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -5396,8 +5420,18 @@ private fun SettingsGlassDropdown(
     val interfaceEffects = LocalInterfaceEffects.current
     var popupPosition by remember { mutableStateOf(IntOffset.Zero) }
     var opensAbove by remember { mutableStateOf(false) }
+    val backdropBlurRadius = interfaceEffects.resolveBackdropBlurRadius(
+        nonGlassRadius = 15.dp,
+    )
+    val backdropRequired = interfaceEffects.requiresBackdropSample(
+        blurRadius = backdropBlurRadius,
+        includeRefraction = true,
+    )
     val popupBackdrop = rememberWindowBackdropSnapshot(
-        enabled = interfaceEffects.backdropBlurEnabled,
+        enabled = backdropRequired,
+        captureScale = interfaceEffects.resolveBackdropCaptureScale(
+            includeRefraction = true,
+        ),
     )
     val shadowGutter = 24.dp
     val availableMenuHeight = (
@@ -5447,8 +5481,8 @@ private fun SettingsGlassDropdown(
     val positionReady = popupPosition != IntOffset.Zero
     val backdropReady = popupBackdrop != null && positionReady
     var opaqueFallbackLocked by remember { mutableStateOf(false) }
-    LaunchedEffect(interfaceEffects.backdropBlurEnabled, backdropReady) {
-        if (!interfaceEffects.backdropBlurEnabled) {
+    LaunchedEffect(backdropRequired, backdropReady) {
+        if (!backdropRequired) {
             opaqueFallbackLocked = false
         } else if (!backdropReady && !opaqueFallbackLocked) {
             delay(SETTINGS_POPUP_BACKDROP_WAIT_MILLIS)
@@ -5457,12 +5491,12 @@ private fun SettingsGlassDropdown(
     }
     val useBackdrop = backdropReady && !opaqueFallbackLocked
     val popupReady = positionReady && (
-        !interfaceEffects.backdropBlurEnabled ||
+        !backdropRequired ||
             useBackdrop ||
             opaqueFallbackLocked
         )
     val popupSurfaceAlpha = if (
-            interfaceEffects.backdropBlurEnabled &&
+            backdropRequired &&
             !useBackdrop
         ) {
             1f
@@ -5533,7 +5567,7 @@ private fun SettingsGlassDropdown(
                         .windowBackdrop(
                             snapshot = if (useBackdrop) popupBackdrop else null,
                             windowPosition = popupPosition,
-                            blurRadius = if (interfaceEffects.glassMaterialEnabled) 18.dp else 15.dp,
+                            blurRadius = backdropBlurRadius,
                             effectAlpha = interfaceEffects.backdropEffectAlpha,
                         ),
                 )

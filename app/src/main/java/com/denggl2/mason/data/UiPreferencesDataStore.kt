@@ -24,6 +24,7 @@ class UiPreferencesDataStore @Inject constructor(
         val KEY_INTERFACE_STYLE = stringPreferencesKey("interface_style")
         val KEY_GLASS_REFRACTION_ENABLED = booleanPreferencesKey("glass_refraction_enabled")
         val KEY_GLASS_TRANSPARENCY = floatPreferencesKey("glass_transparency")
+        val KEY_GLASS_FROST = floatPreferencesKey("glass_frost")
         val KEY_ACCENT_COLOR = longPreferencesKey("accent_color")
         // Legacy keys are retained for a one-way migration from older builds.
         val KEY_NOTIFICATION_ISLAND_ENABLED = booleanPreferencesKey("notification_island_enabled")
@@ -42,6 +43,9 @@ class UiPreferencesDataStore @Inject constructor(
             glassRefractionEnabled = prefs[KEY_GLASS_REFRACTION_ENABLED] ?: false,
             glassTransparency = normalizeGlassTransparency(
                 prefs[KEY_GLASS_TRANSPARENCY] ?: DEFAULT_GLASS_TRANSPARENCY,
+            ),
+            glassFrost = normalizeGlassFrost(
+                prefs[KEY_GLASS_FROST] ?: DEFAULT_GLASS_FROST,
             ),
             accentColor = prefs[KEY_ACCENT_COLOR] ?: DEFAULT_ACCENT_COLOR,
             regularNotificationsEnabled = prefs[KEY_REGULAR_NOTIFICATIONS_ENABLED]
@@ -77,6 +81,12 @@ class UiPreferencesDataStore @Inject constructor(
     suspend fun updateGlassTransparency(transparency: Float) {
         context.uiPreferencesStore.edit { prefs ->
             prefs[KEY_GLASS_TRANSPARENCY] = normalizeGlassTransparency(transparency)
+        }
+    }
+
+    suspend fun updateGlassFrost(frost: Float) {
+        context.uiPreferencesStore.edit { prefs ->
+            prefs[KEY_GLASS_FROST] = normalizeGlassFrost(frost)
         }
     }
 
