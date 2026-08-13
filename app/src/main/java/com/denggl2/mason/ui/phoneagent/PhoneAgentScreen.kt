@@ -37,6 +37,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.denggl2.mason.ui.theme.MASON_OVERLAY_SCRIM_ALPHA
+import com.denggl2.mason.ui.theme.MasonSheetShape
+import com.denggl2.mason.ui.theme.masonOverlayWindowInsets
+import com.denggl2.mason.ui.theme.masonSheetContainerColor
+import com.denggl2.mason.ui.theme.masonSheetSurface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -235,11 +239,17 @@ private fun PhoneAgentLogDetailSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = MaterialTheme.colorScheme.surface,
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
+        tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
+        dragHandle = null,
     ) {
         LazyColumn(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .masonSheetSurface(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
                 start = 20.dp,
                 end = 20.dp,

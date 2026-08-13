@@ -10,6 +10,7 @@ import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.view.MotionEvent
 import android.view.View
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -23,6 +24,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,13 +41,12 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.Image as ImageIcon
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -58,7 +60,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
@@ -66,6 +70,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -79,6 +84,8 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.denggl2.mason.data.ArtifactMetadata
+import com.denggl2.mason.ui.theme.LocalInterfaceEffects
+import com.denggl2.mason.ui.theme.floatingSurfaceEdge
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Locale
@@ -145,33 +152,9 @@ internal fun ArtifactImageThumbnail(
                     )
                 }
             }
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Outlined.ImageIcon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(14.dp),
-            )
-            Spacer(Modifier.size(6.dp))
-            Text(
-                text = artifact.name,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = formatArtifactImageSize(artifact.bytes),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp,
+            ArtifactImageInfoOverlay(
+                artifact = artifact,
+                modifier = Modifier.align(Alignment.BottomEnd),
             )
         }
     }
@@ -231,36 +214,48 @@ private fun ArtifactSvgImageThumbnail(
                         .clickable(onClick = onClick),
                 )
             }
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Outlined.ImageIcon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(14.dp),
-            )
-            Spacer(Modifier.size(6.dp))
-            Text(
-                text = artifact.name,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = formatArtifactImageSize(artifact.bytes),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp,
+            ArtifactImageInfoOverlay(
+                artifact = artifact,
+                modifier = Modifier.align(Alignment.BottomEnd),
             )
         }
     }
+}
+
+@Composable
+private fun ArtifactImageInfoOverlay(
+    artifact: ArtifactMetadata,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .padding(8.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color.Black.copy(alpha = 0.56f))
+            .padding(horizontal = 7.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Outlined.ImageIcon,
+            contentDescription = null,
+            tint = Color.White.copy(alpha = 0.92f),
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.size(5.dp))
+        Text(
+            text = formatArtifactImageSize(artifact.bytes),
+            color = Color.White.copy(alpha = 0.92f),
+            fontSize = 10.sp,
+        )
+    }
+}
+
+private fun Modifier.artifactPreviewMaterial(): Modifier = composed {
+    val surface = MaterialTheme.colorScheme.background
+    // Image preview is a full-screen reading surface. Keep it opaque so the
+    // underlying page never bleeds through, while still following light/dark
+    // theme colors.
+    background(surface)
 }
 
 @Composable
@@ -279,7 +274,7 @@ private fun ArtifactSvgImagePreviewDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black),
+                .artifactPreviewMaterial(),
         ) {
             when (val state = svgState) {
                 ArtifactSvgState.Loading -> CircularProgressIndicator(
@@ -314,23 +309,17 @@ private fun ArtifactSvgImagePreviewDialog(
                     .align(Alignment.TopCenter),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(
+                ArtifactImagePreviewAction(
+                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "\u8fd4\u56de",
                     onClick = onDismiss,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.52f)),
-                ) {
-                    Icon(
-                        Icons.Outlined.Close,
-                        contentDescription = "关闭图片预览",
-                        tint = Color.White,
-                    )
-                }
+                    enabled = true,
+                    size = 44.dp,
+                )
                 Text(
-                    text = artifact.name,
-                    color = Color.White,
-                    fontSize = 13.sp,
+                    text = "图片预览",
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -367,6 +356,7 @@ private fun ArtifactSvgImagePreviewDialog(
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 internal fun ArtifactImagePreviewDialog(
     artifact: ArtifactMetadata,
     onDismiss: () -> Unit,
@@ -393,7 +383,7 @@ internal fun ArtifactImagePreviewDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black)
+                .artifactPreviewMaterial()
                 .clipToBounds(),
         ) {
             when (val state = bitmapState) {
@@ -433,29 +423,37 @@ internal fun ArtifactImagePreviewDialog(
                                     if (viewportSize.width <= 0 || viewportSize.height <= 0) {
                                         return@detectTransformGestures
                                     }
-                                    val previousScale = scale
-                                    val nextScale = (previousScale * zoom)
-                                        .coerceIn(MIN_IMAGE_SCALE, MAX_IMAGE_SCALE)
-                                    val ratio = nextScale / previousScale
-                                    val viewportCenter = Offset(
-                                        viewportSize.width / 2f,
-                                        viewportSize.height / 2f,
-                                    )
-                                    val proposedOffset = Offset(
-                                        x = offset.x * ratio +
-                                            (centroid.x - viewportCenter.x) * (1f - ratio) + pan.x,
-                                        y = offset.y * ratio +
-                                            (centroid.y - viewportCenter.y) * (1f - ratio) + pan.y,
-                                    )
-                                    scale = nextScale
-                                    offset = clampPreviewOffset(
-                                        offset = proposedOffset,
-                                        scale = nextScale,
+                                    val zoomed = applyPreviewZoom(
+                                        centroid = centroid,
+                                        zoom = zoom,
+                                        pan = pan,
+                                        scale = scale,
+                                        offset = offset,
                                         viewportSize = viewportSize,
                                         imageWidth = bitmap.width,
                                         imageHeight = bitmap.height,
                                     )
+                                    scale = zoomed.scale
+                                    offset = zoomed.offset
                                 }
+                            }
+                            .pointerInteropFilter { event ->
+                                if (event.actionMasked != MotionEvent.ACTION_SCROLL) return@pointerInteropFilter false
+                                val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                                if (wheelDelta == 0f) return@pointerInteropFilter false
+                                val zoomed = applyPreviewZoom(
+                                    centroid = Offset(event.x, event.y),
+                                    zoom = if (wheelDelta > 0f) 1.12f else 0.89f,
+                                    pan = Offset.Zero,
+                                    scale = scale,
+                                    offset = offset,
+                                    viewportSize = viewportSize,
+                                    imageWidth = bitmap.width,
+                                    imageHeight = bitmap.height,
+                                )
+                                scale = zoomed.scale
+                                offset = zoomed.offset
+                                true
                             }
                             .graphicsLayer {
                                 scaleX = scale
@@ -475,23 +473,17 @@ internal fun ArtifactImagePreviewDialog(
                     .align(Alignment.TopCenter),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(
+                ArtifactImagePreviewAction(
+                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "\u8fd4\u56de",
                     onClick = onDismiss,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.52f)),
-                ) {
-                    Icon(
-                        Icons.Outlined.Close,
-                        contentDescription = "关闭图片预览",
-                        tint = Color.White,
-                    )
-                }
+                    enabled = true,
+                    size = 44.dp,
+                )
                 Text(
-                    text = artifact.name,
-                    color = Color.White,
-                    fontSize = 13.sp,
+                    text = "图片预览",
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -533,32 +525,96 @@ private fun ArtifactImagePreviewAction(
     contentDescription: String,
     enabled: Boolean,
     showProgress: Boolean = false,
+    size: androidx.compose.ui.unit.Dp = 52.dp,
     onClick: () -> Unit,
 ) {
+    val effects = LocalInterfaceEffects.current
+    val interactionSource = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            .size(52.dp)
+            .size(size)
+            .masonGlassShadow(cornerRadius = size / 2f)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.62f))
-            .clickable(enabled = enabled, onClick = onClick),
+            // The preview itself already owns the backdrop material. Keep its
+            // actions on a single, denser surface instead of sampling the same
+            // background a second time (glass-on-glass).
+            .background(
+                MaterialTheme.colorScheme.surface.copy(
+                    alpha = if (effects.glassMaterialEnabled) {
+                        effects.compactSurfaceAlpha.coerceAtLeast(0.86f)
+                    } else {
+                        0.92f
+                    },
+                ),
+            )
+            .floatingSurfaceEdge(shape = CircleShape, nonGlassWidth = 0.5.dp)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = if (effects.glassMaterialEnabled) null else LocalIndication.current,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         if (showProgress) {
             CircularProgressIndicator(
                 modifier = Modifier.size(21.dp),
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onBackground,
                 strokeWidth = 2.dp,
             )
         } else {
             Icon(
                 icon,
                 contentDescription = contentDescription,
-                tint = Color.White.copy(alpha = if (enabled) 1f else 0.42f),
+                tint = MaterialTheme.colorScheme.onBackground.copy(alpha = if (enabled) 1f else 0.42f),
                 modifier = Modifier.size(22.dp),
             )
         }
     }
 }
+
+private data class ArtifactPreviewTransform(
+    val scale: Float,
+    val offset: Offset,
+)
+
+private fun applyPreviewZoom(
+    centroid: Offset,
+    zoom: Float,
+    pan: Offset,
+    scale: Float,
+    offset: Offset,
+    viewportSize: IntSize,
+    imageWidth: Int,
+    imageHeight: Int,
+): ArtifactPreviewTransform {
+    if (
+        viewportSize.width <= 0 ||
+            viewportSize.height <= 0 ||
+            !zoom.isFinite() ||
+            zoom <= 0f
+    ) {
+        return ArtifactPreviewTransform(scale = scale, offset = offset)
+    }
+    val nextScale = (scale * zoom).coerceIn(MIN_IMAGE_SCALE, MAX_IMAGE_SCALE)
+    val ratio = nextScale / scale
+    val viewportCenter = Offset(viewportSize.width / 2f, viewportSize.height / 2f)
+    val proposedOffset = Offset(
+        x = offset.x * ratio + (centroid.x - viewportCenter.x) * (1f - ratio) + pan.x,
+        y = offset.y * ratio + (centroid.y - viewportCenter.y) * (1f - ratio) + pan.y,
+    )
+    return ArtifactPreviewTransform(
+        scale = nextScale,
+        offset = clampPreviewOffset(
+            offset = proposedOffset,
+            scale = nextScale,
+            viewportSize = viewportSize,
+            imageWidth = imageWidth,
+            imageHeight = imageHeight,
+        ),
+    )
+}
+
 
 private data class ArtifactImageSaveAction(
     val saving: Boolean,
@@ -651,7 +707,7 @@ private fun ArtifactSvgWebView(
     val context = LocalContext.current
     val svgKey = remember(svg) { svg.length to svg.hashCode() }
     val webView = remember(context, enableZoom) {
-        WebView(context).apply {
+        ArtifactSvgPreviewWebView(context).apply {
             setBackgroundColor(android.graphics.Color.WHITE)
             isHorizontalScrollBarEnabled = enableZoom
             isVerticalScrollBarEnabled = enableZoom
@@ -728,6 +784,19 @@ private fun ArtifactSvgWebView(
         factory = { webView },
         modifier = modifier,
     )
+}
+
+private class ArtifactSvgPreviewWebView(context: Context) : WebView(context) {
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+            val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            if (wheelDelta != 0f && settings.supportZoom()) {
+                if (wheelDelta > 0f) zoomIn() else zoomOut()
+                return true
+            }
+        }
+        return super.onGenericMotionEvent(event)
+    }
 }
 
 private fun blockedSvgResourceResponse(): WebResourceResponse = WebResourceResponse(

@@ -953,7 +953,7 @@ private fun RemoteSelectorPill(
             onDismissRequest = { expanded = false },
             width = when (title) {
                 "模型", "访问权限" -> 150.dp
-                else -> 224.dp
+                else -> 156.dp
             },
             cornerRadius = 16.dp,
             alignEnd = false,

@@ -76,16 +76,25 @@ internal fun Modifier.floatingSurfaceEdge(
             start = Offset.Zero,
             end = Offset(size.width, size.height),
         )
-        val specularBrush = Brush.linearGradient(
+        val topSpecularBrush = Brush.verticalGradient(
             colorStops = arrayOf(
-                0f to Color.White.copy(alpha = if (darkTheme) 0.46f else 0.82f),
-                0.20f to Color.White.copy(alpha = if (darkTheme) 0.30f else 0.58f),
-                0.45f to Color.White.copy(alpha = if (darkTheme) 0.10f else 0.22f),
-                0.68f to Color.Transparent,
+                0f to Color.White.copy(alpha = if (darkTheme) 0.38f else 0.68f),
+                0.18f to Color.White.copy(alpha = if (darkTheme) 0.22f else 0.42f),
+                0.48f to Color.Transparent,
                 1f to Color.Transparent,
             ),
-            start = Offset.Zero,
-            end = Offset(size.width * 0.88f, size.height * 0.88f),
+            startY = 0f,
+            endY = size.height,
+        )
+        val leftSpecularBrush = Brush.horizontalGradient(
+            colorStops = arrayOf(
+                0f to Color.White.copy(alpha = if (darkTheme) 0.34f else 0.62f),
+                0.18f to Color.White.copy(alpha = if (darkTheme) 0.18f else 0.36f),
+                0.48f to Color.Transparent,
+                1f to Color.Transparent,
+            ),
+            startX = 0f,
+            endX = size.width,
         )
         onDrawWithContent {
             drawContent()
@@ -96,7 +105,12 @@ internal fun Modifier.floatingSurfaceEdge(
             )
             drawPath(
                 path = edgePath,
-                brush = specularBrush,
+                brush = topSpecularBrush,
+                style = Stroke(width = GlassSpecularEdgeWidth.toPx()),
+            )
+            drawPath(
+                path = edgePath,
+                brush = leftSpecularBrush,
                 style = Stroke(width = GlassSpecularEdgeWidth.toPx()),
             )
         }

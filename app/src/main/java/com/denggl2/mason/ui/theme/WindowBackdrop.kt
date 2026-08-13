@@ -28,11 +28,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.layout.positionOnScreen
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalGraphicsContext
@@ -399,17 +401,35 @@ internal fun Modifier.windowBackdropMaterial(
     blurRadius: Dp,
     fallbackColor: Color,
     effectAlpha: Float = 1f,
+    useScreenCoordinates: Boolean = false,
 ): Modifier = composed {
     var windowPosition by remember { mutableStateOf(IntOffset.Zero) }
     val backdropRequired = enabled && blurRadius.value > 0f
+    val context = LocalContext.current
+    val activityRoot = remember(context, useScreenCoordinates) {
+        if (useScreenCoordinates) context.findComponentActivity()?.window?.decorView else null
+    }
     val snapshot = rememberWindowBackdropSnapshot(
         enabled = backdropRequired,
     )
     val fallbackAlpha = if (backdropRequired && snapshot == null) 1f else 0f
     this
         .onGloballyPositioned { coordinates ->
-            val position = coordinates.positionInWindow()
-            windowPosition = IntOffset(position.x.roundToInt(), position.y.roundToInt())
+            val position = if (useScreenCoordinates) {
+                val screenPosition = coordinates.positionOnScreen()
+                val rootLocation = IntArray(2)
+                activityRoot?.getLocationOnScreen(rootLocation)
+                Offset(
+                    x = screenPosition.x - rootLocation[0],
+                    y = screenPosition.y - rootLocation[1],
+                )
+            } else {
+                coordinates.positionInWindow()
+            }
+            windowPosition = IntOffset(
+                position.x.roundToInt(),
+                position.y.roundToInt(),
+            )
         }
         .windowBackdrop(
             snapshot = snapshot,

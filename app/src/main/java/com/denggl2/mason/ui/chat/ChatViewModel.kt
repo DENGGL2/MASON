@@ -497,8 +497,9 @@ class ChatViewModel @Inject constructor(
         val startedAt = System.currentTimeMillis()
         val isResumingTask = resumedRun != null
         val shouldRecordUserMessage = shouldRecordTaskGoal(isResumingTask)
-        val taskRun = resumedRun
-            ?: agentRuntime.begin(content, currentConversationId).copy(createdAt = startedAt, updatedAt = startedAt)
+        val taskRun = (resumedRun
+            ?: agentRuntime.begin(content, currentConversationId).copy(createdAt = startedAt, updatedAt = startedAt))
+            .copy(modelContributions = emptyList())
         activeTaskRun = taskRun
         var usageSeen = false
         var modelAnswered = false
@@ -520,7 +521,9 @@ class ChatViewModel @Inject constructor(
             taskSteps = taskRun.steps,
             taskRun = taskRun,
             pendingToolApproval = null,
-            modelContributions = taskRun.modelContributions,
+            // Contributions are scoped to this user turn. They are rebuilt from
+            // ModelExecutionStarted events below, including tool follow-up calls.
+            modelContributions = emptyList(),
         )
 
         launchGeneration {
@@ -1238,6 +1241,7 @@ class ChatViewModel @Inject constructor(
                 pendingCalls = emptyList(),
                 pendingApprovalCallId = null,
             ),
+            modelContributions = emptyList(),
             finishedAt = null,
         )
         activeTaskRun = resumed
@@ -1248,6 +1252,7 @@ class ChatViewModel @Inject constructor(
             requestStartedAt = startedAt,
             taskSteps = resumed.steps,
             taskRun = resumed,
+            modelContributions = emptyList(),
         )
         launchGeneration {
             notifyTaskEvent(TaskNotificationEvent.Started)

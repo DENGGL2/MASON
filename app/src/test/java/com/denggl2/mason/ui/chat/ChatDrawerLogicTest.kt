@@ -38,6 +38,14 @@ class ChatDrawerLogicTest {
     }
 
     @Test
+    fun drawerGesture_onlyStartsInsideTheNarrowLeadingEdge() {
+        assertTrue(isDrawerGestureStartWithinEdge(startX = 0f, edgeWidth = 32f))
+        assertTrue(isDrawerGestureStartWithinEdge(startX = 32f, edgeWidth = 32f))
+        assertFalse(isDrawerGestureStartWithinEdge(startX = 33f, edgeWidth = 32f))
+        assertFalse(isDrawerGestureStartWithinEdge(startX = -1f, edgeWidth = 32f))
+    }
+
+    @Test
     fun waitingAndTerminalTasks_doNotShowRunningSpinner() {
         assertTrue(isConversationProgressActive(TaskRunStatus.Running))
         assertFalse(isConversationProgressActive(TaskRunStatus.WaitingForUser))

@@ -73,7 +73,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material3.AlertDialog
+import com.denggl2.mason.ui.theme.MasonAlertDialog as AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -232,6 +232,8 @@ import com.denggl2.mason.tool.shouldRequestPostNotificationPermission
 import com.denggl2.mason.ui.chat.PopupDismissGutters
 import com.denggl2.mason.ui.theme.LocalInterfaceEffects
 import com.denggl2.mason.ui.theme.MASON_OVERLAY_SCRIM_ALPHA
+import com.denggl2.mason.ui.theme.MasonSheetShape
+import com.denggl2.mason.ui.theme.MasonDialogAction
 import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
 import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
 import com.denggl2.mason.ui.theme.floatingSurfaceEdge
@@ -245,6 +247,9 @@ import com.denggl2.mason.ui.theme.resolveBackdropCaptureScale
 import com.denggl2.mason.ui.theme.resolveBackdropBlurRadius
 import com.denggl2.mason.ui.theme.windowBackdrop
 import com.denggl2.mason.ui.theme.windowBackdropMaterial
+import com.denggl2.mason.ui.theme.masonOverlayWindowInsets
+import com.denggl2.mason.ui.theme.masonSheetContainerColor
+import com.denggl2.mason.ui.theme.masonSheetSurface
 import dev.chrisbanes.haze.HazeState
 import java.io.File
 import java.util.Locale
@@ -312,33 +317,6 @@ private const val DROPDOWN_ENTER_DURATION_MILLIS = 180
 private const val DROPDOWN_EXIT_DURATION_MILLIS = 120
 private val DropdownEnterEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
 private val DropdownExitEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
-private val settingsSheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
-
-private fun Modifier.settingsSheetContentBackdrop(): Modifier = composed {
-    val interfaceEffects = LocalInterfaceEffects.current
-    if (!interfaceEffects.backdropBlurEnabled) {
-        return@composed this
-    }
-    this
-        .windowBackdropMaterial(
-            enabled = true,
-            blurRadius = interfaceEffects.resolveBackdropBlurRadius(
-                nonGlassRadius = 40.dp,
-            ),
-            fallbackColor = MaterialTheme.colorScheme.surface,
-            effectAlpha = interfaceEffects.backdropEffectAlpha,
-        )
-        .background(
-            MaterialTheme.colorScheme.surface.copy(
-                alpha = interfaceEffects.largeSurfaceAlpha,
-            ),
-        )
-}
-
-@Composable
-private fun settingsSheetSurfaceColor(): Color = MaterialTheme.colorScheme.surface.copy(
-    alpha = if (LocalInterfaceEffects.current.backdropBlurEnabled) 0f else 1f,
-)
 private val settingsGlassShadowBlur = 20.dp
 
 private fun Modifier.settingsGlassShadow(
@@ -1720,19 +1698,20 @@ fun SettingsScreen(
                 Text("手机会立即清除配对并恢复未配对状态。若电脑离线，电脑端可能暂时保留此设备的授权记录。")
             },
             confirmButton = {
-                TextButton(
+                MasonDialogAction(
+                    label = "取消配对",
                     onClick = {
                         showPairingManagementDialog = false
                         viewModel.cancelDevicePairing()
                     },
-                ) {
-                    Text("取消配对", color = MaterialTheme.colorScheme.error)
-                }
+                    color = MaterialTheme.colorScheme.error,
+                )
             },
             dismissButton = {
-                TextButton(onClick = { showPairingManagementDialog = false }) {
-                    Text("返回")
-                }
+                MasonDialogAction(
+                    label = "返回",
+                    onClick = { showPairingManagementDialog = false },
+                )
             },
         )
     }
@@ -2716,11 +2695,12 @@ private fun RemoteModelConfigurationSheet(
     ModalBottomSheet(
         onDismissRequest = requestDismiss,
         sheetState = sheetState,
-        shape = settingsSheetShape,
-        containerColor = settingsSheetSurfaceColor(),
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
         properties = ModalBottomSheetProperties(
             shouldDismissOnBackPress = !currentShouldConfirmDismiss,
         ),
@@ -2735,7 +2715,7 @@ private fun RemoteModelConfigurationSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.72f)
-                .settingsSheetContentBackdrop()
+                .masonSheetSurface()
                 .imePadding()
                 .padding(bottom = 18.dp),
         ) {

@@ -120,7 +120,7 @@ import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.rememberDrawerState
-import androidx.compose.material3.AlertDialog
+import com.denggl2.mason.ui.theme.MasonAlertDialog as AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.DropdownMenu
@@ -264,6 +264,7 @@ import com.denggl2.mason.ui.conversation.ConversationListViewModel
 import com.denggl2.mason.ui.conversation.RemoteConversationListUiState
 import com.denggl2.mason.ui.theme.LocalInterfaceEffects
 import com.denggl2.mason.ui.theme.MASON_OVERLAY_SCRIM_ALPHA
+import com.denggl2.mason.ui.theme.MasonSheetShape
 import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
 import com.denggl2.mason.ui.theme.WindowBackdropSnapshot
 import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
@@ -279,6 +280,9 @@ import com.denggl2.mason.ui.theme.resolveBackdropCaptureScale
 import com.denggl2.mason.ui.theme.resolveBackdropBlurRadius
 import com.denggl2.mason.ui.theme.windowBackdrop
 import com.denggl2.mason.ui.theme.windowBackdropMaterial
+import com.denggl2.mason.ui.theme.masonOverlayWindowInsets
+import com.denggl2.mason.ui.theme.masonSheetContainerColor
+import com.denggl2.mason.ui.theme.masonSheetSurface
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
@@ -655,34 +659,6 @@ internal enum class ChatBackdropBlur {
 }
 
 internal val LocalChatBackdropState = staticCompositionLocalOf<HazeState?> { null }
-
-private val chatSheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
-
-private fun Modifier.chatSheetContentBackdrop(): Modifier = composed {
-    val interfaceEffects = LocalInterfaceEffects.current
-    if (!interfaceEffects.backdropBlurEnabled) {
-        return@composed this
-    }
-    this
-        .windowBackdropMaterial(
-            enabled = true,
-            blurRadius = interfaceEffects.resolveBackdropBlurRadius(
-                nonGlassRadius = 40.dp,
-            ),
-            fallbackColor = MaterialTheme.colorScheme.surface,
-            effectAlpha = interfaceEffects.backdropEffectAlpha,
-        )
-        .background(
-            MaterialTheme.colorScheme.surface.copy(
-                alpha = interfaceEffects.largeSurfaceAlpha,
-            ),
-        )
-}
-
-@Composable
-private fun chatSheetSurfaceColor(): Color = MaterialTheme.colorScheme.surface.copy(
-    alpha = if (LocalInterfaceEffects.current.backdropBlurEnabled) 0f else 1f,
-)
 
 @Composable
 private fun ChatSheetDragHandle(
@@ -2122,17 +2098,18 @@ private fun ToolApprovalDetailSheet(
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        shape = chatSheetShape,
-        containerColor = chatSheetSurfaceColor(),
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
         dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .chatSheetContentBackdrop()
+                .masonSheetSurface()
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -2707,16 +2684,22 @@ private fun AdaptiveChatLayout(
         }
     } else {
         val drawerGestureScope = rememberCoroutineScope()
-        val openGestureModifier = Modifier.pointerInput(drawerState) {
+        val edgeWidthPx = with(LocalDensity.current) { 32.dp.toPx() }
+        val openGestureModifier = Modifier.pointerInput(drawerState, edgeWidthPx) {
             awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false)
+                // Keep the drawer recognizer on the system edge. A consumed down
+                // belongs to a horizontal content control (table, carousel, etc.).
+                val down = awaitFirstDown(requireUnconsumed = true)
                 val start = down.position
-                if (start.x > size.width / 4f) return@awaitEachGesture
+                if (!isDrawerGestureStartWithinEdge(start.x, edgeWidthPx)) {
+                    return@awaitEachGesture
+                }
 
                 var change = down
                 while (change.pressed) {
                     val event = awaitPointerEvent()
                     change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (change.isConsumed) break
                     val drag = change.position - start
                     if (shouldOpenDrawerFromGesture(
                             horizontalDrag = drag.x,
@@ -2773,6 +2756,11 @@ internal fun shouldOpenDrawerFromGesture(
     verticalDrag: Float,
     touchSlop: Float,
 ): Boolean = horizontalDrag > touchSlop && horizontalDrag > abs(verticalDrag)
+
+internal fun isDrawerGestureStartWithinEdge(
+    startX: Float,
+    edgeWidth: Float,
+): Boolean = startX >= 0f && edgeWidth > 0f && startX <= edgeWidth
 
 @Composable
 private fun TopModelMenuButton(
@@ -2883,6 +2871,7 @@ private fun DrawerPrimaryAction(
     icon: ImageVector,
     trailingIcon: ImageVector? = null,
 ) {
+    val glassMaterialEnabled = LocalInterfaceEffects.current.glassMaterialEnabled
     val tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
     Row(
         modifier = Modifier
@@ -2892,6 +2881,10 @@ private fun DrawerPrimaryAction(
             .background(
                 if (selected) {
                     MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                } else if (glassMaterialEnabled) {
+                    // The drawer is the single glass layer. Its rows stay
+                    // transparent so a second translucent panel is not formed.
+                    Color.Transparent
                 } else {
                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
                 },
@@ -2899,6 +2892,7 @@ private fun DrawerPrimaryAction(
             .border(
                 1.dp,
                 if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                else if (glassMaterialEnabled) Color.Transparent
                 else MaterialTheme.colorScheme.outline.copy(alpha = 0.06f),
                 RoundedCornerShape(12.dp),
             )
@@ -4091,18 +4085,19 @@ private fun ToolExecutionDetailSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        shape = chatSheetShape,
-        containerColor = chatSheetSurfaceColor(),
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
         dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.88f)
-                .chatSheetContentBackdrop()
+                .masonSheetSurface()
                 .padding(horizontal = 18.dp, vertical = 8.dp),
         ) {
             ChatSheetDragHandle(
@@ -4999,17 +4994,18 @@ private fun UserMessageActionSheet(
     val context = LocalContext.current
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        shape = chatSheetShape,
-        containerColor = chatSheetSurfaceColor(),
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
         dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .chatSheetContentBackdrop()
+                .masonSheetSurface()
                 .padding(horizontal = 14.dp, vertical = 6.dp),
         ) {
             ChatSheetDragHandle(
@@ -5050,17 +5046,18 @@ private fun AssistantActionSheet(
     val context = LocalContext.current
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        shape = chatSheetShape,
-        containerColor = chatSheetSurfaceColor(),
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
         dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .chatSheetContentBackdrop()
+                .masonSheetSurface()
                 .padding(horizontal = 14.dp, vertical = 6.dp),
         ) {
             ChatSheetDragHandle(
@@ -5728,17 +5725,18 @@ internal fun ArtifactPreviewDialog(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        shape = chatSheetShape,
-        containerColor = chatSheetSurfaceColor(),
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
         dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .chatSheetContentBackdrop()
+                .masonSheetSurface()
                 .padding(horizontal = 18.dp, vertical = 8.dp),
         ) {
             ChatSheetDragHandle(
@@ -6776,17 +6774,18 @@ internal fun SkillPickerSheet(
     )
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        shape = chatSheetShape,
-        containerColor = chatSheetSurfaceColor(),
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
         dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .chatSheetContentBackdrop()
+                .masonSheetSurface()
                 .padding(horizontal = 16.dp, vertical = 5.dp)
                 .padding(bottom = 28.dp),
         ) {

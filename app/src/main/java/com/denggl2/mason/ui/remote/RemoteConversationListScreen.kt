@@ -48,7 +48,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material3.AlertDialog
+import com.denggl2.mason.ui.theme.MasonAlertDialog as AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
@@ -122,12 +122,16 @@ import com.denggl2.mason.ui.chat.masonGlassShadow
 import com.denggl2.mason.ui.chat.rememberChatBackdropState
 import com.denggl2.mason.ui.theme.LocalInterfaceEffects
 import com.denggl2.mason.ui.theme.MASON_OVERLAY_SCRIM_ALPHA
+import com.denggl2.mason.ui.theme.MasonSheetShape
 import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
 import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
 import com.denggl2.mason.ui.theme.progressiveEdgeBlur
 import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
 import com.denggl2.mason.ui.theme.resolveBackdropBlurRadius
 import com.denggl2.mason.ui.theme.windowBackdropMaterial
+import com.denggl2.mason.ui.theme.masonOverlayWindowInsets
+import com.denggl2.mason.ui.theme.masonSheetContainerColor
+import com.denggl2.mason.ui.theme.masonSheetSurface
 import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -683,20 +687,6 @@ private fun RemoteNewConversationButton(
     }
 }
 
-@Composable
-private fun Modifier.remoteSheetBackdrop(): Modifier = composed {
-    val effects = LocalInterfaceEffects.current
-    if (!effects.backdropBlurEnabled) return@composed this
-    this
-        .windowBackdropMaterial(
-            enabled = true,
-            blurRadius = effects.resolveBackdropBlurRadius(nonGlassRadius = 40.dp),
-            fallbackColor = MaterialTheme.colorScheme.surface,
-            effectAlpha = effects.backdropEffectAlpha,
-        )
-        .background(MaterialTheme.colorScheme.surface.copy(alpha = effects.largeSurfaceAlpha))
-}
-
 private data class RemoteNewSelectorItem(
     val id: String,
     val label: String,
@@ -715,8 +705,6 @@ private fun RemoteNewConversationSheet(
     onSelectPermission: (String) -> Unit,
     onCreate: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
-    val effects = LocalInterfaceEffects.current
     val selectedModel = state.newConversationOptions.models
         .firstOrNull { it.id == state.selectedNewModelId }
     val selectedProject = state.newConversationOptions.projects
@@ -740,19 +728,17 @@ private fun RemoteNewConversationSheet(
         onDismissRequest = {
             if (expandedSelector != null) expandedSelector = null else onDismiss()
         },
-        shape = shape,
-        containerColor = MaterialTheme.colorScheme.surface.copy(
-            alpha = if (effects.backdropBlurEnabled) 0f else 1f,
-        ),
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
         dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .remoteSheetBackdrop()
-                .navigationBarsPadding()
+                .masonSheetSurface()
                 .imePadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
