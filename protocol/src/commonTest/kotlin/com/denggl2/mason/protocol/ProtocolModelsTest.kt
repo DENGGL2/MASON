@@ -120,13 +120,132 @@ class ProtocolModelsTest {
                     title = "电脑会话",
                     preview = "最近消息",
                     updatedAt = 123,
+                    isPinned = true,
                     ownership = CodexOwnership.EXTERNAL_HISTORY_ONLY,
+                    executionStatus = RemoteExecutionStatus.RUNNING,
                 ),
             ),
             nextCursor = "cursor-2",
         )
 
         assertEquals(page, MasonProtocolJson.decode<RemoteConversationPage>(MasonProtocolJson.encode(page)))
+
+        val execution = RemoteExecutionResult(
+            threadId = "thread-1",
+            turnId = "turn-1",
+            status = RemoteExecutionStatus.RUNNING,
+        )
+        assertEquals(
+            execution,
+            MasonProtocolJson.decode<RemoteExecutionResult>(MasonProtocolJson.encode(execution)),
+        )
+    }
+
+    @Test
+    fun remoteConversationSummaryDefaultsLegacyPayloadToIdle() {
+        val legacy = MasonProtocolJson.decode<RemoteConversationSummary>(
+            """{"threadId":"thread-1","title":"旧版会话"}""",
+        )
+
+        assertEquals(RemoteExecutionStatus.IDLE, legacy.executionStatus)
+        assertEquals(false, legacy.isPinned)
+        assertFalse(legacy.isPinned)
+    }
+
+    @Test
+    fun remoteConversationDetailActivitiesRoundTripAndLegacyPayloadDefaultsEmpty() {
+        val detail = RemoteConversationDetail(
+            conversation = RemoteConversationSummary(threadId = "thread-1", title = "测试"),
+            messages = emptyList(),
+            activities = listOf(
+                RemoteConversationActivity(
+                    id = "command-1",
+                    kind = RemoteConversationActivityKind.COMMAND,
+                    title = "执行代码",
+                    text = "npm test",
+                    status = RemoteConversationActivityStatus.RUNNING,
+                ),
+            ),
+        )
+
+        assertEquals(
+            detail,
+            MasonProtocolJson.decode<RemoteConversationDetail>(MasonProtocolJson.encode(detail)),
+        )
+        assertEquals(
+            emptyList(),
+            MasonProtocolJson.decode<RemoteConversationDetail>(
+                """{"conversation":{"threadId":"thread-1","title":"旧版"},"messages":[]}""",
+            ).activities,
+        )
+    }
+
+    @Test
+    fun enhancedRemoteMessageRoundTripsWithComputerSkillAndTurnOptions() {
+        val request = RemoteMessageRequest(
+            text = "分析附件",
+            attachmentIds = listOf("attachment-1"),
+            skill = RemoteSkillSelection(
+                name = "how-to",
+                path = "C:/Users/Test/.codex/skills/how-to/SKILL.md",
+            ),
+            modelId = "gpt-codex",
+            reasoningEffort = "high",
+            permissionProfileId = "workspace-write",
+        )
+
+        assertEquals(
+            request,
+            MasonProtocolJson.decode<RemoteMessageRequest>(MasonProtocolJson.encode(request)),
+        )
+    }
+
+    @Test
+    fun remoteComposerSelectionsAndConversationCreateRequestRoundTrip() {
+        val options = RemoteComposerOptions(
+            projects = listOf(
+                RemoteProjectOption(path = "D:/Work/Mason", displayName = "Mason"),
+            ),
+            models = listOf(
+                RemoteModelOption(
+                    id = "model-option-1",
+                    model = "gpt-5.6-sol",
+                    displayName = "GPT 5.6 Sol",
+                    description = "Coding model",
+                    defaultReasoningEffort = "high",
+                    supportedReasoningEfforts = listOf(
+                        RemoteReasoningEffortOption(id = "high", description = "High"),
+                    ),
+                ),
+            ),
+            permissionProfiles = listOf(
+                RemotePermissionProfileOption(
+                    id = ":workspace",
+                    description = "Workspace",
+                    allowed = true,
+                ),
+            ),
+            currentModelId = "model-option-1",
+            currentReasoningEffort = "high",
+            currentPermissionProfileId = ":workspace",
+            cwd = "D:/Work/Mason",
+        )
+        val request = RemoteConversationCreateRequest(
+            text = "Create a test",
+            projectPath = "D:/Work/Mason",
+            modelId = "model-option-1",
+            reasoningEffort = "high",
+            permissionProfileId = ":workspace",
+        )
+
+        assertEquals(
+            options,
+            MasonProtocolJson.decode<RemoteComposerOptions>(MasonProtocolJson.encode(options)),
+        )
+        assertEquals(
+            request,
+            MasonProtocolJson.decode<RemoteConversationCreateRequest>(MasonProtocolJson.encode(request)),
+        )
     }
 
     @Test

@@ -272,6 +272,14 @@ class PairingAuthService(
     fun authenticateSession(
         sessionToken: String,
         requiredPermission: DevicePermission? = null,
+    ): SessionPrincipal = authenticateSession(
+        sessionToken = sessionToken,
+        requiredPermissions = setOfNotNull(requiredPermission),
+    )
+
+    fun authenticateSession(
+        sessionToken: String,
+        requiredPermissions: Set<DevicePermission>,
     ): SessionPrincipal = synchronized(lock) {
         val key = tokenKey(sessionToken)
         val principal = sessions[key]
@@ -281,8 +289,12 @@ class PairingAuthService(
             fail(PairingAuthErrorCode.SESSION_EXPIRED, "Session token has expired")
         }
         activeDevice(principal.deviceId)
-        if (requiredPermission != null && requiredPermission !in principal.permissions) {
-            fail(PairingAuthErrorCode.PERMISSION_DENIED, "Session does not grant $requiredPermission")
+        val missingPermissions = requiredPermissions - principal.permissions
+        if (missingPermissions.isNotEmpty()) {
+            fail(
+                PairingAuthErrorCode.PERMISSION_DENIED,
+                "Session does not grant ${missingPermissions.joinToString()}",
+            )
         }
         principal
     }

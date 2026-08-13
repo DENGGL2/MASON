@@ -111,6 +111,20 @@ class ConnectorStateStoreTest {
     }
 
     @Test
+    fun remoteComposerSelectionSurvivesRestart() = withStatePath { path ->
+        val selection = StoredRemoteComposerSelection(
+            model = "gpt-5.6-sol",
+            reasoningEffort = "high",
+            permissionProfileId = ":workspace",
+            cwd = "D:\\workspace\\MASON",
+        )
+        ConnectorStateStore(path) { "device-1" }
+            .recordRemoteComposerSelection("thread-1", selection)
+
+        assertEquals(selection, ConnectorStateStore(path).remoteComposerSelection("thread-1"))
+    }
+
+    @Test
     fun versionOneStateMigratesWithoutLosingConnectorIdentity() = withStatePath { path ->
         Files.writeString(
             path,

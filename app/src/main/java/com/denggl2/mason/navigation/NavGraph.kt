@@ -11,6 +11,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -32,6 +33,7 @@ import com.denggl2.mason.data.ThemeMode
 import com.denggl2.mason.data.UiPreferences
 import com.denggl2.mason.ui.chat.ChatScreen
 import com.denggl2.mason.ui.pairing.DevicePairingScreen
+import com.denggl2.mason.ui.remote.RemoteConversationListScreen
 import com.denggl2.mason.ui.remote.RemoteConversationScreen
 import com.denggl2.mason.ui.collection.CollectionKind
 import com.denggl2.mason.ui.collection.CollectionListScreen
@@ -40,6 +42,7 @@ import com.denggl2.mason.ui.settings.PermissionScreen
 import com.denggl2.mason.ui.settings.SettingsScreen
 import com.denggl2.mason.ui.phoneagent.PhoneAgentLogScreen
 import com.denggl2.mason.ui.phoneagent.PhoneAgentScreen
+import com.denggl2.mason.ui.theme.WindowBackdropSnapshot
 import java.util.UUID
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -55,6 +58,7 @@ object Routes {
     const val DEVICE_PAIRING = "device_pairing"
     const val PHONE_AGENT = "phone_agent"
     const val PHONE_AGENT_LOGS = "phone_agent/logs"
+    const val REMOTE_CONVERSATIONS = "remote_conversations"
     const val REMOTE_CONVERSATION = "remote_conversation/{threadId}"
     const val COLLECTION = "collection/{kind}"
 
@@ -100,6 +104,14 @@ fun MasonNavGraph(
     var conversationSwitchInProgress by remember { mutableStateOf(false) }
     var conversationSwitchResetJob by remember { mutableStateOf<Job?>(null) }
     var drawerResetGeneration by remember { mutableIntStateOf(0) }
+    var drawerBackdropSnapshot by remember { mutableStateOf<WindowBackdropSnapshot?>(null) }
+    DisposableEffect(drawerBackdropSnapshot) {
+        val currentSnapshot = drawerBackdropSnapshot
+        val retained = currentSnapshot?.retain() == true
+        onDispose {
+            if (retained) currentSnapshot?.release() else currentSnapshot?.recycleWhenIdle()
+        }
+    }
 
     fun beginConversationSwitch() {
         conversationSwitchInProgress = true
@@ -256,10 +268,12 @@ fun MasonNavGraph(
                 onConversationSelected = ::navigateToConversation,
                 onNewChat = ::navigateToNewChat,
                 onDevicePairing = { navController.navigate(Routes.DEVICE_PAIRING) },
-                onRemoteConversationSelected = { threadId ->
-                    navController.navigate(Routes.remoteConversation(threadId))
+                onOpenRemoteConversations = {
+                    navController.navigate(Routes.REMOTE_CONVERSATIONS)
                 },
                 drawerResetGeneration = drawerResetGeneration,
+                drawerBackdropSnapshot = drawerBackdropSnapshot,
+                onDrawerBackdropSnapshotChange = { drawerBackdropSnapshot = it },
                 onConversationBound = { id ->
                     val previousId = backStackEntry.savedStateHandle.get<Long>("boundConversationId")
                     if (previousId != null && conversationRoutes[previousId] == route) {
@@ -299,10 +313,12 @@ fun MasonNavGraph(
                 onConversationSelected = ::navigateToConversation,
                 onNewChat = ::navigateToNewChat,
                 onDevicePairing = { navController.navigate(Routes.DEVICE_PAIRING) },
-                onRemoteConversationSelected = { threadId ->
-                    navController.navigate(Routes.remoteConversation(threadId))
+                onOpenRemoteConversations = {
+                    navController.navigate(Routes.REMOTE_CONVERSATIONS)
                 },
                 drawerResetGeneration = drawerResetGeneration,
+                drawerBackdropSnapshot = drawerBackdropSnapshot,
+                onDrawerBackdropSnapshotChange = { drawerBackdropSnapshot = it },
                 onConversationBound = { id ->
                     val currentRoute = id?.let(Routes::chat)
                     val previousId = backStackEntry.savedStateHandle.get<Long>("boundConversationId")
@@ -406,6 +422,20 @@ fun MasonNavGraph(
 
         composable(Routes.PHONE_AGENT_LOGS) {
             PhoneAgentLogScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.REMOTE_CONVERSATIONS) {
+            RemoteConversationListScreen(
+                onBack = { navController.popBackStack() },
+                onConversationSelected = { threadId ->
+                    navController.navigate(Routes.remoteConversation(threadId))
+                },
+                onPairingDisconnected = {
+                    navController.navigate(Routes.DEVICE_PAIRING) {
+                        popUpTo(Routes.REMOTE_CONVERSATIONS) { inclusive = true }
+                    }
+                },
+            )
         }
 
         composable(

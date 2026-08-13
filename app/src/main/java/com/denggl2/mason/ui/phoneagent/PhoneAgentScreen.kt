@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -37,6 +36,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
+import com.denggl2.mason.ui.theme.MASON_OVERLAY_SCRIM_ALPHA
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -236,6 +236,7 @@ private fun PhoneAgentLogDetailSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface,
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
     ) {
         LazyColumn(
             modifier = Modifier.fillMaxWidth(),
@@ -293,7 +294,9 @@ private fun PhoneAgentScaffold(
 ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
+        contentWindowInsets = WindowInsets.safeDrawing.only(
+            WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal,
+        ),
         topBar = {
             TopAppBar(
                 title = {
@@ -312,15 +315,7 @@ private fun PhoneAgentScaffold(
                 ),
             )
         },
-        content = { contentPadding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .navigationBarsPadding(),
-            ) {
-                content(contentPadding)
-            }
-        },
+        content = content,
     )
 }
 

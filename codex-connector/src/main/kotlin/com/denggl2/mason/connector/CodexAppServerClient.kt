@@ -66,6 +66,9 @@ class CodexAppServerClient(
                     put("title", clientTitle)
                     put("version", clientVersion)
                 })
+                put("capabilities", buildJsonObject {
+                    put("experimentalApi", true)
+                })
             },
         ).jsonObject
         notify("initialized")

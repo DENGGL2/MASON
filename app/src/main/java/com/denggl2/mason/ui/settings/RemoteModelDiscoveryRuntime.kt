@@ -1,7 +1,9 @@
 package com.denggl2.mason.ui.settings
 
 import com.denggl2.mason.AppForegroundState
+import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.ApiConnection
+import com.denggl2.mason.data.ApiModelCapabilities
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
@@ -15,15 +17,29 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
 
+data class RemoteModelDiscoveryUiState(
+    val isTesting: Boolean = false,
+    val targetConnection: ApiConnection? = null,
+    val modelListingAvailable: Boolean? = null,
+    val models: List<AiModelPreset> = emptyList(),
+    val modelCapabilities: Map<String, ApiModelCapabilities> = emptyMap(),
+    val modelTestErrors: Map<String, String> = emptyMap(),
+    val verifiedModelSignatures: Map<String, String> = emptyMap(),
+    val activeModelIds: Set<String> = emptySet(),
+    val completedCount: Int = 0,
+    val message: String? = null,
+    val success: Boolean? = null,
+)
+
 @Singleton
-class ApiTestRuntime @Inject constructor() {
+class RemoteModelDiscoveryRuntime @Inject constructor() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val _state = MutableStateFlow(ApiTestUiState())
+    private val _state = MutableStateFlow(RemoteModelDiscoveryUiState())
     val state = _state.asStateFlow()
 
-    var current: ApiTestUiState
+    var current: RemoteModelDiscoveryUiState
         get() = _state.value
-        set(value) {
+        private set(value) {
             _state.value = value
         }
 
@@ -34,27 +50,6 @@ class ApiTestRuntime @Inject constructor() {
 
     @Volatile
     private var visibleDraft: ApiConnection? = null
-
-    fun update(state: ApiTestUiState) {
-        current = state
-    }
-
-    fun clearCompletedState() {
-        if (!_state.value.isTesting) {
-            _state.value = ApiTestUiState()
-        }
-    }
-
-    fun setVisibleDraft(connection: ApiConnection?) {
-        visibleDraft = connection
-    }
-
-    fun shouldNotifyCompletion(target: ApiConnection): Boolean =
-        shouldNotifyApiTestCompletion(
-            appForeground = AppForegroundState.isForeground,
-            visibleDraft = visibleDraft,
-            target = target,
-        )
 
     fun launch(block: suspend (Long) -> Unit): Boolean {
         val job = synchronized(jobLock) {
@@ -79,18 +74,18 @@ class ApiTestRuntime @Inject constructor() {
         return true
     }
 
-    fun update(runId: Long, state: ApiTestUiState): Boolean = synchronized(jobLock) {
+    fun update(runId: Long, state: RemoteModelDiscoveryUiState): Boolean = synchronized(jobLock) {
         if (activeRunId != runId) return false
-        _state.value = state
+        current = state
         true
     }
 
     fun update(
         runId: Long,
-        transform: (ApiTestUiState) -> ApiTestUiState,
+        transform: (RemoteModelDiscoveryUiState) -> RemoteModelDiscoveryUiState,
     ): Boolean = synchronized(jobLock) {
         if (activeRunId != runId) return false
-        _state.value = transform(_state.value)
+        current = transform(current)
         true
     }
 
@@ -98,31 +93,33 @@ class ApiTestRuntime @Inject constructor() {
         activeRunId == runId && activeJob?.isActive == true
     }
 
-    fun cancelActiveTest(): Boolean {
-        val job = synchronized(jobLock) {
-            val running = activeJob?.takeIf(Job::isActive) ?: return false
-            val previous = _state.value
-            activeJob = null
-            activeRunId = null
-            _state.value = previous.copy(
-                isTesting = false,
-                message = "已取消测试，配置未保存",
-                success = false,
-                testedConnection = null,
-                targetConnection = null,
-                replacingModelId = null,
-                activeModelId = null,
-                activeModelIds = emptySet(),
-            )
-            running
+    fun setVisibleDraft(connection: ApiConnection?) {
+        visibleDraft = connection
+    }
+
+    fun launchBackground(block: suspend () -> Unit) {
+        scope.launch { block() }
+    }
+
+    fun shouldNotifyCompletion(target: ApiConnection): Boolean =
+        !AppForegroundState.isForeground || !sameRemoteModelDiscoveryTarget(visibleDraft, target)
+
+    fun clearCompletedState() {
+        synchronized(jobLock) {
+            if (!current.isTesting) {
+                current = RemoteModelDiscoveryUiState()
+            }
         }
-        job.cancel()
-        return true
     }
 }
 
-internal fun shouldNotifyApiTestCompletion(
-    appForeground: Boolean,
-    visibleDraft: ApiConnection?,
-    target: ApiConnection,
-): Boolean = !appForeground || visibleDraft != target
+internal fun sameRemoteModelDiscoveryTarget(
+    first: ApiConnection?,
+    second: ApiConnection?,
+): Boolean {
+    if (first == null || second == null) return false
+    return first.providerId == second.providerId &&
+        first.apiUrl.trim().trimEnd('/') == second.apiUrl.trim().trimEnd('/') &&
+        first.apiKey == second.apiKey &&
+        first.workspaceId.trim() == second.workspaceId.trim()
+}

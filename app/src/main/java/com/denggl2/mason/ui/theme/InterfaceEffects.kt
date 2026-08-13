@@ -11,6 +11,7 @@ import com.denggl2.mason.data.normalizeGlassTransparency
 internal const val GLASS_COMPONENT_MATERIAL_ENABLED = true
 internal const val GLASS_PROGRESSIVE_EDGES_ENABLED = true
 internal val GLASS_FROST_MAX_BLUR_RADIUS = 40.dp
+const val MASON_OVERLAY_SCRIM_ALPHA = 0.12f
 
 data class InterfaceEffects(
     val requestedStyle: InterfaceStyle,

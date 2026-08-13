@@ -8,6 +8,12 @@ import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
@@ -17,7 +23,7 @@ internal fun runLocalPairing(arguments: List<String>) {
         arguments = arguments,
         usage = "Usage: mason-codex-connector pair-local <port> <qr-output.png> [state-directory]",
         readyMessage = "MASON local pairing is ready",
-        serveConversationHistory = false,
+        serveRemoteConversations = true,
     )
 }
 
@@ -31,7 +37,7 @@ internal fun runPrivatePairing(arguments: List<String>) {
         arguments = arguments.drop(1),
         usage = "Usage: mason-codex-connector pair-private <private-ipv4> <port> <qr-output.png> [state-directory]",
         readyMessage = "MASON private-network pairing is ready",
-        serveConversationHistory = true,
+        serveRemoteConversations = true,
     )
 }
 
@@ -40,7 +46,7 @@ private fun runPairing(
     arguments: List<String>,
     usage: String,
     readyMessage: String,
-    serveConversationHistory: Boolean,
+    serveRemoteConversations: Boolean,
 ) {
     require(arguments.size in 2..3) { usage }
     val port = arguments[0].toIntOrNull() ?: error("Pairing port must be a number")
@@ -56,12 +62,14 @@ private fun runPairing(
     )
     val connectorIdentity = connectorIdentityStore.getOrCreateIdentity()
     var codexClient: CodexAppServerClient? = null
-    val conversationProvider = if (serveConversationHistory) {
+    var codexNotificationScope: CoroutineScope? = null
+    val conversationProvider = if (serveRemoteConversations) {
+        val workingDirectory = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize()
         val executable = CodexExecutableLocator.locate()
             ?: error("Codex executable not found. Set MASON_CODEX_PATH to an executable Codex CLI path.")
         val transport = ProcessCodexTransport.start(
             executable = executable,
-            workingDirectory = Path.of(System.getProperty("user.dir")),
+            workingDirectory = workingDirectory,
         )
         val client = CodexAppServerClient(transport)
         try {
@@ -82,7 +90,15 @@ private fun runPairing(
         RemoteConversationService(
             api = CodexAppServerApi(client),
             store = stateStore,
-        )
+            attachmentRoot = stateDirectory.resolve(CONNECTOR_ATTACHMENTS_DIRECTORY),
+            workingDirectory = workingDirectory,
+        ).also { service ->
+            codexNotificationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scope ->
+                scope.launch {
+                    client.notifications.collect(service::record)
+                }
+            }
+        }
     } else {
         null
     }
@@ -107,11 +123,13 @@ private fun runPairing(
         host = host,
         port = port,
         conversationProvider = conversationProvider,
+        conversationController = conversationProvider,
     )
     val stopped = AtomicBoolean(false)
     fun stop() {
         if (!stopped.compareAndSet(false, true)) return
         server.close()
+        codexNotificationScope?.cancel()
         codexClient?.close()
         tlsIdentity.close()
     }
@@ -127,7 +145,7 @@ private fun runPairing(
 
         val shutdown = CountDownLatch(1)
         Runtime.getRuntime().addShutdownHook(Thread { shutdown.countDown() })
-        if (serveConversationHistory) {
+        if (serveRemoteConversations) {
             shutdown.await()
         } else {
             val remainingMillis = (offer.expiresAt - System.currentTimeMillis()).coerceAtLeast(0)
@@ -155,8 +173,8 @@ internal fun validatePrivatePairingHost(
         octet.toByte()
     }.toByteArray()
     val address = InetAddress.getByAddress(bytes)
-    require(address.isSiteLocalAddress) {
-        "Private pairing host must use a private IPv4 range (10/8, 172.16/12, or 192.168/16)"
+    require(address.isSiteLocalAddress || bytes.isCarrierGradeNatAddress()) {
+        "Private pairing host must use a private IPv4 range or the Tailscale 100.64/10 range"
     }
     require(!address.isAnyLocalAddress && !address.isLoopbackAddress && !address.isMulticastAddress) {
         "Private pairing host must be a non-loopback unicast IPv4 address"
@@ -165,6 +183,12 @@ internal fun validatePrivatePairingHost(
         "Private pairing host is not assigned to this device: $value"
     }
     return address.hostAddress
+}
+
+private fun ByteArray.isCarrierGradeNatAddress(): Boolean {
+    val firstOctet = this[0].toInt() and 0xff
+    val secondOctet = this[1].toInt() and 0xff
+    return firstOctet == 100 && secondOctet in 64..127
 }
 
 private fun isAssignedToLocalInterface(address: InetAddress): Boolean =
@@ -190,4 +214,5 @@ private fun connectorDisplayName(): String =
 private const val CONNECTOR_STATE_FILE = "connector-state.json"
 private const val CONNECTOR_IDENTITY_FILE = "connector-identity.json"
 private const val CONNECTOR_TLS_IDENTITY_FILE = "connector-tls-identity.json"
+private const val CONNECTOR_ATTACHMENTS_DIRECTORY = "attachments"
 private const val CODEX_INITIALIZATION_TIMEOUT_MILLIS = 20_000L

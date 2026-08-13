@@ -28,6 +28,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -50,11 +51,11 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -101,6 +102,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -125,9 +127,11 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -147,6 +151,9 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -166,6 +173,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.LayoutDirection
@@ -221,9 +229,13 @@ import com.denggl2.mason.data.UserMemoryType
 import com.denggl2.mason.data.toComposeColor
 import com.denggl2.mason.sync.remote.PairedConnector
 import com.denggl2.mason.tool.shouldRequestPostNotificationPermission
+import com.denggl2.mason.ui.chat.PopupDismissGutters
 import com.denggl2.mason.ui.theme.LocalInterfaceEffects
+import com.denggl2.mason.ui.theme.MASON_OVERLAY_SCRIM_ALPHA
 import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
 import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
+import com.denggl2.mason.ui.theme.floatingSurfaceEdge
+import com.denggl2.mason.ui.theme.floatingSurfaceShadowColor
 import com.denggl2.mason.ui.theme.glassRefraction
 import com.denggl2.mason.ui.theme.progressiveEdgeBlur
 import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
@@ -327,8 +339,6 @@ private fun Modifier.settingsSheetContentBackdrop(): Modifier = composed {
 private fun settingsSheetSurfaceColor(): Color = MaterialTheme.colorScheme.surface.copy(
     alpha = if (LocalInterfaceEffects.current.backdropBlurEnabled) 0f else 1f,
 )
-private val settingsGlassOutline = Color(0xFFBABFCC)
-private val settingsGlassShadowColor = settingsGlassOutline.copy(alpha = 0.30f)
 private val settingsGlassShadowBlur = 20.dp
 
 private fun Modifier.settingsGlassShadow(
@@ -337,6 +347,7 @@ private fun Modifier.settingsGlassShadow(
 ): Modifier = composed {
     val graphicsContext = LocalGraphicsContext.current
     val density = LocalDensity.current
+    val shadowColor = floatingSurfaceShadowColor()
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
         return@composed drawBehind {
             val blurPx = blurRadius.toPx()
@@ -354,7 +365,7 @@ private fun Modifier.settingsGlassShadow(
                 for (layer in layers downTo 1) {
                     val spread = blurPx * layer / layers
                     drawRoundRect(
-                        color = settingsGlassShadowColor.copy(alpha = 0.012f),
+                        color = shadowColor.copy(alpha = shadowColor.alpha * 0.04f),
                         topLeft = Offset(-spread, -spread),
                         size = Size(size.width + spread * 2f, size.height + spread * 2f),
                         cornerRadius = CornerRadius(cornerPx + spread),
@@ -388,7 +399,7 @@ private fun Modifier.settingsGlassShadow(
         )
         shadowLayer.record(layerSize) {
             drawRoundRect(
-                color = settingsGlassShadowColor,
+                color = shadowColor,
                 topLeft = Offset(paddingPx, paddingPx),
                 size = contentSize,
                 cornerRadius = CornerRadius(cornerPx),
@@ -505,71 +516,140 @@ private fun Modifier.settingsBackdrop(positionOverride: IntOffset? = null): Modi
 
 @Composable
 private fun BoxScope.SettingsSheetEdgeFades(
-    scrollState: ScrollState,
     blurState: HazeState?,
-    surfaceColor: Color,
+    topProgress: Float,
+    bottomProgress: Float,
 ) {
-    val topAlpha by animateFloatAsState(
-        targetValue = if (scrollState.canScrollBackward) 1f else 0f,
-        animationSpec = tween(180),
-        label = "settings_sheet_top_fade",
-    )
-    val bottomAlpha by animateFloatAsState(
-        targetValue = if (scrollState.canScrollForward) 1f else 0f,
-        animationSpec = tween(180),
-        label = "settings_sheet_bottom_fade",
-    )
-    val fadeSurface = surfaceColor.copy(
-        alpha = if (LocalInterfaceEffects.current.glassMaterialEnabled) 0.10f else 0.995f,
-    )
-    if (topAlpha > 0f) {
+    val fadeHeight = 44.dp
+    val outerFeather = 6.dp
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .fillMaxWidth()
+            .height(fadeHeight + outerFeather)
+            .graphicsLayer {
+                alpha = topProgress
+                translationY = -outerFeather.toPx()
+            }
+            .settingsSheetBlurOuterEdgeFeather(
+                edge = ProgressiveBlurEdge.Top,
+                featherHeight = fadeHeight,
+            ),
+    ) {
         Box(
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .height(48.dp)
-                .graphicsLayer { alpha = topAlpha }
+                .fillMaxSize()
                 .progressiveEdgeBlur(
                     state = blurState,
                     edge = ProgressiveBlurEdge.Top,
-                    backgroundColor = surfaceColor,
-                )
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0f to fadeSurface,
-                            0.32f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.82f),
-                            0.70f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.28f),
-                            1f to Color.Transparent,
-                        ),
-                    ),
+                    backgroundColor = Color.Transparent,
+                    smoothBoundary = true,
+                    gradientStartY = outerFeather,
+                    gradientEndY = outerFeather + fadeHeight,
                 ),
         )
     }
-    if (bottomAlpha > 0f) {
+    Box(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .height(fadeHeight + outerFeather)
+            .graphicsLayer {
+                alpha = bottomProgress
+                translationY = outerFeather.toPx()
+            }
+            .settingsSheetBlurOuterEdgeFeather(
+                edge = ProgressiveBlurEdge.Bottom,
+                featherHeight = fadeHeight,
+            ),
+    ) {
         Box(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(48.dp)
-                .graphicsLayer { alpha = bottomAlpha }
+                .fillMaxSize()
                 .progressiveEdgeBlur(
                     state = blurState,
                     edge = ProgressiveBlurEdge.Bottom,
-                    backgroundColor = surfaceColor,
-                )
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0f to Color.Transparent,
-                            0.30f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.28f),
-                            0.68f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.82f),
-                            1f to fadeSurface,
-                        ),
-                    ),
+                    backgroundColor = Color.Transparent,
+                    smoothBoundary = true,
+                    gradientStartY = 0.dp,
+                    gradientEndY = fadeHeight,
                 ),
         )
     }
+}
+
+private fun Modifier.settingsSheetListEdgeFadeMask(
+    topProgress: Float,
+    bottomProgress: Float,
+    fadeHeight: Dp = 44.dp,
+): Modifier = graphicsLayer {
+    compositingStrategy = CompositingStrategy.Offscreen
+}.drawWithContent {
+    drawContent()
+    val topStop = (fadeHeight.toPx() / size.height).coerceIn(0f, 0.45f)
+    val bottomStop = (1f - topStop).coerceIn(0.55f, 1f)
+    val bottomRange = 1f - bottomStop
+    fun topMaskAlpha(step: Float) = 1f - topProgress * (1f - step)
+    fun bottomMaskAlpha(step: Float) = 1f - bottomProgress * step
+    drawRect(
+        brush = Brush.verticalGradient(
+            0f to Color.White.copy(alpha = topMaskAlpha(0f)),
+            topStop * 0.25f to Color.White.copy(alpha = topMaskAlpha(0.15625f)),
+            topStop * 0.50f to Color.White.copy(alpha = topMaskAlpha(0.50f)),
+            topStop * 0.75f to Color.White.copy(alpha = topMaskAlpha(0.84375f)),
+            topStop to Color.White,
+            bottomStop to Color.White,
+            bottomStop + bottomRange * 0.25f to Color.White.copy(alpha = bottomMaskAlpha(0.15625f)),
+            bottomStop + bottomRange * 0.50f to Color.White.copy(alpha = bottomMaskAlpha(0.50f)),
+            bottomStop + bottomRange * 0.75f to Color.White.copy(alpha = bottomMaskAlpha(0.84375f)),
+            1f to Color.White.copy(alpha = bottomMaskAlpha(1f)),
+        ),
+        blendMode = BlendMode.DstIn,
+    )
+}
+
+private fun Modifier.settingsSheetHorizontalEdgeFadeMask(
+    startProgress: Float,
+    endProgress: Float,
+    fadeWidth: Dp = 24.dp,
+): Modifier = graphicsLayer {
+    compositingStrategy = CompositingStrategy.Offscreen
+}.drawWithContent {
+    drawContent()
+    val startStop = (fadeWidth.toPx() / size.width).coerceIn(0f, 0.45f)
+    val endStop = (1f - startStop).coerceIn(0.55f, 1f)
+    drawRect(
+        brush = Brush.horizontalGradient(
+            0f to Color.White.copy(alpha = 1f - startProgress),
+            startStop to Color.White,
+            endStop to Color.White,
+            1f to Color.White.copy(alpha = 1f - endProgress),
+        ),
+        blendMode = BlendMode.DstIn,
+    )
+}
+
+private fun Modifier.settingsSheetBlurOuterEdgeFeather(
+    edge: ProgressiveBlurEdge,
+    featherHeight: Dp,
+): Modifier = graphicsLayer {
+    compositingStrategy = CompositingStrategy.Offscreen
+}.drawWithContent {
+    drawContent()
+    val featherFraction = (featherHeight.toPx() / size.height).coerceIn(0f, 1f)
+    val mask = when (edge) {
+        ProgressiveBlurEdge.Top -> Brush.verticalGradient(
+            0f to Color.Transparent,
+            featherFraction to Color.White,
+            1f to Color.White,
+        )
+        ProgressiveBlurEdge.Bottom -> Brush.verticalGradient(
+            0f to Color.White,
+            (1f - featherFraction) to Color.White,
+            1f to Color.Transparent,
+        )
+    }
+    drawRect(brush = mask, blendMode = BlendMode.DstIn)
 }
 
 @Composable
@@ -626,6 +706,7 @@ fun SettingsScreen(
 ) {
     val config by viewModel.config.collectAsState()
     val apiTestState by viewModel.apiTestState.collectAsState()
+    val remoteModelDiscoveryState by viewModel.remoteModelDiscoveryState.collectAsState()
     val modelRefreshState by viewModel.modelRefreshState.collectAsState()
     val cacheOverviewState by viewModel.cacheOverviewState.collectAsState()
     val localModelStates by viewModel.localModelStates.collectAsState()
@@ -981,8 +1062,7 @@ fun SettingsScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .navigationBarsPadding(),
+                    .padding(padding),
                 contentAlignment = Alignment.TopCenter,
             ) {
                 Column(
@@ -990,6 +1070,9 @@ fun SettingsScreen(
                         .widthIn(max = 760.dp)
                         .fillMaxWidth()
                         .verticalScroll(targetScrollState)
+                        .windowInsetsPadding(
+                            WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom),
+                        )
                         .padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 16.dp),
                 ) {
             if (targetPage == SettingsPage.Overview) {
@@ -1544,6 +1627,7 @@ fun SettingsScreen(
             initialModelId = target.modelId,
             config = config,
             apiTestState = apiTestState,
+            remoteModelDiscoveryState = remoteModelDiscoveryState,
             onDismiss = {
                 remoteModelEditorTarget = null
             },
@@ -1552,6 +1636,14 @@ fun SettingsScreen(
             onTest = { connection ->
                 viewModel.testApiConnectionDraft(connection, replacingModelId = target.modelId)
             },
+            onDiscoverAndTest = viewModel::discoverAndTestRemoteModels,
+            onCompleteDiscovery = { connection, selectedModelIds ->
+                if (viewModel.completeRemoteModelDiscovery(connection, selectedModelIds)) {
+                    remoteModelEditorTarget = null
+                }
+            },
+            onClearDiscovery = viewModel::clearCompletedRemoteModelDiscovery,
+            onVisibleDiscoveryDraftChange = viewModel::setRemoteModelDiscoveryVisibleDraft,
             onCancelTest = viewModel::cancelApiTest,
             onDelete = { connectionId, modelIds ->
                 pendingSheetRemoteModelDelete = PendingRemoteModelDelete(
@@ -1994,7 +2086,7 @@ private fun <T> ModelPurposeRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = true }
+                .clickable { expanded = !expanded }
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -2265,11 +2357,11 @@ internal fun remoteModelTestStatus(
         target.id == connection.id && modelId in target.modelIds
     } == true
     if (targetsModel) {
-        if (state.isTesting && state.activeModelId != null && state.activeModelId != modelId) {
-            // A connection test can contain several IDs, but only the active
-            // one should be shown as running.
-        } else {
-            if (state.isTesting) return "测试中"
+        val activeModelIds = state.activeModelIds.ifEmpty {
+            setOfNotNull(state.activeModelId)
+        }
+        if (state.isTesting && (activeModelIds.isEmpty() || modelId in activeModelIds)) {
+            return "测试中"
         }
         connection.modelTestErrors[modelId]
             ?.let { return remoteModelTestFailureStatus(it) }
@@ -2329,10 +2421,15 @@ private fun RemoteModelConfigurationSheet(
     initialModelId: String?,
     config: ApiConfig,
     apiTestState: ApiTestUiState,
+    remoteModelDiscoveryState: RemoteModelDiscoveryUiState,
     onDismiss: () -> Unit,
     onClearTest: () -> Unit,
     onVisibleDraftChange: (ApiConnection?) -> Unit,
     onTest: (ApiConnection) -> Unit,
+    onDiscoverAndTest: (ApiConnection) -> Unit,
+    onCompleteDiscovery: (ApiConnection, Set<String>) -> Unit,
+    onClearDiscovery: () -> Unit,
+    onVisibleDiscoveryDraftChange: (ApiConnection?) -> Unit,
     onCancelTest: () -> Unit,
     onDelete: (String, List<String>) -> Unit,
 ) {
@@ -2344,6 +2441,72 @@ private fun RemoteModelConfigurationSheet(
     val formEdgeBlurState = rememberProgressiveEdgeBlurState(
         enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
     )
+    val formFadeRevealDistancePx = with(LocalDensity.current) { 24.dp.toPx() }
+    val formTopFadeProgress by remember(formScrollState, formFadeRevealDistancePx) {
+        derivedStateOf {
+            (formScrollState.value / formFadeRevealDistancePx).coerceIn(0f, 1f)
+        }
+    }
+    val formBottomFadeProgress by remember(formScrollState, formFadeRevealDistancePx) {
+        derivedStateOf {
+            if (formScrollState.maxValue == Int.MAX_VALUE) {
+                0f
+            } else {
+                ((formScrollState.maxValue - formScrollState.value) / formFadeRevealDistancePx)
+                    .coerceIn(0f, 1f)
+            }
+        }
+    }
+    val formSheetDragGuard = remember(formScrollState) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                return if (
+                    source == NestedScrollSource.UserInput &&
+                    available.y > 0f &&
+                    !formScrollState.canScrollBackward
+                ) {
+                    Offset(x = 0f, y = available.y)
+                } else {
+                    Offset.Zero
+                }
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource,
+            ): Offset {
+                return if (
+                    source == NestedScrollSource.UserInput &&
+                    available.y > 0f &&
+                    !formScrollState.canScrollBackward
+                ) {
+                    Offset(x = 0f, y = available.y)
+                } else {
+                    Offset.Zero
+                }
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                return if (available.y > 0f && !formScrollState.canScrollBackward) {
+                    Velocity(x = 0f, y = available.y)
+                } else {
+                    Velocity.Zero
+                }
+            }
+
+            override suspend fun onPostFling(
+                consumed: Velocity,
+                available: Velocity,
+            ): Velocity {
+                return if (available.y > 0f && !formScrollState.canScrollBackward) {
+                    Velocity(x = 0f, y = available.y)
+                } else {
+                    Velocity.Zero
+                }
+            }
+        }
+    }
     val editingExistingModel = initialModelId != null
     val savedConnection = if (editingExistingModel) {
         initialConnectionId?.let(config::connection)
@@ -2362,7 +2525,10 @@ private fun RemoteModelConfigurationSheet(
             (apiTestState.replacingModelId == initialModelId ||
                 apiTestState.replacingModelId == null)
     }
-    val draftSourceConnection = activeTestConnection ?: savedConnection
+    val discoverySourceConnection = remoteModelDiscoveryState.targetConnection?.takeIf { target ->
+        !editingExistingModel && target.providerId == selectedProvider.id
+    }
+    val draftSourceConnection = activeTestConnection ?: savedConnection ?: discoverySourceConnection
     val quickModelIds = config.resolvedConnections()
         .flatMap(ApiConnection::modelIds)
         .distinct()
@@ -2376,6 +2542,7 @@ private fun RemoteModelConfigurationSheet(
     var apiKey by remember(editorKey) { mutableStateOf(initialApiKey) }
     var workspaceId by remember(editorKey) { mutableStateOf(initialWorkspaceId) }
     var modelIdDrafts by remember(editorKey) { mutableStateOf(initialModelIds) }
+    var selectedDiscoveredModelIds by remember(editorKey) { mutableStateOf<Set<String>>(emptySet()) }
     var pendingModelIdDeleteIndex by remember(editorKey) { mutableStateOf<Int?>(null) }
     var confirmDiscard by remember(editorKey) { mutableStateOf(false) }
     var confirmCancelTest by remember(editorKey) { mutableStateOf(false) }
@@ -2389,6 +2556,7 @@ private fun RemoteModelConfigurationSheet(
         apiKey = draftSourceConnection?.apiKey.orEmpty()
         workspaceId = draftSourceConnection?.workspaceId.orEmpty()
         modelIdDrafts = initialRemoteModelIdDrafts(initialModelId)
+        selectedDiscoveredModelIds = emptySet()
         pendingModelIdDeleteIndex = null
         confirmDiscard = false
         confirmCancelTest = false
@@ -2400,13 +2568,42 @@ private fun RemoteModelConfigurationSheet(
         withFrameNanos { sheetReady = true }
     }
 
-    val draftModelIds = normalizeRemoteModelIds(modelIdDrafts)
+    val manualModelIds = normalizeRemoteModelIds(modelIdDrafts)
+    val discoveryDraftConnection = ApiConnection(
+        id = connectionIdForModel(selectedProvider.id, apiUrl, ""),
+        providerId = selectedProvider.id,
+        name = selectedProvider.name,
+        apiUrl = apiUrl.trim(),
+        apiKey = apiKey.trim(),
+        workspaceId = workspaceId.trim(),
+    )
+    val discoveryMatchesDraft = !editingExistingModel && sameRemoteModelDiscoveryTarget(
+        remoteModelDiscoveryState.targetConnection,
+        discoveryDraftConnection,
+    )
+    val modelListingAvailable = remoteModelDiscoveryState.modelListingAvailable
+        .takeIf { discoveryMatchesDraft }
+    val discoveredModels = remoteModelDiscoveryState.models.takeIf { discoveryMatchesDraft }.orEmpty()
+    val discoveredModelIds = discoveredModels.map(AiModelPreset::id).toSet()
+    val selectedModelIds = discoveredModels.map(AiModelPreset::id)
+        .filter(selectedDiscoveredModelIds::contains)
+    val useManualModelEntry = editingExistingModel || modelListingAvailable == false
+    val draftModelIds = if (!editingExistingModel && modelListingAvailable == true) {
+        selectedModelIds
+    } else {
+        manualModelIds
+    }
+    LaunchedEffect(discoveredModelIds) {
+        selectedDiscoveredModelIds = selectedDiscoveredModelIds.intersect(discoveredModelIds)
+    }
     val hasDraftChanges = apiUrl.trim().trimEnd('/') != initialApiUrl.trim().trimEnd('/') ||
         apiKey.trim() != initialApiKey.trim() ||
         workspaceId.trim() != initialWorkspaceId.trim() ||
-        draftModelIds != initialModelIds
+        draftModelIds != initialModelIds ||
+        selectedDiscoveredModelIds.isNotEmpty()
     val requiresKey = !AiProviderCatalog.allowsBlankApiKey(apiUrl)
     val canTest = apiUrl.isNotBlank() && draftModelIds.isNotEmpty() && (!requiresKey || apiKey.isNotBlank())
+    val canDiscover = apiUrl.isNotBlank() && (!requiresKey || apiKey.isNotBlank())
     val draftConnection = ApiConnection(
         id = savedConnection?.id
             ?: initialConnectionId
@@ -2422,6 +2619,8 @@ private fun RemoteModelConfigurationSheet(
         modelIds = draftModelIds,
         workspaceId = workspaceId.trim(),
     )
+    val isDiscoveryTesting = discoveryMatchesDraft && remoteModelDiscoveryState.isTesting
+    val discoveryTestRunning = !editingExistingModel && remoteModelDiscoveryState.isTesting
     val testTargetsDraft = apiTestState.targetConnection?.let { target ->
         sameRemoteModelEditorTarget(
             target = target,
@@ -2434,6 +2633,7 @@ private fun RemoteModelConfigurationSheet(
                 editingModelId = initialModelId,
                 replacingModelId = apiTestState.replacingModelId,
                 activeModelId = apiTestState.activeModelId,
+                activeModelIds = apiTestState.activeModelIds,
             )
     } == true
     val isTestingDraft = testTargetsDraft && apiTestState.isTesting
@@ -2444,7 +2644,9 @@ private fun RemoteModelConfigurationSheet(
         editingModelId = initialModelId,
         testState = apiTestState,
     )
-    val shouldConfirmDismiss = if (testTargetsDraft && apiTestState.success == false) {
+    val shouldConfirmDismiss = if (isDiscoveryTesting) {
+        false
+    } else if (testTargetsDraft && apiTestState.success == false) {
         false
     } else {
         shouldConfirmRemoteModelSheetDismiss(
@@ -2480,6 +2682,12 @@ private fun RemoteModelConfigurationSheet(
         confirmDiscard = true
         keepSheetVisible()
     }
+    val finishDismiss = {
+        if (!editingExistingModel && useManualModelEntry) {
+            onClearDiscovery()
+        }
+        onDismiss()
+    }
     val requestDismiss = {
         if (!sheetReady) {
             keepSheetVisible()
@@ -2488,15 +2696,21 @@ private fun RemoteModelConfigurationSheet(
         } else {
             // Closing the sheet is only a view change. A running API test belongs
             // to the ViewModel/runtime and must continue in the background.
-            onDismiss()
+            finishDismiss()
         }
     }
 
-    LaunchedEffect(draftConnection) {
-        onVisibleDraftChange(draftConnection)
+    LaunchedEffect(draftConnection, useManualModelEntry) {
+        onVisibleDraftChange(draftConnection.takeIf { editingExistingModel || useManualModelEntry })
+    }
+    LaunchedEffect(discoveryDraftConnection, editingExistingModel) {
+        onVisibleDiscoveryDraftChange(discoveryDraftConnection.takeUnless { editingExistingModel })
     }
     DisposableEffect(editorKey) {
-        onDispose { onVisibleDraftChange(null) }
+        onDispose {
+            onVisibleDraftChange(null)
+            onVisibleDiscoveryDraftChange(null)
+        }
     }
 
     ModalBottomSheet(
@@ -2504,7 +2718,7 @@ private fun RemoteModelConfigurationSheet(
         sheetState = sheetState,
         shape = settingsSheetShape,
         containerColor = settingsSheetSurfaceColor(),
-        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         properties = ModalBottomSheetProperties(
@@ -2531,6 +2745,7 @@ private fun RemoteModelConfigurationSheet(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .routeVerticalDragToModelList(formScrollState)
                     .padding(horizontal = 20.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -2550,6 +2765,11 @@ private fun RemoteModelConfigurationSheet(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .nestedScroll(formSheetDragGuard)
+                        .settingsSheetListEdgeFadeMask(
+                            topProgress = formTopFadeProgress,
+                            bottomProgress = formBottomFadeProgress,
+                        )
                         .captureProgressiveEdgeBlur(formEdgeBlurState)
                         .verticalScroll(formScrollState)
                         .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -2559,7 +2779,7 @@ private fun RemoteModelConfigurationSheet(
                     label = "",
                     value = apiUrl,
                     placeholder = "例如 https://api.example.com/v1",
-                    enabled = !isTestingDraft,
+                    enabled = !isTestingDraft && !isDiscoveryTesting,
                     multiline = true,
                 ) {
                     apiUrl = it
@@ -2570,12 +2790,12 @@ private fun RemoteModelConfigurationSheet(
                     label = "",
                     value = apiKey,
                     placeholder = if (requiresKey) "填写 API Key" else "可选",
-                    enabled = !isTestingDraft,
+                    enabled = !isTestingDraft && !isDiscoveryTesting,
                     visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
                         IconButton(
                             onClick = { keyVisible = !keyVisible },
-                            enabled = !isTestingDraft,
+                            enabled = !isTestingDraft && !isDiscoveryTesting,
                         ) {
                             Icon(
                                 if (keyVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
@@ -2587,6 +2807,7 @@ private fun RemoteModelConfigurationSheet(
                     apiKey = it
                     onClearTest()
                 }
+                if (useManualModelEntry) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2666,6 +2887,29 @@ private fun RemoteModelConfigurationSheet(
                 }
                 if (!editingExistingModel && availableQuickModelIds.isNotEmpty()) {
                     val quickModelIdScrollState = rememberScrollState()
+                    val quickFadeRevealDistancePx = with(LocalDensity.current) { 24.dp.toPx() }
+                    val quickStartFadeProgress by remember(
+                        quickModelIdScrollState,
+                        quickFadeRevealDistancePx,
+                    ) {
+                        derivedStateOf {
+                            (quickModelIdScrollState.value / quickFadeRevealDistancePx)
+                                .coerceIn(0f, 1f)
+                        }
+                    }
+                    val quickEndFadeProgress by remember(
+                        quickModelIdScrollState,
+                        quickFadeRevealDistancePx,
+                    ) {
+                        derivedStateOf {
+                            if (quickModelIdScrollState.maxValue == Int.MAX_VALUE) {
+                                0f
+                            } else {
+                                ((quickModelIdScrollState.maxValue - quickModelIdScrollState.value) /
+                                    quickFadeRevealDistancePx).coerceIn(0f, 1f)
+                            }
+                        }
+                    }
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2674,6 +2918,10 @@ private fun RemoteModelConfigurationSheet(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .settingsSheetHorizontalEdgeFadeMask(
+                                    startProgress = quickStartFadeProgress,
+                                    endProgress = quickEndFadeProgress,
+                                )
                                 .horizontalScroll(quickModelIdScrollState)
                                 .align(Alignment.Center),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -2705,38 +2953,6 @@ private fun RemoteModelConfigurationSheet(
                                 }
                             }
                         }
-                        if (quickModelIdScrollState.canScrollBackward) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.CenterStart)
-                                    .fillMaxHeight()
-                                    .width(24.dp)
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            colors = listOf(
-                                                MaterialTheme.colorScheme.background,
-                                                Color.Transparent,
-                                            ),
-                                        ),
-                                    ),
-                            )
-                        }
-                        if (quickModelIdScrollState.canScrollForward) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .fillMaxHeight()
-                                    .width(24.dp)
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            colors = listOf(
-                                                Color.Transparent,
-                                                MaterialTheme.colorScheme.background,
-                                            ),
-                                        ),
-                                    ),
-                            )
-                        }
                     }
                 }
                 when (editorMode) {
@@ -2760,34 +2976,139 @@ private fun RemoteModelConfigurationSheet(
                         )
                     }
                 }
+                } else if (discoveredModels.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 14.dp, bottom = 5.dp, start = 3.dp, end = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "模型",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = { selectedDiscoveredModelIds = discoveredModelIds },
+                            enabled = !remoteModelDiscoveryState.isTesting,
+                        ) {
+                            Text("全选")
+                        }
+                    }
+                    SettingGroup {
+                        discoveredModels.forEachIndexed { index, model ->
+                            if (index > 0) GroupDivider(horizontalPadding = 8.dp)
+                            RemoteDiscoveredModelRow(
+                                model = model,
+                                status = remoteModelDiscoveryStatus(
+                                    modelId = model.id,
+                                    state = remoteModelDiscoveryState,
+                                ),
+                                selected = model.id in selectedDiscoveredModelIds,
+                                enabled = !remoteModelDiscoveryState.isTesting,
+                                onToggle = {
+                                    selectedDiscoveredModelIds = if (
+                                        model.id in selectedDiscoveredModelIds
+                                    ) {
+                                        selectedDiscoveredModelIds - model.id
+                                    } else {
+                                        selectedDiscoveredModelIds + model.id
+                                    }
+                                },
+                            )
+                        }
+                    }
+                } else if (
+                    discoveryMatchesDraft &&
+                    remoteModelDiscoveryState.modelListingAvailable != false &&
+                    remoteModelDiscoveryState.message != null
+                ) {
+                    StatusText(
+                        message = remoteModelDiscoveryState.message,
+                        success = remoteModelDiscoveryState.success,
+                    )
+                }
                     Spacer(Modifier.height(12.dp))
                 }
                 SettingsSheetEdgeFades(
-                    scrollState = formScrollState,
                     blurState = formEdgeBlurState,
-                    surfaceColor = MaterialTheme.colorScheme.surface,
+                    topProgress = formTopFadeProgress,
+                    bottomProgress = formBottomFadeProgress,
                 )
             }
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .routeVerticalDragToModelList(formScrollState),
             ) {
-                when (editorMode) {
-                    RemoteModelSheetMode.Draft -> {
+                if (!editingExistingModel && useManualModelEntry) {
+                    Text(
+                        text = MANUAL_MODEL_ENTRY_MESSAGE,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp),
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (!editingExistingModel && !useManualModelEntry) {
+                        val hasSelection = selectedModelIds.isNotEmpty()
                         Button(
-                            onClick = { onTest(draftConnection) },
-                            enabled = canTest && !isTestingDraft,
+                            onClick = {
+                                if (hasSelection) {
+                                    onCompleteDiscovery(draftConnection, selectedModelIds.toSet())
+                                } else {
+                                    onDiscoverAndTest(discoveryDraftConnection)
+                                }
+                            },
+                            enabled = !discoveryTestRunning && (hasSelection || canDiscover),
                             modifier = Modifier.weight(1f).height(46.dp),
                             shape = RoundedCornerShape(8.dp),
                         ) {
-                            Text("测试连接")
+                            Text(
+                                when {
+                                    discoveryTestRunning -> "测试中"
+                                    hasSelection -> "完成"
+                                    discoveryMatchesDraft && modelListingAvailable == true -> "重新测试"
+                                    else -> "测试连接"
+                                },
+                            )
                         }
-                        if (editingExistingModel) {
-                            Button(
-                                onClick = { onDelete(draftConnection.id, draftModelIds) },
-                                enabled = draftModelIds.isNotEmpty() && !isTestingDraft,
+                    } else {
+                        when (editorMode) {
+                            RemoteModelSheetMode.Draft -> {
+                                Button(
+                                    onClick = { onTest(draftConnection) },
+                                    enabled = canTest && !isTestingDraft,
+                                    modifier = Modifier.weight(1f).height(46.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) {
+                                    Text("测试连接")
+                                }
+                                if (editingExistingModel) {
+                                    Button(
+                                        onClick = { onDelete(draftConnection.id, draftModelIds) },
+                                        enabled = draftModelIds.isNotEmpty() && !isTestingDraft,
+                                        modifier = Modifier.weight(1f).height(46.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.error,
+                                            contentColor = MaterialTheme.colorScheme.onError,
+                                        ),
+                                    ) {
+                                        Text("删除")
+                                    }
+                                }
+                            }
+                            RemoteModelSheetMode.Testing -> Button(
+                                onClick = { confirmCancelTest = true },
                                 modifier = Modifier.weight(1f).height(46.dp),
                                 shape = RoundedCornerShape(8.dp),
                                 colors = ButtonDefaults.buttonColors(
@@ -2795,41 +3116,30 @@ private fun RemoteModelConfigurationSheet(
                                     contentColor = MaterialTheme.colorScheme.onError,
                                 ),
                             ) {
-                                Text("删除")
+                                Text("取消")
                             }
-                        }
-                    }
-                    RemoteModelSheetMode.Testing -> Button(
-                        onClick = { confirmCancelTest = true },
-                        modifier = Modifier.weight(1f).height(46.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError,
-                        ),
-                    ) {
-                        Text("取消")
-                    }
-                    RemoteModelSheetMode.Verified -> {
-                        Button(
-                            onClick = { onTest(draftConnection) },
-                            enabled = canTest && !isTestingDraft,
-                            modifier = Modifier.weight(1f).height(46.dp),
-                            shape = RoundedCornerShape(8.dp),
-                        ) {
-                            Text("重新测试")
-                        }
-                        Button(
-                            onClick = { onDelete(draftConnection.id, draftModelIds) },
-                            enabled = draftModelIds.isNotEmpty() && !isTestingDraft,
-                            modifier = Modifier.weight(1f).height(46.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error,
-                                contentColor = MaterialTheme.colorScheme.onError,
-                            ),
-                        ) {
-                            Text("删除")
+                            RemoteModelSheetMode.Verified -> {
+                                Button(
+                                    onClick = { onTest(draftConnection) },
+                                    enabled = canTest && !isTestingDraft,
+                                    modifier = Modifier.weight(1f).height(46.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) {
+                                    Text("重新测试")
+                                }
+                                Button(
+                                    onClick = { onDelete(draftConnection.id, draftModelIds) },
+                                    enabled = draftModelIds.isNotEmpty() && !isTestingDraft,
+                                    modifier = Modifier.weight(1f).height(46.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error,
+                                        contentColor = MaterialTheme.colorScheme.onError,
+                                    ),
+                                ) {
+                                    Text("删除")
+                                }
+                            }
                         }
                     }
                 }
@@ -2852,7 +3162,7 @@ private fun RemoteModelConfigurationSheet(
                     onClick = {
                         confirmDiscard = false
                         onClearTest()
-                        onDismiss()
+                        finishDismiss()
                     },
                 ) {
                     Text("退出", color = MaterialTheme.colorScheme.error)
@@ -2886,7 +3196,7 @@ private fun RemoteModelConfigurationSheet(
                     onClick = {
                         confirmCancelTest = false
                         onCancelTest()
-                        onDismiss()
+                        finishDismiss()
                     },
                 ) {
                     Text("取消测试", color = MaterialTheme.colorScheme.error)
@@ -2943,6 +3253,98 @@ private fun RemoteModelConfigurationSheet(
     }
 }
 
+@Composable
+private fun RemoteDiscoveredModelRow(
+    model: AiModelPreset,
+    status: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onToggle)
+            .padding(horizontal = 8.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(19.dp)
+                .clip(CircleShape)
+                .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                .border(
+                    1.dp,
+                    if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.46f),
+                    CircleShape,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (selected) {
+                Icon(
+                    Icons.Outlined.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(13.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(9.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = model.id,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.64f),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = status,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+private fun Modifier.routeVerticalDragToModelList(scrollState: ScrollState): Modifier =
+    pointerInput(scrollState) {
+        detectVerticalDragGestures { change, dragAmount ->
+            scrollState.dispatchRawDelta(-dragAmount)
+            change.consume()
+        }
+    }
+
+internal fun remoteModelDiscoveryStatus(
+    modelId: String,
+    state: RemoteModelDiscoveryUiState,
+): String {
+    if (modelId in state.activeModelIds) return "测试中"
+    state.modelCapabilities[modelId]?.let { capabilities ->
+        return remoteModelDiscoveryCapabilitySummary(capabilities)
+    }
+    if (modelId in state.modelTestErrors) return "能力未知，可稍后重测"
+    if (state.isTesting) return "等待测试"
+    return "能力未知，可稍后重测"
+}
+
+internal fun remoteModelDiscoveryCapabilitySummary(capabilities: ApiModelCapabilities): String {
+    val labels = buildList {
+        if (capabilities.supportsChat) add("聊天")
+        if (capabilities.supportsTools) add("工具")
+        if (capabilities.supportsVision) add("识图")
+        if (capabilities.supportsImageGeneration) add("生图")
+    }
+    return labels.takeIf(List<String>::isNotEmpty)?.joinToString(" · ")
+        ?: "能力未知，可稍后重测"
+}
+
 internal fun normalizeRemoteModelIds(values: List<String>): List<String> = values
     .map { it.trim().take(200) }
     .filter { it.isNotBlank() && it.none(Char::isISOControl) }
@@ -2985,6 +3387,7 @@ internal fun remoteModelSheetMode(
                 editingModelId = editingModelId,
                 replacingModelId = testState.replacingModelId,
                 activeModelId = testState.activeModelId,
+                activeModelIds = testState.activeModelIds,
             )
     } == true
     if (testTargetsDraft && testState.isTesting) return RemoteModelSheetMode.Testing
@@ -3073,8 +3476,10 @@ internal fun testStateTargetsRemoteModelEditor(
     editingModelId: String?,
     replacingModelId: String?,
     activeModelId: String? = null,
+    activeModelIds: Set<String> = emptySet(),
 ): Boolean {
-    if (activeModelId != null && editingModelId != null && activeModelId != editingModelId) {
+    val runningModelIds = activeModelIds.ifEmpty { setOfNotNull(activeModelId) }
+    if (runningModelIds.isNotEmpty() && editingModelId != null && editingModelId !in runningModelIds) {
         return false
     }
     return replacingModelId == editingModelId || (
@@ -4413,7 +4818,7 @@ private fun OrchestrationModelSlotRow(
             enabled = models.isNotEmpty(),
             status = if (selectedModel != null) "已配置" else "选择",
             onClick = if (models.isNotEmpty()) {
-                { expanded = true }
+                { expanded = !expanded }
             } else {
                 null
             },
@@ -5148,7 +5553,7 @@ private fun InterfaceStyleSelectionRow(
         title = "风格",
         value = options.first { it.style == visibleSelectedStyle }.label,
         expanded = expanded,
-        onClick = { expanded = true },
+        onClick = { expanded = !expanded },
         onDismiss = { expanded = false },
         menuContent = {
             options.forEach { option ->
@@ -5202,7 +5607,7 @@ private fun FontSizeSelectionRow(
         title = "字体大小",
         value = options.first { it.first == selectedFontSize }.second,
         expanded = expanded,
-        onClick = { expanded = true },
+        onClick = { expanded = !expanded },
         onDismiss = { expanded = false },
         menuContent = {
             options.forEach { (fontSize, label) ->
@@ -5239,7 +5644,7 @@ private fun ThemeModeSelectionRow(
         title = "深色模式",
         value = selectedLabel,
         expanded = expanded,
-        onClick = { expanded = true },
+        onClick = { expanded = !expanded },
         onDismiss = { expanded = false },
         menuContent = {
             options.forEach { (mode, label) ->
@@ -5271,7 +5676,7 @@ private fun AccentColorSelectionRow(
         title = "主题色",
         value = "黑色",
         expanded = expanded,
-        onClick = { expanded = true },
+        onClick = { expanded = !expanded },
         onDismiss = { expanded = false },
         menuContent = {
             DropdownMenuItem(
@@ -5525,8 +5930,9 @@ private fun SettingsGlassDropdown(
             dismissOnClickOutside = true,
         ),
     ) {
-        Box(
-            modifier = Modifier
+        Box {
+            Box(
+                modifier = Modifier
                 .padding(shadowGutter)
                 .graphicsLayer {
                     val progress = popupMotion.value
@@ -5544,18 +5950,14 @@ private fun SettingsGlassDropdown(
                         pivotFractionY = if (opensAbove) 1f else 0f,
                     )
                 },
-        ) {
+            ) {
             Box(
                 modifier = Modifier
                     .zIndex(2f)
                     .widthIn(min = 180.dp, max = 220.dp)
                     .settingsGlassShadow(cornerRadius = 14.dp)
-                    .clip(shape)
-                    .border(
-                        0.5.dp,
-                        settingsGlassOutline.copy(alpha = 0.30f),
-                        shape,
-                    ),
+                    .floatingSurfaceEdge(shape)
+                    .clip(shape),
             ) {
                 Box(
                     modifier = Modifier
@@ -5587,6 +5989,11 @@ private fun SettingsGlassDropdown(
                     content = content,
                 )
             }
+            }
+            PopupDismissGutters(
+                gutter = shadowGutter,
+                onDismissRequest = onDismissRequest,
+            )
         }
     }
 }
@@ -5693,7 +6100,7 @@ private fun DropdownSettingRow(
             title = title,
             value = value,
             description = description,
-            onClick = { onExpandedChange(true) },
+            onClick = { onExpandedChange(!expanded) },
         )
         SettingsGlassDropdown(
             expanded = expanded,

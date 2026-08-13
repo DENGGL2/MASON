@@ -61,6 +61,26 @@ class ArtifactImagePreviewInstrumentedTest {
         }
     }
 
+    @Test
+    fun remotePreviewCacheImagePassesValidationAfterPathNormalization() {
+        val directory = File(context.filesDir, "remote-previews/cache-key")
+        assertTrue(directory.exists() || directory.mkdirs())
+        val file = File(directory, "preview.png").apply { writeBytes(ONE_PIXEL_PNG) }
+        try {
+            val pathWithParentSegment = File(directory, "../cache-key/${file.name}")
+            val validated = validateImageArtifact(
+                context,
+                file.toArtifact("image/png").copy(path = pathWithParentSegment.absolutePath),
+            ).getOrThrow()
+
+            assertEquals(file.canonicalFile, validated.file)
+            assertEquals("image/png", validated.mimeType)
+        } finally {
+            file.delete()
+            directory.delete()
+        }
+    }
+
     private fun verifyRaster(extension: String, declaredMimeType: String, bytes: ByteArray) {
         val file = writeFixture(extension, bytes)
         try {
@@ -142,6 +162,10 @@ class ArtifactImagePreviewInstrumentedTest {
         }.array()
 
     private companion object {
+        val ONE_PIXEL_PNG: ByteArray = Base64.decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            Base64.DEFAULT,
+        )
         val ONE_PIXEL_GIF: ByteArray = Base64.decode(
             "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
             Base64.DEFAULT,

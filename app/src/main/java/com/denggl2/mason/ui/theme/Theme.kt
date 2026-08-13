@@ -62,7 +62,7 @@ private fun darkMasonColorScheme(accentColor: Color) = darkColorScheme(
     onSurface = Color(0xFFE9E7E1),
     surfaceVariant = Color(0xFF2A2926),
     onSurfaceVariant = Color(0xFFC8C5BE),
-    outline = Color(0xFF4A4944),
+    outline = Color(0xFF383734),
     error = Color(0xFFFF8A80),
 )
 

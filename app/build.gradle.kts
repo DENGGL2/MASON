@@ -14,8 +14,8 @@ android {
     namespace = "com.denggl2.mason"
     defaultConfig {
         applicationId = "com.denggl2.mason"
-        versionCode = 8
-        versionName = "0.2.6"
+        versionCode = 9
+        versionName = "0.2.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         if (masonArm64Only) {
             ndk {

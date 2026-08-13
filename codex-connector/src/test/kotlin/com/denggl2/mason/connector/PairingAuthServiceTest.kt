@@ -47,6 +47,15 @@ class PairingAuthServiceTest {
         assertAuthError(PairingAuthErrorCode.PERMISSION_DENIED) {
             fixture.service.authenticateSession(grant.sessionToken, DevicePermission.REQUEST_FILES)
         }
+        assertAuthError(PairingAuthErrorCode.PERMISSION_DENIED) {
+            fixture.service.authenticateSession(
+                grant.sessionToken,
+                setOf(
+                    DevicePermission.VIEW_SHARED_CONVERSATIONS,
+                    DevicePermission.REQUEST_FILES,
+                ),
+            )
+        }
     }
 
     @Test

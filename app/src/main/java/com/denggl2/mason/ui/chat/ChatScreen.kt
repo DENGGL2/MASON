@@ -39,6 +39,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -262,10 +263,13 @@ import com.denggl2.mason.ui.conversation.ConversationListItem
 import com.denggl2.mason.ui.conversation.ConversationListViewModel
 import com.denggl2.mason.ui.conversation.RemoteConversationListUiState
 import com.denggl2.mason.ui.theme.LocalInterfaceEffects
+import com.denggl2.mason.ui.theme.MASON_OVERLAY_SCRIM_ALPHA
 import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
 import com.denggl2.mason.ui.theme.WindowBackdropSnapshot
 import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
 import com.denggl2.mason.ui.theme.captureWindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.floatingSurfaceEdge
+import com.denggl2.mason.ui.theme.floatingSurfaceShadowColor
 import com.denggl2.mason.ui.theme.glassRefraction
 import com.denggl2.mason.ui.theme.progressiveEdgeBlur
 import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
@@ -297,8 +301,6 @@ import kotlin.math.roundToInt
 
 private const val USER_CONTEXT_HEADER = "Mason 附加上下文"
 private val TOOL_DETAIL_JSON = Json { prettyPrint = true }
-private val masonGlassOutline = Color(0xFFBABFCC)
-private val masonGlassShadowColor = masonGlassOutline.copy(alpha = 0.30f)
 private val masonGlassShadowBlur = 20.dp
 private const val LIVE_BACKDROP_BLUR_ENABLED = true
 private const val CHAT_POPUP_BACKDROP_WAIT_MILLIS = 300L
@@ -307,12 +309,13 @@ private const val DROPDOWN_EXIT_DURATION_MILLIS = 120
 private val DropdownEnterEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
 private val DropdownExitEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
 
-private fun Modifier.masonGlassShadow(
+internal fun Modifier.masonGlassShadow(
     cornerRadius: Dp,
     blurRadius: Dp = masonGlassShadowBlur,
 ): Modifier = composed {
     val graphicsContext = LocalGraphicsContext.current
     val density = LocalDensity.current
+    val shadowColor = floatingSurfaceShadowColor()
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
         return@composed drawBehind {
             val blurPx = blurRadius.toPx()
@@ -330,7 +333,7 @@ private fun Modifier.masonGlassShadow(
                 for (layer in layers downTo 1) {
                     val spread = blurPx * layer / layers
                     drawRoundRect(
-                        color = masonGlassShadowColor.copy(alpha = 0.012f),
+                        color = shadowColor.copy(alpha = shadowColor.alpha * 0.04f),
                         topLeft = Offset(-spread, -spread),
                         size = Size(size.width + spread * 2f, size.height + spread * 2f),
                         cornerRadius = CornerRadius(cornerPx + spread),
@@ -364,7 +367,7 @@ private fun Modifier.masonGlassShadow(
         )
         shadowLayer.record(layerSize) {
             drawRoundRect(
-                color = masonGlassShadowColor,
+                color = shadowColor,
                 topLeft = Offset(paddingPx, paddingPx),
                 size = contentSize,
                 cornerRadius = CornerRadius(cornerPx),
@@ -388,12 +391,13 @@ private fun Modifier.masonGlassShadow(
 }
 
 @Composable
-private fun ChatGlassDropdown(
+internal fun ChatGlassDropdown(
     expanded: Boolean,
     onDismissRequest: () -> Unit,
     width: Dp,
     cornerRadius: Dp,
     alignEnd: Boolean,
+    subduedMaterial: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var popupMounted by remember { mutableStateOf(expanded) }
@@ -418,20 +422,22 @@ private fun ChatGlassDropdown(
     val interfaceEffects = LocalInterfaceEffects.current
     var surfacePosition by remember { mutableStateOf(IntOffset.Zero) }
     var opensAbove by remember { mutableStateOf(false) }
-    val backdropBlurRadius = interfaceEffects.resolveBackdropBlurRadius(
-        nonGlassRadius = 15.dp,
-    )
+    val backdropBlurRadius = if (subduedMaterial) {
+        12.dp
+    } else {
+        interfaceEffects.resolveBackdropBlurRadius(nonGlassRadius = 15.dp)
+    }
     val backdropRequired = interfaceEffects.requiresBackdropSample(
         blurRadius = backdropBlurRadius,
-        includeRefraction = true,
+        includeRefraction = !subduedMaterial,
     )
     val popupBackdrop = rememberWindowBackdropSnapshot(
         enabled = backdropRequired,
         captureScale = interfaceEffects.resolveBackdropCaptureScale(
-            includeRefraction = true,
+            includeRefraction = !subduedMaterial,
         ),
     )
-    val shadowGutter = 24.dp
+    val shadowGutter = if (subduedMaterial) 12.dp else 24.dp
     val positionProvider = remember(density, alignEnd) {
         object : PopupPositionProvider {
             override fun calculatePosition(
@@ -494,13 +500,10 @@ private fun ChatGlassDropdown(
             useBackdrop ||
             opaqueFallbackLocked
         )
-    val popupSurfaceAlpha = if (
-        backdropRequired &&
-        !useBackdrop
-    ) {
-        1f
-    } else {
-        interfaceEffects.compactSurfaceAlpha
+    val popupSurfaceAlpha = when {
+        backdropRequired && !useBackdrop -> 1f
+        subduedMaterial -> interfaceEffects.compactSurfaceAlpha.coerceAtLeast(0.82f)
+        else -> interfaceEffects.compactSurfaceAlpha
     }
     LaunchedEffect(expanded, popupReady) {
         when {
@@ -524,8 +527,9 @@ private fun ChatGlassDropdown(
             dismissOnClickOutside = true,
         ),
     ) {
-        Box(
-            modifier = Modifier
+        Box {
+            Box(
+                modifier = Modifier
                 .padding(shadowGutter)
                 .graphicsLayer {
                     val progress = popupMotion.value
@@ -543,19 +547,34 @@ private fun ChatGlassDropdown(
                         pivotFractionY = if (opensAbove) 1f else 0f,
                     )
                 },
-        ) {
+            ) {
             Box(
                 modifier = Modifier
                     .width(width)
-                    .masonGlassShadow(cornerRadius)
-                    .clip(shape)
-                    .border(0.5.dp, masonGlassOutline.copy(alpha = 0.30f), shape),
+                    .then(
+                        if (subduedMaterial) {
+                            Modifier
+                                .masonGlassShadow(cornerRadius, blurRadius = 8.dp)
+                                .border(
+                                    width = 0.5.dp,
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
+                                    shape = shape,
+                                )
+                        } else {
+                            Modifier
+                                .masonGlassShadow(cornerRadius)
+                                .floatingSurfaceEdge(shape)
+                        },
+                    )
+                    .clip(shape),
             ) {
                 Box(
                     modifier = Modifier
                         .matchParentSize()
                         .glassRefraction(
-                            enabled = useBackdrop && interfaceEffects.glassRefractionEnabled,
+                            enabled = useBackdrop &&
+                                !subduedMaterial &&
+                                interfaceEffects.glassRefractionEnabled,
                             cornerRadius = cornerRadius,
                         )
                         .windowBackdrop(
@@ -577,17 +596,65 @@ private fun ChatGlassDropdown(
                 )
                 Column(content = content)
             }
+            }
+            PopupDismissGutters(
+                gutter = shadowGutter,
+                onDismissRequest = onDismissRequest,
+            )
         }
     }
 }
 
-private enum class ChatBackdropBlur {
+@Composable
+internal fun BoxScope.PopupDismissGutters(
+    gutter: Dp,
+    onDismissRequest: () -> Unit,
+) {
+    val dismissInteractionSource = remember { MutableInteractionSource() }
+    val dismissModifier = Modifier.clickable(
+        interactionSource = dismissInteractionSource,
+        indication = null,
+        onClick = onDismissRequest,
+    )
+    Box(Modifier.matchParentSize()) {
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(gutter)
+                .then(dismissModifier),
+        )
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(gutter)
+                .then(dismissModifier),
+        )
+        Box(
+            Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxHeight()
+                .width(gutter)
+                .then(dismissModifier),
+        )
+        Box(
+            Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .width(gutter)
+                .then(dismissModifier),
+        )
+    }
+}
+
+internal enum class ChatBackdropBlur {
     Strong,
     Soft,
     Drawer,
 }
 
-private val LocalChatBackdropState = staticCompositionLocalOf<HazeState?> { null }
+internal val LocalChatBackdropState = staticCompositionLocalOf<HazeState?> { null }
 
 private val chatSheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
 
@@ -730,12 +797,12 @@ private fun BoxScope.ChatSheetEdgeFades(
 }
 
 @Composable
-private fun rememberChatBackdropState(enabled: Boolean): HazeState? {
+internal fun rememberChatBackdropState(enabled: Boolean): HazeState? {
     if (!enabled || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
     return remember { HazeState() }
 }
 
-private fun Modifier.captureChatBackdrop(state: HazeState?): Modifier {
+internal fun Modifier.captureChatBackdrop(state: HazeState?): Modifier {
     if (state == null) return this
     return this.haze(state)
 }
@@ -799,7 +866,7 @@ private fun Modifier.drawerListEdgeFadeMask(
     )
 }
 
-private fun Modifier.blurLayerOuterEdgeFeather(
+internal fun Modifier.blurLayerOuterEdgeFeather(
     edge: ProgressiveBlurEdge,
     featherHeight: Dp,
 ): Modifier = graphicsLayer {
@@ -822,7 +889,7 @@ private fun Modifier.blurLayerOuterEdgeFeather(
     drawRect(brush = mask, blendMode = BlendMode.DstIn)
 }
 
-private enum class ChatSurfaceRole {
+internal enum class ChatSurfaceRole {
     Compact,
     Large,
 }
@@ -846,7 +913,7 @@ private fun chatFloatingSurfaceAlpha(
 }
 
 @Composable
-private fun BoxScope.ChatGlassMaterial(
+internal fun BoxScope.ChatGlassMaterial(
     shape: Shape,
     cornerRadius: Dp,
     role: ChatSurfaceRole,
@@ -855,7 +922,7 @@ private fun BoxScope.ChatGlassMaterial(
     blurredAlpha: Float,
     fallbackAlpha: Float,
     borderWidth: Dp = 0.5.dp,
-    borderColor: Color = masonGlassOutline.copy(alpha = 0.30f),
+    borderColor: Color? = null,
 ) {
     val interfaceEffects = LocalInterfaceEffects.current
     Box(modifier = Modifier.matchParentSize().clip(shape)) {
@@ -887,7 +954,11 @@ private fun BoxScope.ChatGlassMaterial(
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .border(borderWidth, borderColor, shape),
+                .floatingSurfaceEdge(
+                    shape = shape,
+                    nonGlassWidth = borderWidth,
+                    nonGlassColor = borderColor,
+                ),
         )
     }
 }
@@ -1012,16 +1083,17 @@ private fun emptyChatRubberBand(value: Float, limit: Float): Float {
     return kotlin.math.sign(value) * (limit + (magnitude - limit) * 0.18f)
 }
 
-private enum class AttachmentKind { Image, File }
-private data class PendingAttachment(
+internal enum class AttachmentKind { Image, File }
+internal data class PendingAttachment(
     val kind: AttachmentKind,
     val name: String,
     val uri: String,
 )
-private data class SkillOption(
+internal data class SkillOption(
     val name: String,
     val description: String,
     val path: String,
+    val invocationName: String = name,
     val instructions: String = "",
     val parameters: List<MasonSkillParameter> = emptyList(),
     val parameterValues: Map<String, String> = emptyMap(),
@@ -1089,7 +1161,7 @@ internal fun chatModelMenuSummary(config: ApiConfig): ChatModelMenuSummary {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun ChatScreen(
+internal fun ChatScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToModelSettings: () -> Unit,
     onNavigateToIntegrations: () -> Unit = {},
@@ -1097,12 +1169,14 @@ fun ChatScreen(
     onConversationSelected: (Long, Boolean) -> Unit,
     onNewChat: (() -> Unit)? = null,
     onDevicePairing: () -> Unit = {},
-    onRemoteConversationSelected: (String) -> Unit = {},
+    onOpenRemoteConversations: () -> Unit = {},
     onOpenWorkbench: () -> Unit,
     notificationTaskCommand: String? = null,
     startFresh: Boolean = false,
     onStartFreshConsumed: () -> Unit = {},
     drawerResetGeneration: Int = 0,
+    drawerBackdropSnapshot: WindowBackdropSnapshot?,
+    onDrawerBackdropSnapshotChange: (WindowBackdropSnapshot?) -> Unit,
     onConversationBound: (Long?) -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel(),
     historyViewModel: ConversationListViewModel = hiltViewModel(),
@@ -1440,7 +1514,6 @@ fun ChatScreen(
         interfaceEffects.requiresBackdropSample(drawerBackdropBlurRadius) &&
             LIVE_BACKDROP_BLUR_ENABLED &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    var drawerBackdropSnapshot by remember { mutableStateOf<WindowBackdropSnapshot?>(null) }
     DisposableEffect(drawerBackdropSnapshot) {
         val currentSnapshot = drawerBackdropSnapshot
         val retained = currentSnapshot?.retain() == true
@@ -1449,21 +1522,18 @@ fun ChatScreen(
         }
     }
     suspend fun refreshDrawerBackdrop() {
-        drawerBackdropSnapshot = if (drawerBackdropEnabled) {
+        // PixelCopy includes the drawer itself once it is visible, producing blurred text ghosts.
+        if (
+            drawerState.currentValue != DrawerValue.Closed ||
+            drawerState.targetValue != DrawerValue.Closed
+        ) {
+            return
+        }
+        onDrawerBackdropSnapshotChange(if (drawerBackdropEnabled) {
             captureWindowBackdropSnapshot(context)
         } else {
             null
-        }
-    }
-    val navigationLifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(navigationLifecycleOwner, drawerState, drawerBackdropEnabled) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME && drawerState.currentValue == DrawerValue.Open) {
-                scope.launch { refreshDrawerBackdrop() }
-            }
-        }
-        navigationLifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { navigationLifecycleOwner.lifecycle.removeObserver(observer) }
+        })
     }
     LaunchedEffect(drawerState.currentValue, drawerState.targetValue) {
         if (
@@ -1475,7 +1545,7 @@ fun ChatScreen(
                 drawerState.currentValue == DrawerValue.Closed &&
                 drawerState.targetValue == DrawerValue.Closed
             ) {
-                drawerBackdropSnapshot = null
+                onDrawerBackdropSnapshotChange(null)
             }
         }
     }
@@ -1498,11 +1568,8 @@ fun ChatScreen(
                     },
                     onDevicePairing = { closeThen(onDevicePairing) },
                     remoteConversations = remoteConversations,
-                    onToggleRemoteConversations = historyViewModel::toggleRemoteConversations,
-                    onLoadMoreRemoteConversations = historyViewModel::loadMoreRemoteConversations,
-                    onRetryRemoteConversations = historyViewModel::retryRemoteConversations,
-                    onRemoteConversationSelected = { threadId ->
-                        closeThen { onRemoteConversationSelected(threadId) }
+                    onOpenRemoteConversations = {
+                        closeThen(onOpenRemoteConversations)
                     },
                     conversations = drawerConversations,
                     currentConversationId = uiState.conversationId,
@@ -2057,7 +2124,7 @@ private fun ToolApprovalDetailSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
         containerColor = chatSheetSurfaceColor(),
-        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         dragHandle = null,
@@ -2186,10 +2253,7 @@ private fun MasonDrawer(
     onNewChat: () -> Unit,
     onDevicePairing: () -> Unit,
     remoteConversations: RemoteConversationListUiState,
-    onToggleRemoteConversations: () -> Unit,
-    onLoadMoreRemoteConversations: () -> Unit,
-    onRetryRemoteConversations: () -> Unit,
-    onRemoteConversationSelected: (String) -> Unit,
+    onOpenRemoteConversations: () -> Unit,
     conversations: List<ConversationListItem>,
     currentConversationId: Long?,
     onConversationSelected: (Long, Boolean) -> Unit,
@@ -2326,10 +2390,7 @@ private fun MasonDrawer(
                 } else {
                     RemoteConversationDrawerGroup(
                         state = remoteConversations,
-                        onToggle = onToggleRemoteConversations,
-                        onLoadMore = onLoadMoreRemoteConversations,
-                        onRetry = onRetryRemoteConversations,
-                        onConversationSelected = onRemoteConversationSelected,
+                        onOpen = onOpenRemoteConversations,
                     )
                 }
             }
@@ -2722,7 +2783,7 @@ private fun TopModelMenuButton(
 ) {
     Box {
         GlassIconButton(
-            onClick = { onExpandedChange(true) },
+            onClick = { onExpandedChange(!expanded) },
         ) {
             Icon(
                 imageVector = ImageVector.vectorResource(R.drawable.ic_model_switch),
@@ -2876,10 +2937,7 @@ private fun DrawerPrimaryAction(
 @Composable
 private fun RemoteConversationDrawerGroup(
     state: RemoteConversationListUiState,
-    onToggle: () -> Unit,
-    onLoadMore: () -> Unit,
-    onRetry: () -> Unit,
-    onConversationSelected: (String) -> Unit,
+    onOpen: () -> Unit,
 ) {
     val connector = state.connector ?: return
     DrawerPrimaryAction(
@@ -2889,115 +2947,10 @@ private fun RemoteConversationDrawerGroup(
             "已连接 · ${connector.displayName}"
         },
         selected = false,
-        onClick = onToggle,
+        onClick = onOpen,
         icon = Icons.Outlined.Computer,
-        trailingIcon = if (state.expanded) {
-            Icons.Outlined.KeyboardArrowDown
-        } else {
-            Icons.AutoMirrored.Outlined.KeyboardArrowRight
-        },
+        trailingIcon = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
     )
-    if (!state.expanded) return
-
-    val statusRows = when {
-        state.errorMessage != null && state.conversations.isEmpty() -> 1
-        state.isLoading && state.conversations.isEmpty() -> 1
-        state.conversations.isEmpty() -> 1
-        state.nextCursor != null || state.isLoading -> 1
-        else -> 0
-    }
-    val rowCount = state.conversations.size + statusRows
-    val listHeight = minOf(rowCount.coerceAtLeast(1) * 48, 228).dp
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(listHeight)
-            .padding(horizontal = 12.dp),
-        contentPadding = PaddingValues(vertical = 3.dp),
-    ) {
-        items(
-            items = state.conversations,
-            key = { "remote-${it.threadId}" },
-        ) { conversation ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { onConversationSelected(conversation.threadId) }
-                    .padding(start = 43.dp, end = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        conversation.title,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (conversation.preview.isNotBlank() && conversation.preview != conversation.title) {
-                        Text(
-                            conversation.preview,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
-        }
-        when {
-            state.errorMessage != null -> item("remote-error") {
-                RemoteConversationDrawerStatus(
-                    text = state.errorMessage,
-                    onClick = onRetry,
-                )
-            }
-            state.isLoading -> item("remote-loading") {
-                Row(
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                }
-            }
-            state.nextCursor != null -> item("remote-more") {
-                RemoteConversationDrawerStatus(text = "展开更多", onClick = onLoadMore)
-            }
-            state.conversations.isEmpty() -> item("remote-empty") {
-                RemoteConversationDrawerStatus(text = "电脑上暂无会话")
-            }
-        }
-    }
-}
-
-@Composable
-private fun RemoteConversationDrawerStatus(
-    text: String,
-    onClick: (() -> Unit)? = null,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp)
-            .then(
-                if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
-            )
-            .padding(start = 43.dp, end = 12.dp),
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Text(
-            text,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-            fontSize = 12.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
 }
 
 @Composable
@@ -3805,7 +3758,7 @@ private fun modelContributionName(contribution: ModelContribution): String {
 }
 
 @Composable
-private fun ActivitySummaryRow(
+internal fun ActivitySummaryRow(
     icon: ImageVector,
     title: String,
     status: String,
@@ -4001,7 +3954,7 @@ private fun isDocumentKnowledgeStep(step: TaskStep): Boolean {
 }
 
 @Composable
-private fun Modifier.activityShimmer(active: Boolean): Modifier {
+internal fun Modifier.activityShimmer(active: Boolean): Modifier {
     if (!active) return this
     val transition = rememberInfiniteTransition(label = "activity_shimmer")
     val progress by transition.animateFloat(
@@ -4140,7 +4093,7 @@ private fun ToolExecutionDetailSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
         containerColor = chatSheetSurfaceColor(),
-        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         dragHandle = null,
@@ -5048,7 +5001,7 @@ private fun UserMessageActionSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
         containerColor = chatSheetSurfaceColor(),
-        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         dragHandle = null,
@@ -5099,7 +5052,7 @@ private fun AssistantActionSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
         containerColor = chatSheetSurfaceColor(),
-        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         dragHandle = null,
@@ -5646,7 +5599,7 @@ private fun OutputMentionStrip(outputs: List<String>) {
 }
 
 @Composable
-private fun ArtifactMentionStrip(artifacts: List<ArtifactMetadata>) {
+internal fun ArtifactMentionStrip(artifacts: List<ArtifactMetadata>) {
     val context = LocalContext.current
     var previewArtifact by remember { mutableStateOf<ArtifactMetadata?>(null) }
     Column {
@@ -5758,7 +5711,7 @@ private fun ArtifactMentionStrip(artifacts: List<ArtifactMetadata>) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ArtifactPreviewDialog(
+internal fun ArtifactPreviewDialog(
     artifact: ArtifactMetadata,
     onDismiss: () -> Unit,
     onOpen: () -> Unit,
@@ -5777,7 +5730,7 @@ private fun ArtifactPreviewDialog(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
         containerColor = chatSheetSurfaceColor(),
-        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         dragHandle = null,
@@ -5969,7 +5922,7 @@ private fun InfoChip(
 }
 
 @Composable
-private fun InputContextStrip(
+internal fun InputContextStrip(
     attachments: List<PendingAttachment>,
     selectedSkill: SkillOption?,
     onRemoveAttachment: (Int) -> Unit,
@@ -6163,7 +6116,6 @@ private fun InputBar(
             attachments.isNotEmpty() ||
             selectedSkill != null
     )
-    val borderColor = masonGlassOutline.copy(alpha = 0.30f)
     var addMenuExpanded by remember { mutableStateOf(false) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
     var restoreFocusAfterExpansion by remember { mutableStateOf(false) }
@@ -6223,7 +6175,6 @@ private fun InputBar(
                 refraction = true,
                 blurredAlpha = 0.80f,
                 fallbackAlpha = 0.99f,
-                borderColor = borderColor,
             )
             Column(
                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
@@ -6247,8 +6198,12 @@ private fun InputBar(
                         enabled = enabled,
                         selected = addMenuExpanded,
                         onClick = {
-                            onExpandedChange(true)
-                            addMenuExpanded = true
+                            if (addMenuExpanded) {
+                                addMenuExpanded = false
+                            } else {
+                                onExpandedChange(true)
+                                addMenuExpanded = true
+                            }
                         },
                     )
                     ChatGlassDropdown(
@@ -6589,7 +6544,7 @@ private fun ModelModeSwitcher(
                     MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
                     RoundedCornerShape(999.dp),
                 )
-                .clickable { onExpandedChange(true) }
+                .clickable { onExpandedChange(!expanded) }
                 .padding(start = 10.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -6683,7 +6638,7 @@ private fun ModelModeMenuRow(
 }
 
 @Composable
-private fun ComposerIconButton(
+internal fun ComposerIconButton(
     icon: ImageVector,
     contentDescription: String,
     enabled: Boolean,
@@ -6727,7 +6682,7 @@ private fun ComposerIconButton(
 }
 
 @Composable
-private fun ComposerSendButton(
+internal fun ComposerSendButton(
     action: ComposerPrimaryAction,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -6783,7 +6738,7 @@ private fun ComposerSendButton(
 }
 
 @Composable
-private fun AttachmentMenuRow(
+internal fun AttachmentMenuRow(
     label: String,
     onClick: () -> Unit,
 ) {
@@ -6807,10 +6762,13 @@ private fun AttachmentMenuRow(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SkillPickerSheet(
+internal fun SkillPickerSheet(
     skills: List<SkillOption>,
     onDismiss: () -> Unit,
     onSelect: (SkillOption) -> Unit,
+    title: String = "使用 Skill",
+    description: String = "选择后会作为本轮对话的执行偏好发送给 Mason。",
+    emptyText: String = "暂无已安装技能",
 ) {
     val skillListState = rememberLazyListState()
     val skillEdgeBlurState = rememberProgressiveEdgeBlurState(
@@ -6820,7 +6778,7 @@ private fun SkillPickerSheet(
         onDismissRequest = onDismiss,
         shape = chatSheetShape,
         containerColor = chatSheetSurfaceColor(),
-        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.78f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         dragHandle = null,
@@ -6838,14 +6796,14 @@ private fun SkillPickerSheet(
                 bottomPadding = 3.dp,
             )
             Text(
-                "使用 Skill",
+                title,
                 color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 19.sp,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "选择后会作为本轮对话的执行偏好发送给 Mason。",
+                description,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 lineHeight = 17.sp,
@@ -6854,7 +6812,7 @@ private fun SkillPickerSheet(
 
             when {
                 skills.isEmpty() -> Text(
-                    "暂无已安装技能",
+                    emptyText,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp,
                     modifier = Modifier.padding(vertical = 22.dp),
@@ -7114,7 +7072,7 @@ private fun shareText(context: Context, text: String) {
     }
 }
 
-private fun openArtifact(context: Context, artifact: ArtifactMetadata, edit: Boolean) {
+internal fun openArtifact(context: Context, artifact: ArtifactMetadata, edit: Boolean) {
     val file = File(artifact.path)
     if (!file.exists() || file.isDirectory) {
         Toast.makeText(context, "文件不存在或无法打开", Toast.LENGTH_SHORT).show()
@@ -7138,7 +7096,7 @@ private fun openArtifact(context: Context, artifact: ArtifactMetadata, edit: Boo
     }
 }
 
-private fun shareArtifact(context: Context, artifact: ArtifactMetadata) {
+internal fun shareArtifact(context: Context, artifact: ArtifactMetadata) {
     val validatedImage = if (
         isPreviewableImageArtifact(
             artifact,

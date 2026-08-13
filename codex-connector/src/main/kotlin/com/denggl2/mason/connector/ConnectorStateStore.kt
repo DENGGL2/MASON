@@ -30,6 +30,15 @@ data class ConnectorStateSnapshot(
     val sessions: Map<String, ManagedSessionSnapshot> = emptyMap(),
     val commands: Map<String, StoredCommandExecution> = emptyMap(),
     val pairedDevices: Map<String, PairedDeviceSnapshot> = emptyMap(),
+    val remoteComposerSelections: Map<String, StoredRemoteComposerSelection> = emptyMap(),
+)
+
+@Serializable
+data class StoredRemoteComposerSelection(
+    val model: String,
+    val reasoningEffort: String? = null,
+    val permissionProfileId: String,
+    val cwd: String,
 )
 
 @Serializable
@@ -174,6 +183,26 @@ class ConnectorStateStore(
 
     fun activePairedDevices(): List<PairedDeviceSnapshot> = lock.withLock {
         state.pairedDevices.values.filter { it.device.revokedAt == null }
+    }
+
+    fun remoteComposerSelection(threadId: String): StoredRemoteComposerSelection? = lock.withLock {
+        state.remoteComposerSelections[threadId]
+    }
+
+    fun recordRemoteComposerSelection(
+        threadId: String,
+        selection: StoredRemoteComposerSelection,
+    ): StoredRemoteComposerSelection = lock.withLock {
+        require(threadId.isNotBlank()) { "Thread ID is required" }
+        require(selection.model.isNotBlank()) { "Remote model is required" }
+        require(selection.permissionProfileId.isNotBlank()) { "Remote permission profile is required" }
+        require(selection.cwd.isNotBlank()) { "Remote working directory is required" }
+        update(
+            state.copy(
+                remoteComposerSelections = state.remoteComposerSelections + (threadId to selection),
+            ),
+        )
+        selection
     }
 
     fun revokeDevice(deviceId: String, revokedAt: Long): PairedDeviceSnapshot? = lock.withLock {

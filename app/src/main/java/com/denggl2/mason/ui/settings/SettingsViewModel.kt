@@ -37,6 +37,7 @@ import com.denggl2.mason.data.LocalModelInstallState
 import com.denggl2.mason.data.LocalModelStore
 import com.denggl2.mason.data.ModelCapabilityHealth
 import com.denggl2.mason.data.ModelCapabilityHealthStore
+import com.denggl2.mason.data.ModelListingUnavailableException
 import com.denggl2.mason.data.OfficialChannelPreferences
 import com.denggl2.mason.data.OfficialChannelPreferencesDataStore
 import com.denggl2.mason.data.UserMemoryItem
@@ -45,6 +46,7 @@ import com.denggl2.mason.data.UserMemoryStore
 import com.denggl2.mason.data.UserMemoryType
 import com.denggl2.mason.llm.ChatClient
 import com.denggl2.mason.llm.ApiCapabilityCheck
+import com.denggl2.mason.llm.ApiTestResult
 import com.denggl2.mason.llm.ChatResponse
 import com.denggl2.mason.llm.ModelInvocation
 import com.denggl2.mason.llm.ModelModality
@@ -61,6 +63,9 @@ import com.denggl2.mason.tool.NotificationTool
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -70,12 +75,15 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 
 data class ApiTestUiState(
@@ -89,6 +97,7 @@ data class ApiTestUiState(
     val testedConnection: ApiConnection? = null,
     val replacingModelId: String? = null,
     val activeModelId: String? = null,
+    val activeModelIds: Set<String> = emptySet(),
     val observedModelCapabilities: Map<String, ApiModelCapabilities> = emptyMap(),
     val observedFailedModels: Set<String> = emptySet(),
 )
@@ -125,6 +134,28 @@ private const val DIAGNOSTIC_CONVERSATION_LIMIT = 5
 private const val DIAGNOSTIC_MESSAGE_LIMIT = 20
 private const val DIAGNOSTIC_TASK_LIMIT = 10
 private const val DIAGNOSTIC_CRASH_LIMIT = 10
+internal const val MODEL_TEST_PARALLELISM = 4
+internal const val MANUAL_MODEL_ENTRY_MESSAGE =
+    "地址不支持获取模型列表，请手动添加模型"
+
+private data class BatchModelTestOutcome(
+    val modelId: String,
+    val config: ApiConfig,
+    val result: ApiTestResult,
+)
+
+internal suspend fun <T, R> Iterable<T>.mapWithConcurrencyLimit(
+    parallelism: Int,
+    transform: suspend (T) -> R,
+): List<R> = coroutineScope {
+    require(parallelism > 0)
+    val semaphore = Semaphore(parallelism)
+    map { item ->
+        async {
+            semaphore.withPermit { transform(item) }
+        }
+    }.awaitAll()
+}
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -145,6 +176,7 @@ class SettingsViewModel @Inject constructor(
     private val toolGrantStore: ToolGrantStore,
     private val taskRunStore: TaskRunStore,
     private val apiTestRuntime: ApiTestRuntime,
+    private val remoteModelDiscoveryRuntime: RemoteModelDiscoveryRuntime,
     private val notificationTool: NotificationTool,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
@@ -173,6 +205,7 @@ class SettingsViewModel @Inject constructor(
     val diagnosticExportEvent = _diagnosticExportEvent.asSharedFlow()
 
     val apiTestState = apiTestRuntime.state
+    val remoteModelDiscoveryState = remoteModelDiscoveryRuntime.state
 
     private val _modelRefreshState = MutableStateFlow(ModelRefreshUiState())
     val modelRefreshState = _modelRefreshState.asStateFlow()
@@ -705,31 +738,26 @@ class SettingsViewModel @Inject constructor(
                 message = "正在测试模型...",
                 targetConnection = targetConnection,
                 replacingModelId = replacingModelId,
-                activeModelId = firstModel,
+                activeModelId = null,
+                activeModelIds = emptySet(),
                 observedModelCapabilities = priorState.observedModelCapabilities,
                 observedFailedModels = priorState.observedFailedModels,
             ))) return@launch
-            val capabilitiesByModel = linkedMapOf<String, ApiModelCapabilities>()
-            val modelTestErrors = linkedMapOf<String, String>()
-            val signatures = linkedMapOf<String, String>()
-            val resultMessages = mutableListOf<String>()
-            var allConnectionsSucceeded = true
-            var lastCapabilities = emptyList<ApiCapabilityCheck>()
-            val succeededModelKeys = linkedSetOf<String>()
-            val failedModelKeys = linkedSetOf<String>()
-
-            modelIds.forEach { modelId ->
-                if (!apiTestRuntime.update(
-                        runId,
-                        apiTestRuntime.current.copy(
+            val completedModelCount = AtomicInteger(0)
+            val outcomes = modelIds.mapWithConcurrencyLimit(MODEL_TEST_PARALLELISM) { modelId ->
+                if (!apiTestRuntime.update(runId) { state ->
+                        val activeModelIds = state.activeModelIds + modelId
+                        state.copy(
                             isTesting = true,
-                            message = "正在测试模型 $modelId...",
+                            message = "正在测试模型 ${completedModelCount.get()}/${modelIds.size}",
                             targetConnection = targetConnection,
                             replacingModelId = replacingModelId,
-                            activeModelId = modelId,
-                        ),
-                    )
-                ) return@launch
+                            activeModelId = activeModelIds.firstOrNull(),
+                            activeModelIds = activeModelIds,
+                        )
+                    }
+                ) return@mapWithConcurrencyLimit null
+
                 val draftConfig = validationConfig.copy(
                     model = modelId,
                     visionModel = modelId,
@@ -748,22 +776,38 @@ class SettingsViewModel @Inject constructor(
                             ?.let { put("X-DashScope-WorkSpace", it) }
                     },
                 )
-                if (!apiTestRuntime.isActive(runId)) return@launch
-                allConnectionsSucceeded = allConnectionsSucceeded && result.success
-                lastCapabilities = result.capabilities
-                resultMessages += "$modelId：${result.message}"
-                if (result.success) {
-                    capabilitiesByModel[modelId] = ApiModelCapabilities(
-                        supportsChat = result.capabilities.any { it.label == "聊天" && it.success },
-                        supportsTools = result.capabilities.any { it.label == "工具调用" && it.success },
-                        supportsVision = result.capabilities.any { it.label == "识图" && it.success },
-                        supportsImageGeneration = result.capabilities.any { it.label == "生图" && it.success },
-                    )
-                    signatures[modelId] = AiProviderCatalog.verificationSignature(draftConfig)
-                    succeededModelKeys += apiTestModelKey(connection.id, modelId)
+                val finishedCount = completedModelCount.incrementAndGet()
+                if (!apiTestRuntime.update(runId) { state ->
+                        val activeModelIds = state.activeModelIds - modelId
+                        state.copy(
+                            message = "正在测试模型 $finishedCount/${modelIds.size}",
+                            activeModelId = activeModelIds.firstOrNull(),
+                            activeModelIds = activeModelIds,
+                        )
+                    }
+                ) return@mapWithConcurrencyLimit null
+                BatchModelTestOutcome(modelId, draftConfig, result)
+            }.filterNotNull()
+            if (!apiTestRuntime.isActive(runId) || outcomes.size != modelIds.size) return@launch
+
+            val capabilitiesByModel = linkedMapOf<String, ApiModelCapabilities>()
+            val modelTestErrors = linkedMapOf<String, String>()
+            val signatures = linkedMapOf<String, String>()
+            val resultMessages = mutableListOf<String>()
+            val succeededModelKeys = linkedSetOf<String>()
+            val failedModelKeys = linkedSetOf<String>()
+            val allConnectionsSucceeded = outcomes.all { it.result.success }
+            val lastCapabilities = outcomes.lastOrNull()?.result?.capabilities.orEmpty()
+
+            outcomes.forEach { outcome ->
+                resultMessages += "${outcome.modelId}：${outcome.result.message}"
+                if (outcome.result.success) {
+                    capabilitiesByModel[outcome.modelId] = outcome.result.capabilities.toModelCapabilities()
+                    signatures[outcome.modelId] = AiProviderCatalog.verificationSignature(outcome.config)
+                    succeededModelKeys += apiTestModelKey(connection.id, outcome.modelId)
                 } else {
-                    modelTestErrors[modelId] = result.message.take(1_200)
-                    failedModelKeys += apiTestModelKey(connection.id, modelId)
+                    modelTestErrors[outcome.modelId] = outcome.result.message.take(1_200)
+                    failedModelKeys += apiTestModelKey(connection.id, outcome.modelId)
                 }
             }
 
@@ -791,6 +835,7 @@ class SettingsViewModel @Inject constructor(
                 testedConnection = tested,
                 replacingModelId = replacingModelId,
                 activeModelId = null,
+                activeModelIds = emptySet(),
                 observedModelCapabilities = priorState.observedModelCapabilities +
                     capabilitiesByModel.filterKeys { modelId ->
                         apiTestModelKey(connection.id, modelId) in succeededModelKeys
@@ -817,6 +862,192 @@ class SettingsViewModel @Inject constructor(
         }) {
             _toastEvent.tryEmit("已有模型测试正在运行")
         }
+    }
+
+    fun discoverAndTestRemoteModels(connection: ApiConnection) {
+        val target = connection.copy(
+            apiUrl = connection.apiUrl.trim(),
+            apiKey = connection.apiKey.trim(),
+            workspaceId = connection.workspaceId.trim(),
+            modelIds = emptyList(),
+        )
+        if (target.apiUrl.isBlank()) {
+            _toastEvent.tryEmit("请先填写接口地址")
+            return
+        }
+        if (!AiProviderCatalog.allowsBlankApiKey(target.apiUrl) && target.apiKey.isBlank()) {
+            _toastEvent.tryEmit("请先填写 API Key")
+            return
+        }
+
+        if (!remoteModelDiscoveryRuntime.launch { runId ->
+            if (!remoteModelDiscoveryRuntime.update(
+                    runId,
+                    RemoteModelDiscoveryUiState(
+                        isTesting = true,
+                        targetConnection = target,
+                        message = "正在获取模型列表...",
+                    ),
+                )
+            ) return@launch
+
+            val modelsResult = modelRepository.fetchModels(
+                apiUrl = target.apiUrl,
+                apiKey = target.apiKey,
+                workspaceId = target.workspaceId,
+            )
+            val models = modelsResult.getOrElse { error ->
+                val unavailable = error is ModelListingUnavailableException
+                remoteModelDiscoveryRuntime.update(
+                    runId,
+                    RemoteModelDiscoveryUiState(
+                        targetConnection = target,
+                        modelListingAvailable = if (unavailable) false else null,
+                        message = if (unavailable) {
+                            MANUAL_MODEL_ENTRY_MESSAGE
+                        } else {
+                            remoteModelRefreshErrorMessage(error)
+                        },
+                        success = false,
+                    ),
+                )
+                return@launch
+            }
+            if (models.isEmpty()) {
+                remoteModelDiscoveryRuntime.update(
+                    runId,
+                    RemoteModelDiscoveryUiState(
+                        targetConnection = target,
+                        modelListingAvailable = false,
+                        message = MANUAL_MODEL_ENTRY_MESSAGE,
+                        success = false,
+                    ),
+                )
+                return@launch
+            }
+
+            if (!remoteModelDiscoveryRuntime.update(
+                    runId,
+                    RemoteModelDiscoveryUiState(
+                        isTesting = true,
+                        targetConnection = target,
+                        modelListingAvailable = true,
+                        models = models,
+                        message = "正在测试模型 0/${models.size}",
+                    ),
+                )
+            ) return@launch
+
+            val completedModels = models.mapWithConcurrencyLimit(MODEL_TEST_PARALLELISM) { model ->
+                if (!remoteModelDiscoveryRuntime.update(runId) { state ->
+                        state.copy(
+                            isTesting = true,
+                            activeModelIds = state.activeModelIds + model.id,
+                            message = "正在测试模型 ${state.completedCount}/${models.size}",
+                        )
+                    }
+                ) return@mapWithConcurrencyLimit null
+
+                val draftConfig = ApiConfig(
+                    providerId = target.providerId,
+                    apiUrl = target.apiUrl,
+                    apiKey = target.apiKey,
+                    model = model.id,
+                    visionModel = model.id,
+                    imageModel = model.id,
+                    toolsEnabled = true,
+                )
+                val result = chatClient.testConnection(
+                    apiUrl = target.apiUrl,
+                    apiKey = target.apiKey,
+                    model = model.id,
+                    visionModel = model.id,
+                    imageModel = model.id,
+                    requiresApiKey = AiProviderCatalog.requiresApiKey(draftConfig),
+                    testTools = true,
+                    additionalHeaders = buildMap {
+                        target.workspaceId.takeIf(String::isNotBlank)
+                            ?.let { put("X-DashScope-WorkSpace", it) }
+                    },
+                )
+                if (!remoteModelDiscoveryRuntime.update(runId) { state ->
+                        val finishedCount = state.completedCount + 1
+                        state.copy(
+                            modelCapabilities = if (result.success) {
+                                state.modelCapabilities + (model.id to result.capabilities.toModelCapabilities())
+                            } else {
+                                state.modelCapabilities - model.id
+                            },
+                            modelTestErrors = if (result.success) {
+                                state.modelTestErrors - model.id
+                            } else {
+                                state.modelTestErrors + (model.id to result.message.take(1_200))
+                            },
+                            verifiedModelSignatures = if (result.success) {
+                                state.verifiedModelSignatures +
+                                    (model.id to AiProviderCatalog.verificationSignature(draftConfig))
+                            } else {
+                                state.verifiedModelSignatures - model.id
+                            },
+                            activeModelIds = state.activeModelIds - model.id,
+                            completedCount = finishedCount,
+                            message = "正在测试模型 $finishedCount/${models.size}",
+                        )
+                    }
+                ) return@mapWithConcurrencyLimit null
+                model.id
+            }.filterNotNull()
+            if (!remoteModelDiscoveryRuntime.isActive(runId) || completedModels.size != models.size) {
+                return@launch
+            }
+
+            val completed = remoteModelDiscoveryRuntime.current.copy(
+                isTesting = false,
+                activeModelIds = emptySet(),
+                completedCount = models.size,
+                message = "测试完成，请选择要添加的模型",
+                success = true,
+            )
+            if (!remoteModelDiscoveryRuntime.update(runId, completed)) return@launch
+            if (remoteModelDiscoveryRuntime.shouldNotifyCompletion(target)) {
+                notificationTool.execute(
+                    mapOf(
+                        "title" to "模型测试完成",
+                        "text" to "返回 Mason 选择要添加的模型",
+                        NotificationTool.EXTRA_LIVE_UPDATE to "true",
+                        NotificationTool.EXTRA_LIVE_UPDATE_PROGRESS to "100",
+                        NotificationTool.EXTRA_LIVE_UPDATE_FINAL to "true",
+                        NotificationTool.EXTRA_LIVE_UPDATE_SHORT_TEXT to "完成",
+                    ),
+                )
+            }
+        }) {
+            _toastEvent.tryEmit("已有模型列表测试正在运行")
+        }
+    }
+
+    fun completeRemoteModelDiscovery(
+        connection: ApiConnection,
+        selectedModelIds: Set<String>,
+    ): Boolean {
+        val state = remoteModelDiscoveryRuntime.current
+        if (state.isTesting || state.modelListingAvailable != true) return false
+        if (!sameRemoteModelDiscoveryTarget(state.targetConnection, connection)) return false
+        val tested = buildSelectedDiscoveredConnection(connection, state, selectedModelIds)
+            ?: return false
+        remoteModelDiscoveryRuntime.launchBackground {
+            persistTestedConnection(tested, replacingModelId = null)
+        }
+        remoteModelDiscoveryRuntime.clearCompletedState()
+        return true
+    }
+
+    fun setRemoteModelDiscoveryVisibleDraft(connection: ApiConnection?) {
+        remoteModelDiscoveryRuntime.setVisibleDraft(connection)
+    }
+
+    fun clearCompletedRemoteModelDiscovery() {
+        remoteModelDiscoveryRuntime.clearCompletedState()
     }
 
     fun refreshOpenRouterFreeModels(apiKey: String) {
@@ -1156,6 +1387,35 @@ internal fun mergeTestedConnection(
 
 internal fun apiTestModelKey(connectionId: String, modelId: String): String =
     "$connectionId::$modelId"
+
+private fun List<ApiCapabilityCheck>.toModelCapabilities(): ApiModelCapabilities =
+    ApiModelCapabilities(
+        supportsChat = any { it.label == "聊天" && it.success },
+        supportsTools = any { it.label == "工具调用" && it.success },
+        supportsVision = any { it.label == "识图" && it.success },
+        supportsImageGeneration = any { it.label == "生图" && it.success },
+    )
+
+internal fun buildSelectedDiscoveredConnection(
+    draft: ApiConnection,
+    state: RemoteModelDiscoveryUiState,
+    selectedModelIds: Set<String>,
+): ApiConnection? {
+    val selected = state.models.map(AiModelPreset::id).filter(selectedModelIds::contains)
+    val firstModel = selected.firstOrNull() ?: return null
+    val capabilities = state.modelCapabilities.filterKeys(selected::contains)
+    val signatures = state.verifiedModelSignatures.filterKeys(selected::contains)
+    val errors = state.modelTestErrors.filterKeys(selected::contains)
+    return draft.copy(
+        id = connectionIdForModel(draft.providerId, draft.apiUrl, firstModel),
+        modelIds = selected,
+        toolsSupported = capabilities.values.any(ApiModelCapabilities::supportsTools),
+        verifiedSignature = signatures[firstModel].orEmpty(),
+        modelCapabilities = capabilities,
+        verifiedModelSignatures = signatures,
+        modelTestErrors = errors,
+    )
+}
 
 internal fun remoteModelRefreshErrorMessage(error: Throwable): String {
     val detail = error.message.orEmpty()

@@ -13,12 +13,24 @@ class LocalPairingCommandTest {
     }
 
     @Test
+    fun privatePairingAcceptsAssignedTailscaleIpv4() {
+        assertEquals("100.64.0.1", validatePrivatePairingHost("100.64.0.1") { true })
+        assertEquals("100.127.255.254", validatePrivatePairingHost("100.127.255.254") { true })
+    }
+
+    @Test
     fun privatePairingRejectsLoopbackAndPublicAddresses() {
         assertFailsWith<IllegalArgumentException> {
             validatePrivatePairingHost("127.0.0.1") { true }
         }
         assertFailsWith<IllegalArgumentException> {
             validatePrivatePairingHost("8.8.8.8") { true }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            validatePrivatePairingHost("100.63.255.255") { true }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            validatePrivatePairingHost("100.128.0.1") { true }
         }
     }
 

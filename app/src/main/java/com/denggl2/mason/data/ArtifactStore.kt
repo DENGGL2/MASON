@@ -96,6 +96,48 @@ class ArtifactStore @Inject constructor(
         }
     }
 
+    suspend fun saveRemoteConversationArtifact(
+        cacheKey: String,
+        fileName: String,
+        input: InputStream,
+        mimeType: String,
+        expectedBytes: Long,
+        maxBytes: Long,
+        createdAt: Long = System.currentTimeMillis(),
+    ): ArtifactMetadata = withContext(Dispatchers.IO) {
+        require(cacheKey.isNotBlank()) { "远端附件缓存标识不能为空" }
+        require(expectedBytes in 1..maxBytes) { "远端附件大小不正确" }
+        streamWriteMutex.withLock {
+            val root = File(context.filesDir, "remote-previews")
+            val safeCacheKey = cacheKey
+                .map { character -> if (character.isLetterOrDigit() || character in "-_.") character else '_' }
+                .joinToString("")
+                .take(160)
+                .ifBlank { "remote-preview" }
+            val safeName = sanitizeRelativePath(fileName).substringAfterLast('/').ifBlank { "attachment.bin" }
+            val cacheDirectory = File(root, safeCacheKey)
+            val target = File(cacheDirectory, safeName)
+            val canonicalRoot = root.canonicalFile
+            val canonicalTarget = target.canonicalFile
+            require(canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) {
+                "远端附件缓存路径不安全"
+            }
+            replaceRemoteConversationCacheFile(
+                target = target,
+                input = input,
+                expectedBytes = expectedBytes,
+                maxBytes = maxBytes,
+            )
+            ArtifactMetadata(
+                name = target.name,
+                path = target.absolutePath,
+                mimeType = mimeType,
+                bytes = target.length(),
+                createdAt = createdAt,
+            )
+        }
+    }
+
     suspend fun saveRemoteImageArtifact(
         url: String,
         createdAt: Long = System.currentTimeMillis(),
@@ -384,6 +426,27 @@ internal suspend fun copyArtifactStream(
         output.write(buffer, 0, count)
     }
     return total
+}
+
+internal suspend fun replaceRemoteConversationCacheFile(
+    target: File,
+    input: InputStream,
+    expectedBytes: Long,
+    maxBytes: Long,
+) {
+    val cacheDirectory = requireNotNull(target.parentFile) { "远端附件缓存目录缺失" }
+    require(cacheDirectory.exists() || cacheDirectory.mkdirs()) { "远端附件缓存目录不可用" }
+    val temporary = File.createTempFile(".mason-remote-preview-", ".part", cacheDirectory)
+    try {
+        FileOutputStream(temporary).buffered().use { output ->
+            copyArtifactStream(input, output, maxBytes)
+        }
+        require(temporary.length() == expectedBytes) { "远端附件下载不完整" }
+        if (target.exists()) require(target.delete()) { "远端附件缓存更新失败" }
+        require(temporary.renameTo(target)) { "远端附件缓存登记失败" }
+    } finally {
+        if (temporary.exists()) temporary.delete()
+    }
 }
 
 internal class AsciiCharSequenceInputStream(

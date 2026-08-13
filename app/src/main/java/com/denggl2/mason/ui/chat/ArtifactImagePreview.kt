@@ -804,6 +804,7 @@ internal fun validateImageArtifact(
     val file = File(artifact.path).canonicalFile
     val allowedRoots = buildList {
         add(File(context.filesDir, "artifacts"))
+        add(File(context.filesDir, "remote-previews"))
         context.getExternalFilesDirs(null).filterNotNull().forEach(::add)
         add(File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mason"))
         add(File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Mason"))

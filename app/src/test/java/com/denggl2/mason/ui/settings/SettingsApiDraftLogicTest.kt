@@ -474,6 +474,44 @@ class SettingsApiDraftLogicTest {
     }
 
     @Test
+    fun concurrentBatchMarksEveryActiveModelAsTesting() {
+        val target = ApiConnection(
+            id = "custom",
+            providerId = "custom",
+            name = "Remote",
+            apiUrl = "https://example.invalid/v1",
+            apiKey = "key",
+            modelIds = listOf("model-a", "model-b", "model-c"),
+        )
+        val state = ApiTestUiState(
+            isTesting = true,
+            targetConnection = target,
+            activeModelId = "model-a",
+            activeModelIds = setOf("model-a", "model-b"),
+        )
+
+        assertEquals("测试中", remoteModelTestStatus(target, "model-a", state))
+        assertEquals("测试中", remoteModelTestStatus(target, "model-b", state))
+        assertEquals("待测试能力", remoteModelTestStatus(target, "model-c", state))
+        assertTrue(
+            testStateTargetsRemoteModelEditor(
+                target = target,
+                editingModelId = "model-b",
+                replacingModelId = null,
+                activeModelIds = state.activeModelIds,
+            ),
+        )
+        assertFalse(
+            testStateTargetsRemoteModelEditor(
+                target = target,
+                editingModelId = "model-c",
+                replacingModelId = null,
+                activeModelIds = state.activeModelIds,
+            ),
+        )
+    }
+
+    @Test
     fun addingRemoteModelKeepsSheetAttachedToItsBackgroundTest() {
         val target = ApiConnection(
             id = "custom",
