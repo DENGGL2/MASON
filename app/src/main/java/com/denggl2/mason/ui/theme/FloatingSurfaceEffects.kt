@@ -36,6 +36,9 @@ internal fun Modifier.floatingSurfaceEdge(
     shape: Shape,
     nonGlassWidth: Dp = 0.5.dp,
     nonGlassColor: Color? = null,
+    // Dark glass keeps a directional rim light, but it should remain a
+    // material cue rather than becoming a visible outline.
+    emphasizeDarkGlass: Boolean = true,
 ): Modifier = composed {
     val interfaceEffects = LocalInterfaceEffects.current
     val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -59,12 +62,23 @@ internal fun Modifier.floatingSurfaceEdge(
         }
         val baseBrush = Brush.linearGradient(
             colorStops = if (darkTheme) {
-                arrayOf(
-                    0f to Color.White.copy(alpha = 0.24f),
-                    0.42f to Color.White.copy(alpha = 0.12f),
-                    0.72f to Color.White.copy(alpha = 0.06f),
-                    1f to Color.Black.copy(alpha = 0.30f),
-                )
+                if (emphasizeDarkGlass) {
+                    // Keep the lower-right edge slightly darker so the rim
+                    // reads as glass without becoming a white ring.
+                    arrayOf(
+                        0f to Color.White.copy(alpha = 0.067f),
+                        0.38f to Color.White.copy(alpha = 0.030f),
+                        0.72f to Color.White.copy(alpha = 0.012f),
+                        1f to Color.Black.copy(alpha = 0.067f),
+                    )
+                } else {
+                    arrayOf(
+                        0f to Color.White.copy(alpha = 0.053f),
+                        0.42f to Color.White.copy(alpha = 0.023f),
+                        0.72f to Color.White.copy(alpha = 0.008f),
+                        1f to Color.Black.copy(alpha = 0.053f),
+                    )
+                }
             } else {
                 arrayOf(
                     0f to Color.White.copy(alpha = 0.78f),
@@ -78,8 +92,8 @@ internal fun Modifier.floatingSurfaceEdge(
         )
         val topSpecularBrush = Brush.verticalGradient(
             colorStops = arrayOf(
-                0f to Color.White.copy(alpha = if (darkTheme) 0.38f else 0.68f),
-                0.18f to Color.White.copy(alpha = if (darkTheme) 0.22f else 0.42f),
+                0f to Color.White.copy(alpha = if (darkTheme && emphasizeDarkGlass) 0.100f else if (darkTheme) 0.080f else 0.68f),
+                0.18f to Color.White.copy(alpha = if (darkTheme && emphasizeDarkGlass) 0.047f else if (darkTheme) 0.037f else 0.42f),
                 0.48f to Color.Transparent,
                 1f to Color.Transparent,
             ),
@@ -88,8 +102,8 @@ internal fun Modifier.floatingSurfaceEdge(
         )
         val leftSpecularBrush = Brush.horizontalGradient(
             colorStops = arrayOf(
-                0f to Color.White.copy(alpha = if (darkTheme) 0.34f else 0.62f),
-                0.18f to Color.White.copy(alpha = if (darkTheme) 0.18f else 0.36f),
+                0f to Color.White.copy(alpha = if (darkTheme && emphasizeDarkGlass) 0.083f else if (darkTheme) 0.067f else 0.62f),
+                0.18f to Color.White.copy(alpha = if (darkTheme && emphasizeDarkGlass) 0.040f else if (darkTheme) 0.033f else 0.36f),
                 0.48f to Color.Transparent,
                 1f to Color.Transparent,
             ),
@@ -101,17 +115,35 @@ internal fun Modifier.floatingSurfaceEdge(
             drawPath(
                 path = edgePath,
                 brush = baseBrush,
-                style = Stroke(width = GlassBaseEdgeWidth.toPx()),
+                style = Stroke(
+                    width = (if (darkTheme) {
+                        if (emphasizeDarkGlass) 0.85.dp else GlassBaseEdgeWidth
+                    } else {
+                        GlassBaseEdgeWidth
+                    }).toPx(),
+                ),
             )
             drawPath(
                 path = edgePath,
                 brush = topSpecularBrush,
-                style = Stroke(width = GlassSpecularEdgeWidth.toPx()),
+                style = Stroke(
+                    width = (if (darkTheme) {
+                        if (emphasizeDarkGlass) 1.25.dp else GlassSpecularEdgeWidth
+                    } else {
+                        GlassSpecularEdgeWidth
+                    }).toPx(),
+                ),
             )
             drawPath(
                 path = edgePath,
                 brush = leftSpecularBrush,
-                style = Stroke(width = GlassSpecularEdgeWidth.toPx()),
+                style = Stroke(
+                    width = (if (darkTheme) {
+                        if (emphasizeDarkGlass) 1.25.dp else GlassSpecularEdgeWidth
+                    } else {
+                        GlassSpecularEdgeWidth
+                    }).toPx(),
+                ),
             )
         }
     }

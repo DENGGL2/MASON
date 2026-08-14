@@ -12,6 +12,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -74,6 +75,7 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
@@ -81,11 +83,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.denggl2.mason.data.ArtifactMetadata
 import com.denggl2.mason.ui.theme.LocalInterfaceEffects
 import com.denggl2.mason.ui.theme.floatingSurfaceEdge
+import androidx.compose.ui.graphics.luminance
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Locale
@@ -276,6 +282,7 @@ private fun ArtifactSvgImagePreviewDialog(
                 .fillMaxSize()
                 .artifactPreviewMaterial(),
         ) {
+            ArtifactPreviewWindowEffects()
             when (val state = svgState) {
                 ArtifactSvgState.Loading -> CircularProgressIndicator(
                     modifier = Modifier.align(Alignment.Center),
@@ -386,6 +393,7 @@ internal fun ArtifactImagePreviewDialog(
                 .artifactPreviewMaterial()
                 .clipToBounds(),
         ) {
+            ArtifactPreviewWindowEffects()
             when (val state = bitmapState) {
                 ArtifactBitmapState.Loading -> CircularProgressIndicator(
                     modifier = Modifier.align(Alignment.Center),
@@ -520,6 +528,65 @@ internal fun ArtifactImagePreviewDialog(
 }
 
 @Composable
+private fun ArtifactPreviewWindowEffects() {
+    val view = LocalView.current
+    val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val dialogWindow = generateSequence(view as android.view.ViewParent?) { current ->
+        (current as? android.view.View)?.parent
+    }.filterIsInstance<DialogWindowProvider>().firstOrNull()?.window
+    DisposableEffect(dialogWindow, darkTheme) {
+        val window = dialogWindow
+        val decorView = window?.decorView
+        val previousStatusBarColor = window?.statusBarColor
+        val previousNavigationBarColor = window?.navigationBarColor
+        val previousNavigationBarDividerColor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window?.navigationBarDividerColor
+        } else {
+            null
+        }
+        val previousContrastEnforced = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window?.isNavigationBarContrastEnforced
+        } else {
+            null
+        }
+        val previousSystemUiVisibility = decorView?.systemUiVisibility
+        if (window != null && decorView != null) {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                window.navigationBarDividerColor = android.graphics.Color.TRANSPARENT
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.isNavigationBarContrastEnforced = false
+            }
+            decorView.systemUiVisibility = decorView.systemUiVisibility or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            WindowInsetsControllerCompat(window, decorView).apply {
+                isAppearanceLightStatusBars = !darkTheme
+                isAppearanceLightNavigationBars = !darkTheme
+            }
+        }
+        onDispose {
+            if (previousStatusBarColor != null) window?.statusBarColor = previousStatusBarColor
+            if (previousNavigationBarColor != null) window?.navigationBarColor = previousNavigationBarColor
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && previousNavigationBarDividerColor != null) {
+                window?.navigationBarDividerColor = previousNavigationBarDividerColor
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && previousContrastEnforced != null) {
+                window?.isNavigationBarContrastEnforced = previousContrastEnforced
+            }
+            if (previousSystemUiVisibility != null) {
+                decorView?.systemUiVisibility = previousSystemUiVisibility
+            }
+        }
+    }
+}
+
+@Composable
 private fun ArtifactImagePreviewAction(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
@@ -547,7 +614,11 @@ private fun ArtifactImagePreviewAction(
                     },
                 ),
             )
-            .floatingSurfaceEdge(shape = CircleShape, nonGlassWidth = 0.5.dp)
+            .floatingSurfaceEdge(
+                shape = CircleShape,
+                nonGlassWidth = 0.5.dp,
+                emphasizeDarkGlass = true,
+            )
             .clickable(
                 enabled = enabled,
                 interactionSource = interactionSource,

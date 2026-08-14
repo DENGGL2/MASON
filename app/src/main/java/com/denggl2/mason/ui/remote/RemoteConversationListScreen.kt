@@ -1262,16 +1262,16 @@ private fun RemoteConversationActions(
     Row(modifier = modifier) {
         if (confirmingArchive) {
             RemoteConversationAction(
-                label = "取消",
-                enabled = enabled,
-                onClick = onArchiveCancelled,
-                modifier = Modifier.weight(1f),
-            )
-            RemoteConversationAction(
                 label = "确定",
                 enabled = enabled,
                 destructive = true,
                 onClick = onArchiveConfirmed,
+                modifier = Modifier.weight(1f),
+            )
+            RemoteConversationAction(
+                label = "取消",
+                enabled = enabled,
+                onClick = onArchiveCancelled,
                 modifier = Modifier.weight(1f),
             )
         } else {
