@@ -17,6 +17,7 @@ class ConnectorTlsServer(
     private val conversationProvider: RemoteConversationProvider? = null,
     private val conversationController: RemoteConversationController? =
         conversationProvider as? RemoteConversationController,
+    private val transport: String = "tls",
 ) : AutoCloseable {
     private val engine: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration>
 
@@ -48,7 +49,7 @@ class ConnectorTlsServer(
             module = {
                 configurePairingHttpApi(
                     authService = authService,
-                    transport = "tls",
+                    transport = transport,
                     conversationProvider = conversationProvider,
                     conversationController = conversationController,
                 )

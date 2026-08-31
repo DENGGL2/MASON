@@ -3,6 +3,7 @@ package com.denggl2.mason.connector
 import com.denggl2.mason.protocol.CodexOwnership
 import com.denggl2.mason.protocol.RemoteAttachmentDescriptor
 import com.denggl2.mason.protocol.RemoteAttachmentKind
+import com.denggl2.mason.protocol.RemoteApprovalRequest
 import com.denggl2.mason.protocol.RemoteComposerOptions
 import com.denggl2.mason.protocol.RemoteConversationActivity
 import com.denggl2.mason.protocol.RemoteConversationActivityKind
@@ -29,6 +30,7 @@ import java.nio.file.Path
 import java.time.Instant
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -91,6 +93,12 @@ interface RemoteConversationController {
         throw RemoteConversationControlUnavailableException()
     suspend fun archive(threadId: String): RemoteConversationSummary =
         throw RemoteConversationControlUnavailableException()
+    suspend fun pendingApprovals(threadId: String): List<RemoteApprovalRequest> = emptyList()
+    suspend fun resolveApproval(
+        threadId: String,
+        requestId: String,
+        decision: String,
+    ): RemoteExecutionResult = throw RemoteConversationControlUnavailableException()
 }
 
 class RemoteConversationService(
@@ -101,9 +109,14 @@ class RemoteConversationService(
     workingDirectory: Path = Path.of(System.getProperty("user.dir")),
 ) : RemoteConversationProvider, RemoteConversationController {
     private val runtime = RemoteConversationRuntime()
+    private val pendingApprovals = ConcurrentHashMap<String, PendingRemoteApproval>()
     private val attachmentStore = RemoteAttachmentStore(attachmentRoot)
     private val connectorWorkingDirectory = workingDirectory.toAbsolutePath().normalize()
     private val managedAttachmentRoot = attachmentRoot
+        .toAbsolutePath()
+        .normalize()
+        .let { root -> runCatching(root::toRealPath).getOrDefault(root) }
+    private val systemTempRoot = Path.of(System.getProperty("java.io.tmpdir") ?: ".")
         .toAbsolutePath()
         .normalize()
         .let { root -> runCatching(root::toRealPath).getOrDefault(root) }
@@ -146,16 +159,22 @@ class RemoteConversationService(
 
     override suspend fun readConversation(threadId: String): RemoteConversationDetail {
         require(threadId.isNotBlank()) { "Thread ID is required" }
-        val response = api.readThread(threadId = threadId, includeTurns = true).asObject()
+        val response = try {
+            readThreadWithStartupRetry(threadId)
+        } catch (error: CodexRpcException) {
+            if (!error.isTemporarilyEmptyThreadRead()) throw error
+            return runtimeDetail(threadId) ?: throw error
+        }
         val thread = response["thread"].asObjectOrNull() ?: response
-        val summary = thread.toSummary()
-            ?: throw RemoteConversationNotFoundException(threadId)
         val turns = thread["turns"].asArrayOrEmpty()
         val persistedExecution = turns.lastOrNull()
             ?.asObjectOrNull()
             ?.toExecutionSnapshot()
+        runtime.reconcileWithHistory(threadId, persistedExecution)
+        val summary = thread.toSummary()
+            ?: throw RemoteConversationNotFoundException(threadId)
         val liveExecution = runtime.snapshot(threadId)
-        val execution = liveExecution ?: persistedExecution ?: RemoteExecutionSnapshot()
+        val execution = selectExecution(liveExecution, persistedExecution) ?: RemoteExecutionSnapshot()
         val persistedActivities = persistedExecution?.activities.orEmpty()
         val activities = when {
             liveExecution == null -> persistedActivities
@@ -193,10 +212,56 @@ class RemoteConversationService(
             messages = allMessages.takeLast(messageLimit),
             hasEarlierMessages = allMessages.size > messageLimit,
             executionStatus = execution.status,
-            activeTurnId = execution.turnId.takeIf { execution.status == RemoteExecutionStatus.RUNNING },
+            activeTurnId = execution.turnId.takeIf {
+                execution.status == RemoteExecutionStatus.RUNNING ||
+                    execution.status == RemoteExecutionStatus.WAITING_FOR_APPROVAL
+            },
             activeActivityTitle = visibleActivity?.title
                 ?: execution.activeActivityTitle.takeIf(String::isNotBlank),
             activeActivityText = (visibleActivity?.text ?: execution.activeActivityText)
+                ?.cleanPreview()
+                ?.take(MAX_PREVIEW_LENGTH)
+                ?.takeIf(String::isNotBlank),
+            activities = activities,
+        )
+    }
+
+    private suspend fun readThreadWithStartupRetry(threadId: String): JsonObject {
+        var lastError: CodexRpcException? = null
+        repeat(EMPTY_THREAD_READ_ATTEMPTS) { attempt ->
+            try {
+                return api.readThread(threadId = threadId, includeTurns = true).asObject()
+            } catch (error: CodexRpcException) {
+                if (!error.isTemporarilyEmptyThreadRead()) throw error
+                lastError = error
+                if (attempt < EMPTY_THREAD_READ_ATTEMPTS - 1) {
+                    delay(EMPTY_THREAD_READ_RETRY_DELAY_MILLIS)
+                }
+            }
+        }
+        throw checkNotNull(lastError)
+    }
+
+    private fun runtimeDetail(threadId: String): RemoteConversationDetail? {
+        val snapshot = runtime.snapshot(threadId) ?: return null
+        val conversation = snapshot.conversation ?: return null
+        val activities = snapshot.activities
+        val visibleActivity = activities.lastOrNull {
+            it.status == RemoteConversationActivityStatus.RUNNING
+        } ?: activities.lastOrNull()
+        val messages = snapshot.messages
+        return RemoteConversationDetail(
+            conversation = conversation,
+            messages = messages.takeLast(messageLimit),
+            hasEarlierMessages = messages.size > messageLimit,
+            executionStatus = snapshot.status,
+            activeTurnId = snapshot.turnId.takeIf {
+                snapshot.status == RemoteExecutionStatus.RUNNING ||
+                    snapshot.status == RemoteExecutionStatus.WAITING_FOR_APPROVAL
+            },
+            activeActivityTitle = visibleActivity?.title
+                ?: snapshot.activeActivityTitle.takeIf(String::isNotBlank),
+            activeActivityText = (visibleActivity?.text ?: snapshot.activeActivityText)
                 ?.cleanPreview()
                 ?.take(MAX_PREVIEW_LENGTH)
                 ?.takeIf(String::isNotBlank),
@@ -368,6 +433,31 @@ class RemoteConversationService(
         val thread = startedThread["thread"].asObjectOrNull() ?: startedThread
         val threadId = thread.string("id")
             ?: throw IllegalStateException("Codex thread/start did not return a thread ID")
+        val initialConversation = (thread.toSummary()
+            ?: RemoteConversationSummary(
+                threadId = threadId,
+                title = text.lineSequence().firstOrNull().orEmpty()
+                    .ifBlank { "未命名对话" }
+                    .take(MAX_TITLE_LENGTH),
+                projectPath = projectPath,
+                ownership = CodexOwnership.EXTERNAL_HISTORY_ONLY,
+            )).copy(
+                preview = thread.string("preview").orEmpty()
+                    .ifBlank { text.cleanPreview() }
+                    .take(MAX_PREVIEW_LENGTH),
+                projectPath = thread.string("cwd")?.takeIf(String::isNotBlank) ?: projectPath,
+                executionStatus = RemoteExecutionStatus.RUNNING,
+            )
+        runtime.seedConversation(
+            threadId = threadId,
+            conversation = initialConversation,
+            initialMessages = listOf(
+                RemoteConversationMessage(
+                    role = RemoteConversationRole.USER,
+                    text = text,
+                ),
+            ),
+        )
         val startedTurn = controlApi.startTurn(
             threadId = threadId,
             input = buildTurnInput(text, emptyList(), null),
@@ -459,9 +549,10 @@ class RemoteConversationService(
         }
         val controlApi = api as? CodexRemoteControlApi
             ?: throw RemoteConversationControlUnavailableException()
-        val currentExecution = runtime.snapshot(threadId)
-            ?: readLatestExecution(threadId)
-        if (currentExecution.status == RemoteExecutionStatus.RUNNING) {
+        val currentExecution = readReconciledExecution(threadId)
+        if (currentExecution.status == RemoteExecutionStatus.RUNNING ||
+            currentExecution.status == RemoteExecutionStatus.WAITING_FOR_APPROVAL
+        ) {
             throw RemoteConversationBusyException(threadId)
         }
 
@@ -532,9 +623,9 @@ class RemoteConversationService(
         require(threadId.isNotBlank()) { "Thread ID is required" }
         val controlApi = api as? CodexRemoteControlApi
             ?: throw RemoteConversationControlUnavailableException()
-        val execution = runtime.snapshot(threadId)
-            ?.takeIf { it.status == RemoteExecutionStatus.RUNNING }
-            ?: readLatestExecution(threadId).takeIf { it.status == RemoteExecutionStatus.RUNNING }
+        val execution = readReconciledExecution(threadId).takeIf {
+            it.status == RemoteExecutionStatus.RUNNING || it.status == RemoteExecutionStatus.WAITING_FOR_APPROVAL
+        }
             ?: throw RemoteConversationNotRunningException(threadId)
         val turnId = execution.turnId ?: throw RemoteConversationNotRunningException(threadId)
         controlApi.interruptTurn(threadId, turnId)
@@ -567,8 +658,59 @@ class RemoteConversationService(
         return summary
     }
 
+    override suspend fun pendingApprovals(threadId: String): List<RemoteApprovalRequest> = pendingApprovals.values
+        .filter { it.threadId == threadId }
+        .map(PendingRemoteApproval::payload)
+        .sortedBy(RemoteApprovalRequest::requestId)
+
+    override suspend fun resolveApproval(
+        threadId: String,
+        requestId: String,
+        decision: String,
+    ): RemoteExecutionResult {
+        require(decision in APPROVAL_DECISIONS) { "Unsupported approval decision" }
+        val key = approvalKey(threadId, requestId)
+        val pending = pendingApprovals[key] ?: throw RemoteApprovalNotFoundException()
+        val controlApi = api as? CodexRemoteControlApi
+            ?: throw RemoteConversationControlUnavailableException()
+        controlApi.resolveServerRequest(
+            request = pending.request,
+            result = buildJsonObject { put("decision", decision) },
+        )
+        pendingApprovals.remove(key, pending)
+        runtime.markApprovalResolved(threadId, pending.request.params.turnId())
+        return RemoteExecutionResult(
+            threadId = threadId,
+            turnId = pending.request.params.turnId(),
+            status = RemoteExecutionStatus.RUNNING,
+        )
+    }
+
     fun record(notification: CodexNotification) {
         runtime.record(notification)
+    }
+
+    fun record(request: CodexServerRequest) {
+        println(
+            "MASON approval record method=${request.method} id=${request.id} " +
+                "threadId=${request.params.threadId() ?: "?"}",
+        )
+        if (request.method !in APPROVAL_METHODS) return
+        val threadId = request.params.threadId() ?: return
+        val pending = PendingRemoteApproval(
+            threadId = threadId,
+            request = request,
+            payload = RemoteApprovalRequest(
+                threadId = threadId,
+                requestId = request.id.toString(),
+                method = request.method,
+                title = request.method.approvalTitle(),
+                detail = request.params.approvalDetail(),
+                params = request.params,
+            ),
+        )
+        pendingApprovals[approvalKey(threadId, pending.payload.requestId)] = pending
+        runtime.markApprovalRequested(threadId, request.params.turnId())
     }
 
     private suspend fun readLatestExecution(threadId: String): RemoteExecutionSnapshot {
@@ -582,16 +724,23 @@ class RemoteConversationService(
             ?: RemoteExecutionSnapshot()
     }
 
+    private suspend fun readReconciledExecution(threadId: String): RemoteExecutionSnapshot {
+        val persisted = readLatestExecution(threadId)
+        runtime.reconcileWithHistory(threadId, persisted)
+        return selectExecution(runtime.snapshot(threadId), persisted) ?: persisted
+    }
+
     private fun JsonObject.toSummary(): RemoteConversationSummary? {
         val threadId = string("id") ?: string("threadId") ?: return null
         val preview = string("preview").orEmpty().cleanPreview()
         val explicitTitle = string("name").orEmpty().trim()
-        val liveExecution = runtime.snapshot(threadId)
         val persistedExecution = this["turns"]
             .asArrayOrEmpty()
             .lastOrNull()
             ?.asObjectOrNull()
             ?.toExecutionSnapshot()
+        runtime.reconcileWithHistory(threadId, persistedExecution)
+        val execution = selectExecution(runtime.snapshot(threadId), persistedExecution)
         return RemoteConversationSummary(
             threadId = threadId,
             title = explicitTitle.ifBlank { preview.lineSequence().firstOrNull().orEmpty() }
@@ -603,10 +752,9 @@ class RemoteConversationService(
             ownership = store.sessionForThread(threadId)?.binding?.ownership
                 ?: CodexOwnership.EXTERNAL_HISTORY_ONLY,
             isPinned = boolean("isPinned") ?: boolean("is_pinned") ?: false,
-            executionStatus = liveExecution?.status
-                ?: persistedExecution?.status
+            executionStatus = execution?.status
                 ?: listExecutionStatus(),
-            latestCompletionId = liveExecution?.latestCompletionId
+            latestCompletionId = execution?.latestCompletionId
                 ?: persistedExecution?.latestCompletionId,
         )
     }
@@ -641,7 +789,7 @@ class RemoteConversationService(
                 attachmentPaths = attachmentPaths,
                 projectRoot = projectRoot,
             )
-            val message = projectMessage(item)
+            val message = projectMessage(item, itemAttachments)
             when {
                 message != null -> {
                     messages += message.copy(
@@ -661,12 +809,21 @@ class RemoteConversationService(
                     attachments = (message.attachments + pendingAttachments)
                         .distinctBy(RemoteConversationAttachment::attachmentId),
                 )
+            } else {
+                messages += RemoteConversationMessage(
+                    role = RemoteConversationRole.ASSISTANT,
+                    text = "",
+                    attachments = pendingAttachments.distinctBy(RemoteConversationAttachment::attachmentId),
+                )
             }
         }
         return messages
     }
 
-    private fun projectMessage(item: JsonObject): RemoteConversationMessage? {
+    private fun projectMessage(
+        item: JsonObject,
+        attachments: List<RemoteConversationAttachment>,
+    ): RemoteConversationMessage? {
         val type = item.string("type").orEmpty().lowercase()
         if (
             (type == "agentmessage" || type.contains("assistant")) &&
@@ -681,8 +838,8 @@ class RemoteConversationService(
             item.string("role").equals("assistant", ignoreCase = true) -> RemoteConversationRole.ASSISTANT
             else -> return null
         }
-        val text = extractText(item).trim()
-        if (text.isBlank()) return null
+        val text = extractText(item).removeRemoteAttachmentMentions()
+        if (text.isBlank() && attachments.isEmpty()) return null
         return RemoteConversationMessage(role = role, text = text)
     }
 
@@ -693,7 +850,21 @@ class RemoteConversationService(
         val type = string("type").orEmpty().lowercase()
         val candidatePaths = buildList {
             when (type) {
-                "imagegeneration" -> string("savedPath")?.let(::add)
+                "imagegeneration", "image_generation" -> {
+                    sequenceOf("savedPath", "saved_path", "path", "outputPath", "output_path")
+                        .mapNotNull(::string)
+                        .forEach(::add)
+                    this@remoteConversationAttachments["result"]
+                        ?.asPrimitiveString()
+                        ?.let(::add)
+                    this@remoteConversationAttachments["result"]
+                        .asObjectOrNull()
+                        ?.let { result ->
+                            sequenceOf("savedPath", "saved_path", "path", "outputPath", "output_path")
+                                .mapNotNull { key -> result.string(key) }
+                                .forEach(::add)
+                        }
+                }
                 "dynamictoolcall" -> this@remoteConversationAttachments["contentItems"]
                     .asArrayOrEmpty()
                     .mapNotNull { content ->
@@ -719,10 +890,27 @@ class RemoteConversationService(
     }
 
     private fun extractExplicitAttachmentPaths(text: String): List<String> =
-        REMOTE_ATTACHMENT_MARKER.findAll(text)
-            .map { match -> match.groupValues[1].trim().trim('"', '\'') }
+        (REMOTE_ATTACHMENT_MARKER.findAll(text)
+            .map { match -> match.groupValues[1].trim().trim('"', '\'') } +
+            CODEX_FILE_MENTION_MARKER.findAll(text)
+                .map { match -> match.groupValues[1].trim().trim('"', '\'') } +
+            MARKDOWN_LOCAL_ATTACHMENT_MARKER.findAll(text)
+                .map { match -> match.groupValues[1].trim().trim('"', '\'') })
             .filter(String::isNotBlank)
+            .distinct()
             .toList()
+
+    private fun String.removeRemoteAttachmentMentions(): String =
+        lineSequence()
+            .filterNot { line ->
+                REMOTE_ATTACHMENT_MARKER.matches(line) ||
+                    CODEX_FILE_MENTION_HEADER.matches(line) ||
+                    CODEX_FILE_MENTION_MARKER.matches(line)
+            }
+            .joinToString("\n")
+            .replace(MARKDOWN_LOCAL_ATTACHMENT_MARKER, "")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
 
     private fun normalizeConversationAttachmentPath(value: String, projectRoot: Path?): Path? = runCatching {
         val base = projectRoot ?: connectorWorkingDirectory
@@ -734,7 +922,9 @@ class RemoteConversationService(
             ?.toRealPath()
             ?.takeIf { path ->
                 (projectRoot != null && path.startsWith(projectRoot)) ||
-                    path.startsWith(managedAttachmentRoot)
+                    path.startsWith(managedAttachmentRoot) ||
+                    (path.startsWith(systemTempRoot) &&
+                        path.fileName?.toString()?.isCodexClipboardFile() == true)
             }
     }.getOrNull()
 
@@ -896,6 +1086,18 @@ private val REMOTE_ATTACHMENT_MARKER = Regex(
     """(?im)^(?:图片|文件|产出|附件|image|file|artifact|attachment)\s*[：:]\s*(.+)$""",
 )
 
+private val CODEX_FILE_MENTION_HEADER = Regex(
+    """(?im)^#\s+Files mentioned by the user:\s*$""",
+)
+
+private val CODEX_FILE_MENTION_MARKER = Regex(
+    """(?im)^##\s+[^:\r\n]+\.(?:png|jpe?g|webp|gif|svg|bmp|heic|heif|avif|ico)\s*:\s*(.+?)\s*$""",
+)
+
+private val MARKDOWN_LOCAL_ATTACHMENT_MARKER = Regex(
+    """(?im)(?:!\[[^\]]*\]|\[[^\]]*\])\(\s*(?:file://)?((?:[A-Za-z]:[\\/]|/)[^)\r\n]+?)\s*\)""",
+)
+
 private fun conversationAttachmentId(path: Path): String {
     val digest = java.security.MessageDigest.getInstance("SHA-256")
         .digest(path.toString().lowercase().toByteArray(Charsets.UTF_8))
@@ -906,6 +1108,8 @@ private fun conversationAttachmentId(path: Path): String {
 
 private fun String.isRemoteImageFile(): Boolean = substringAfterLast('.', "")
     .lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "svg", "bmp", "heic", "heif", "avif", "ico")
+
+private fun String.isCodexClipboardFile(): Boolean = lowercase().startsWith("codex-clipboard-")
 
 private fun String.remoteMimeType(): String = when (substringAfterLast('.', "").lowercase()) {
     "txt", "log" -> "text/plain"
@@ -952,11 +1156,19 @@ class RemoteConversationAttachmentNotFoundException :
 private data class RemoteExecutionSnapshot(
     val turnId: String? = null,
     val status: RemoteExecutionStatus = RemoteExecutionStatus.IDLE,
+    val conversation: RemoteConversationSummary? = null,
+    val messages: List<RemoteConversationMessage> = emptyList(),
     val partialAssistantText: String = "",
     val activeActivityTitle: String = "",
     val activeActivityText: String = "",
     val activities: List<RemoteConversationActivity> = emptyList(),
     val latestCompletionId: String? = null,
+)
+
+private data class PendingRemoteApproval(
+    val threadId: String,
+    val request: CodexServerRequest,
+    val payload: RemoteApprovalRequest,
 )
 
 private class RemoteConversationRuntime {
@@ -966,19 +1178,88 @@ private class RemoteConversationRuntime {
 
     @Synchronized
     fun markStarted(threadId: String, turnId: String) {
-        states[threadId] = (states[threadId] ?: RemoteExecutionSnapshot()).copy(
+        val current = states[threadId] ?: RemoteExecutionSnapshot()
+        val status = if (current.status == RemoteExecutionStatus.WAITING_FOR_APPROVAL) {
+            RemoteExecutionStatus.WAITING_FOR_APPROVAL
+        } else {
+            RemoteExecutionStatus.RUNNING
+        }
+        states[threadId] = current.copy(
             turnId = turnId,
-            status = RemoteExecutionStatus.RUNNING,
+            status = status,
             partialAssistantText = "",
-            activeActivityTitle = "正在处理",
-            activeActivityText = "正在处理请求",
+            activeActivityTitle = if (status == RemoteExecutionStatus.WAITING_FOR_APPROVAL) {
+                "等待确认"
+            } else {
+                "正在处理"
+            },
+            activeActivityText = if (status == RemoteExecutionStatus.WAITING_FOR_APPROVAL) {
+                "等待手机确认后继续"
+            } else {
+                "正在处理请求"
+            },
             activities = emptyList(),
         )
-        recordChange(threadId, turnId, RemoteExecutionStatus.RUNNING)
+        if (status != current.status) recordChange(threadId, turnId, status)
+    }
+
+    @Synchronized
+    fun seedConversation(
+        threadId: String,
+        conversation: RemoteConversationSummary,
+        initialMessages: List<RemoteConversationMessage>,
+    ) {
+        val current = states[threadId] ?: RemoteExecutionSnapshot()
+        states[threadId] = current.copy(
+            conversation = conversation,
+            messages = initialMessages,
+        )
+    }
+
+    @Synchronized
+    fun markApprovalRequested(threadId: String, turnId: String?) {
+        val current = states[threadId] ?: RemoteExecutionSnapshot(turnId = turnId)
+        states[threadId] = current.copy(
+            turnId = turnId ?: current.turnId,
+            status = RemoteExecutionStatus.WAITING_FOR_APPROVAL,
+            activeActivityTitle = "等待确认",
+            activeActivityText = "等待手机确认后继续",
+        )
+        recordChange(threadId, turnId ?: current.turnId, RemoteExecutionStatus.WAITING_FOR_APPROVAL)
+    }
+
+    @Synchronized
+    fun markApprovalResolved(threadId: String, turnId: String?) {
+        val current = states[threadId] ?: RemoteExecutionSnapshot(turnId = turnId)
+        states[threadId] = current.copy(
+            turnId = turnId ?: current.turnId,
+            status = RemoteExecutionStatus.RUNNING,
+            activeActivityTitle = "正在处理",
+            activeActivityText = "已收到确认，继续执行",
+        )
+        recordChange(threadId, turnId ?: current.turnId, RemoteExecutionStatus.RUNNING)
     }
 
     @Synchronized
     fun snapshot(threadId: String): RemoteExecutionSnapshot? = states[threadId]
+
+    @Synchronized
+    fun reconcileWithHistory(threadId: String, persisted: RemoteExecutionSnapshot?) {
+        if (persisted == null || persisted.status !in TERMINAL_EXECUTION_STATUSES) return
+        val current = states[threadId] ?: return
+        if (current.turnId != persisted.turnId) return
+        if (
+            current.status == persisted.status &&
+            current.latestCompletionId == persisted.latestCompletionId
+        ) return
+        states[threadId] = current.copy(
+            turnId = persisted.turnId,
+            status = persisted.status,
+            activities = mergeActivities(current.activities, persisted.activities),
+            latestCompletionId = persisted.latestCompletionId ?: current.latestCompletionId,
+        )
+        recordChange(threadId, persisted.turnId, persisted.status)
+    }
 
     fun revision(): Long = executionRevision.get()
 
@@ -1077,6 +1358,20 @@ private class RemoteConversationRuntime {
         )
         const val MAX_EXECUTION_CHANGES = 256
     }
+}
+
+private fun selectExecution(
+    live: RemoteExecutionSnapshot?,
+    persisted: RemoteExecutionSnapshot?,
+): RemoteExecutionSnapshot? = when {
+    live == null -> persisted
+    persisted == null -> live
+    persisted.turnId == live.turnId && persisted.status in TERMINAL_EXECUTION_STATUSES ->
+        persisted.copy(
+            conversation = live.conversation ?: persisted.conversation,
+            messages = if (live.messages.isNotEmpty()) live.messages else persisted.messages,
+        )
+    else -> live
 }
 
 private data class RemoteActivitySummary(
@@ -1361,6 +1656,8 @@ private fun String?.toActivityStatus(completed: Boolean = true): RemoteConversat
 
 private const val MAX_REMOTE_ACTIVITIES = 100
 private const val MAX_ACTIVITY_TEXT_LENGTH = 4_000
+private const val EMPTY_THREAD_READ_ATTEMPTS = 4
+private const val EMPTY_THREAD_READ_RETRY_DELAY_MILLIS = 150L
 
 private fun String?.toRemoteExecutionStatus(): RemoteExecutionStatus = when (this?.lowercase()) {
     "active", "inprogress", "in_progress", "running" -> RemoteExecutionStatus.RUNNING
@@ -1369,6 +1666,31 @@ private fun String?.toRemoteExecutionStatus(): RemoteExecutionStatus = when (thi
     "failed" -> RemoteExecutionStatus.FAILED
     else -> RemoteExecutionStatus.IDLE
 }
+
+private fun String.approvalTitle(): String = when (this) {
+    "item/commandExecution/requestApproval" -> "电脑请求执行命令"
+    "item/fileChange/requestApproval" -> "电脑请求修改文件"
+    "item/permissions/requestApproval" -> "电脑请求扩大权限"
+    "item/tool/requestUserInput" -> "电脑需要你的确认"
+    else -> "电脑请求确认"
+}
+
+private fun JsonObject.approvalDetail(): String = listOfNotNull(
+    string("command")?.takeIf(String::isNotBlank),
+    string("reason")?.takeIf(String::isNotBlank),
+    this["item"].asObjectOrNull()?.string("command")?.takeIf(String::isNotBlank),
+).firstOrNull().orEmpty()
+
+private fun approvalKey(threadId: String, requestId: String): String = "$threadId:$requestId"
+
+private val APPROVAL_METHODS = setOf(
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+    "item/permissions/requestApproval",
+    "item/tool/requestUserInput",
+)
+
+private val APPROVAL_DECISIONS = setOf("accept", "acceptForSession", "decline", "cancel")
 
 private val TERMINAL_EXECUTION_STATUSES = setOf(
     RemoteExecutionStatus.COMPLETED,
@@ -1404,6 +1726,9 @@ class RemoteConversationBusyException(threadId: String) :
 
 class RemoteConversationNotRunningException(threadId: String) :
     IllegalStateException("Codex thread does not have an active turn: $threadId")
+
+class RemoteApprovalNotFoundException :
+    IllegalArgumentException("Approval request is no longer pending")
 
 private fun JsonElement?.asObjectOrNull(): JsonObject? = this as? JsonObject
 

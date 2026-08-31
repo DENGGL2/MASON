@@ -21,6 +21,32 @@ Mason is an Android AI system assistant. It provides a chat interface backed by 
 - `crash-guard`: Crash and ANR capture.
 - `protocol`: Shared Kotlin Multiplatform models and protocol envelopes.
 - `codex-connector`: Windows/JVM bridge for managed Codex App Server sessions.
+
+## Remote pairing
+
+After deploying the Windows Connector, run `codex-connector.bat pair`. The
+Connector asks whether to use Cloudflare Tunnel or WebRTC Direct, starts the
+selected transport, generates a short-lived QR code, and opens the QR image.
+The mobile app must select the same transport before scanning.
+
+The intended end-to-end flow is:
+
+1. Install the `cloud code` APK from the companion mobile project.
+2. Run `codex-connector.bat pair` on Windows.
+3. Choose Cloudflare Tunnel or WebRTC Direct in the Agent.
+4. Choose the same mode in the APK, tap `开始`, scan the displayed QR code,
+   and confirm pairing.
+
+Cloudflare Quick Tunnel is the no-domain/no-token test path, but requires
+`cloudflared.exe` on the Windows machine and its URL changes after restart.
+WebRTC requires an HTTPS signaling endpoint. In both modes the QR offer is
+short-lived and signed; the phone stores the authorized device relationship,
+not the one-time QR token.
+
+The direct commands remain available for automation:
+
+- `pair-cloudflare <port> <qr-output.png> [state-directory] [cloudflared-path]`
+- `pair-webrtc <port> <qr-output.png> <signaling-endpoint> [state-directory]`
 - `llama-runtime`: Android llama.cpp runtime used by MiniCPM5 GGUF models.
 - `build-logic`: Shared Gradle convention plugins.
 

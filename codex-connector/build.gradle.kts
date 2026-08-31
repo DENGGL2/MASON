@@ -17,6 +17,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.jna.platform)
+    implementation(libs.webrtc.java)
+    runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.14.0:windows-x86_64")
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.content.negotiation)

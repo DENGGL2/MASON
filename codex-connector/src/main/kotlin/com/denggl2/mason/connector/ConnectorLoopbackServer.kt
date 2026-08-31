@@ -8,6 +8,7 @@ import com.denggl2.mason.protocol.MasonProtocolJson
 import com.denggl2.mason.protocol.PairingRequest
 import com.denggl2.mason.protocol.ProtocolErrorResponse
 import com.denggl2.mason.protocol.RemoteAttachmentKind
+import com.denggl2.mason.protocol.RemoteApprovalResolutionRequest
 import com.denggl2.mason.protocol.RemoteConversationCreateRequest
 import com.denggl2.mason.protocol.RemoteMessageRequest
 import com.denggl2.mason.protocol.SessionInfo
@@ -288,6 +289,33 @@ internal fun Application.configurePairingHttpApi(
                     deviceId = principal.deviceId,
                     threadId = call.requiredThreadId(),
                     request = call.receive<RemoteMessageRequest>(),
+                )
+            }
+        }
+        get("/v1/conversations/{threadId}/approvals") {
+            call.respondSafely {
+                authService.authenticateSession(
+                    sessionToken = call.bearerToken(),
+                    requiredPermission = DevicePermission.RESOLVE_APPROVALS,
+                )
+                val controller = conversationController
+                    ?: throw RemoteConversationControlUnavailableException()
+                controller.pendingApprovals(call.requiredThreadId())
+            }
+        }
+        post("/v1/conversations/{threadId}/approvals/{requestId}") {
+            call.respondSafely {
+                authService.authenticateSession(
+                    sessionToken = call.bearerToken(),
+                    requiredPermission = DevicePermission.RESOLVE_APPROVALS,
+                )
+                val controller = conversationController
+                    ?: throw RemoteConversationControlUnavailableException()
+                controller.resolveApproval(
+                    threadId = call.requiredThreadId(),
+                    requestId = call.parameters["requestId"]?.takeIf(String::isNotBlank)
+                        ?: throw IllegalArgumentException("Approval request ID is required"),
+                    decision = call.receive<RemoteApprovalResolutionRequest>().decision,
                 )
             }
         }

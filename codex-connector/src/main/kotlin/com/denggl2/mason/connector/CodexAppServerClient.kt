@@ -90,9 +90,11 @@ class CodexAppServerClient(
             })
             val response = deferred.await()
             response["error"]?.jsonObject?.let { error ->
+                val message = error["message"]?.jsonPrimitive?.contentOrNull ?: "Codex RPC failed"
+                println("MASON RPC failed method=$method id=$id code=${error["code"]} message=$message")
                 throw CodexRpcException(
                     code = error["code"]?.jsonPrimitive?.intOrNull,
-                    message = error["message"]?.jsonPrimitive?.contentOrNull ?: "Codex RPC failed",
+                    message = message,
                 )
             }
             return response["result"] ?: JsonObject(emptyMap())
@@ -124,7 +126,9 @@ class CodexAppServerClient(
     private suspend fun route(message: JsonObject) {
         when (val routed = CodexWireMessageRouter.classify(message)) {
             is CodexWireMessage.ServerRequest -> serverRequestChannel.send(
-                CodexServerRequest(routed.id, routed.method, routed.params),
+                CodexServerRequest(routed.id, routed.method, routed.params).also {
+                    println("MASON server request method=${routed.method} id=${routed.id}")
+                },
             )
             is CodexWireMessage.Notification -> notificationFlow.emit(
                 CodexNotification(routed.method, routed.params),

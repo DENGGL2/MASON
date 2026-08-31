@@ -17,6 +17,16 @@ import kotlin.test.assertNull
 
 class ConnectorStateStoreTest {
     @Test
+    fun webRtcResumeOfferIdSurvivesConnectorRestart() = withStatePath { path ->
+        val first = ConnectorStateStore(path) { "device-1" }
+        val offerId = first.webRtcResumeOfferId()
+
+        val restarted = ConnectorStateStore(path) { "unexpected-device" }
+
+        assertEquals(offerId, restarted.webRtcResumeOfferId())
+    }
+
+    @Test
     fun restartRestoresBindingCursorAndDeduplicatesStoredEvent() = withStatePath { path ->
         val first = ConnectorStateStore(path) { "device-1" }
         first.register(binding())

@@ -8,7 +8,9 @@ import com.denggl2.mason.protocol.DevicePermission
 import com.denggl2.mason.protocol.PairingOffer
 import com.denggl2.mason.protocol.PairingRequest
 import com.denggl2.mason.protocol.PairingResult
+import com.denggl2.mason.protocol.RemoteAgentKind
 import com.denggl2.mason.protocol.SessionGrant
+import com.denggl2.mason.protocol.TransportMode
 import com.denggl2.mason.protocol.signingPayload
 import com.denggl2.mason.protocol.validate
 import java.security.AlgorithmParameters
@@ -127,7 +129,11 @@ class PairingAuthService(
         }
     }
 
-    fun createPairingOffer(ttlMillis: Long = DEFAULT_PAIRING_TTL_MILLIS): PairingOffer = synchronized(lock) {
+    fun createPairingOffer(
+        ttlMillis: Long = DEFAULT_PAIRING_TTL_MILLIS,
+        transportMode: TransportMode = TransportMode.LOCAL_TLS,
+        agentKind: RemoteAgentKind = RemoteAgentKind.MASON_CODEX,
+    ): PairingOffer = synchronized(lock) {
         require(ttlMillis > 0) { "Pairing TTL must be positive" }
         val issuedAt = now()
         val pairingId = newId()
@@ -140,10 +146,14 @@ class PairingAuthService(
             oneTimeToken = token,
             issuedAt = issuedAt,
             expiresAt = issuedAt + ttlMillis,
+            transportMode = transportMode,
+            agentKind = agentKind,
         )
         pairingOffers[pairingId] = PendingPairing(
             tokenDigest = connectorSha256Bytes(token.toByteArray(Charsets.UTF_8)),
             expiresAt = offer.expiresAt,
+            transportMode = transportMode,
+            agentKind = agentKind,
         )
         offer
     }
@@ -152,6 +162,9 @@ class PairingAuthService(
         if (request.validate().isNotEmpty()) fail(PairingAuthErrorCode.INVALID_REQUEST, "Invalid pairing request")
         if (request.connectorDeviceId != store.deviceId) {
             fail(PairingAuthErrorCode.CONNECTOR_MISMATCH, "Pairing request targets another Connector")
+        }
+        if (request.offerId != request.pairingId) {
+            fail(PairingAuthErrorCode.INVALID_REQUEST, "Pairing offer ID does not match pairing ID")
         }
         val pending = pairingOffers[request.pairingId]
             ?: fail(PairingAuthErrorCode.PAIRING_NOT_FOUND, "Pairing offer does not exist")
@@ -162,6 +175,15 @@ class PairingAuthService(
         val suppliedDigest = connectorSha256Bytes(request.oneTimeToken.toByteArray(Charsets.UTF_8))
         if (!MessageDigest.isEqual(pending.tokenDigest, suppliedDigest)) {
             fail(PairingAuthErrorCode.INVALID_PAIRING_TOKEN, "Pairing token is invalid")
+        }
+        if (request.transportMode != pending.transportMode) {
+            fail(PairingAuthErrorCode.INVALID_REQUEST, "Pairing transport mode does not match the offer")
+        }
+        if (request.agentKind != pending.agentKind) {
+            fail(PairingAuthErrorCode.INVALID_REQUEST, "Pairing agent does not match the offer")
+        }
+        if (request.nonce != request.oneTimeToken) {
+            fail(PairingAuthErrorCode.INVALID_REQUEST, "Pairing nonce does not match the one-time token")
         }
         if (request.keyAlgorithm != DeviceKeyAlgorithm.ECDSA_P256_SHA256) {
             fail(PairingAuthErrorCode.INVALID_PUBLIC_KEY, "Unsupported device key algorithm")
@@ -324,6 +346,8 @@ class PairingAuthService(
     private data class PendingPairing(
         val tokenDigest: ByteArray,
         val expiresAt: Long,
+        val transportMode: TransportMode,
+        val agentKind: RemoteAgentKind,
     )
 
     companion object {

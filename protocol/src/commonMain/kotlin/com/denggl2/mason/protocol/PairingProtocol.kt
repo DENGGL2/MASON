@@ -8,6 +8,44 @@ enum class DeviceKeyAlgorithm {
 }
 
 @Serializable
+enum class TransportMode {
+    LOCAL_TLS,
+    CLOUDFLARE_TUNNEL,
+    WEBRTC_DIRECT,
+}
+
+@Serializable
+enum class RemoteAgentKind {
+    MASON_CODEX,
+    DEEPSEEK_HARNESS,
+    CLAUDE_CODE,
+    CUSTOM,
+}
+
+@Serializable
+enum class SignalingMode {
+    CLIENT_OFFER,
+    DESKTOP_OFFER,
+}
+
+@Serializable
+data class PairingIceServer(
+    val urls: List<String> = emptyList(),
+    val username: String? = null,
+    val credential: String? = null,
+)
+
+@Serializable
+data class PairingRoute(
+    val endpoint: String? = null,
+    val signalingEndpoint: String? = null,
+    val cloudflareHostname: String? = null,
+    val stunServers: List<String> = emptyList(),
+    val turnServers: List<PairingIceServer> = emptyList(),
+    val signalingMode: SignalingMode = SignalingMode.CLIENT_OFFER,
+)
+
+@Serializable
 enum class DevicePermission {
     VIEW_SHARED_CONVERSATIONS,
     SEND_MESSAGES,
@@ -26,6 +64,12 @@ data class PairingOffer(
     val oneTimeToken: String,
     val issuedAt: Long,
     val expiresAt: Long,
+    val transportMode: TransportMode = TransportMode.LOCAL_TLS,
+    val agentKind: RemoteAgentKind = RemoteAgentKind.MASON_CODEX,
+    val offerId: String = pairingId,
+    val deviceId: String = connectorDeviceId,
+    val publicKey: String = connectorPublicKey,
+    val nonce: String = oneTimeToken,
 )
 
 @Serializable
@@ -35,6 +79,15 @@ data class PairingBootstrap(
     val endpoint: String,
     val tlsCertificateSha256: String,
     val connectorDisplayName: String = "电脑",
+    val transportMode: TransportMode = offer.transportMode,
+    val agentKind: RemoteAgentKind = offer.agentKind,
+    val deviceId: String = offer.deviceId,
+    val offerId: String = offer.offerId,
+    val publicKey: String = offer.publicKey,
+    val nonce: String = offer.nonce,
+    val expiresAt: Long = offer.expiresAt,
+    val routeBootstrap: PairingRoute = PairingRoute(endpoint = endpoint),
+    val signature: String = "",
 )
 
 @Serializable
@@ -51,6 +104,11 @@ data class PairingRequest(
     val capabilities: Set<DeviceCapability>,
     val requestedPermissions: Set<DevicePermission>,
     val signature: String,
+    val transportMode: TransportMode = TransportMode.LOCAL_TLS,
+    val agentKind: RemoteAgentKind = RemoteAgentKind.MASON_CODEX,
+    val offerId: String = pairingId,
+    val nonce: String = oneTimeToken,
+    val routeBootstrap: PairingRoute = PairingRoute(),
 )
 
 @Serializable
@@ -60,6 +118,8 @@ data class PairingResult(
     val device: Device,
     val grantedPermissions: Set<DevicePermission>,
     val pairedAt: Long,
+    /** Short-lived signaling route used only to restore this authorized device. */
+    val resumeOfferId: String? = null,
 )
 
 @Serializable
@@ -132,6 +192,24 @@ internal data class PairingSignaturePayload(
     val publicKey: String,
     val capabilities: List<String>,
     val requestedPermissions: List<String>,
+    val transportMode: String,
+    val agentKind: String,
+    val offerId: String,
+    val nonce: String,
+    val routeBootstrap: PairingRoute,
+)
+
+@Serializable
+internal data class PairingBootstrapSignaturePayload(
+    val protocolVersion: Int,
+    val transportMode: TransportMode,
+    val agentKind: RemoteAgentKind,
+    val deviceId: String,
+    val offerId: String,
+    val publicKey: String,
+    val nonce: String,
+    val expiresAt: Long,
+    val routeBootstrap: PairingRoute,
 )
 
 fun PairingRequest.signingPayload(): String = MasonProtocolJson.encode(
@@ -147,6 +225,25 @@ fun PairingRequest.signingPayload(): String = MasonProtocolJson.encode(
         publicKey = publicKey,
         capabilities = capabilities.map(DeviceCapability::name).sorted(),
         requestedPermissions = requestedPermissions.map(DevicePermission::name).sorted(),
+        transportMode = transportMode.name,
+        agentKind = agentKind.name,
+        offerId = offerId,
+        nonce = nonce,
+        routeBootstrap = routeBootstrap,
+    ),
+)
+
+fun PairingBootstrap.signingPayload(): String = MasonProtocolJson.encode(
+    PairingBootstrapSignaturePayload(
+        protocolVersion = protocolVersion,
+        transportMode = transportMode,
+        agentKind = agentKind,
+        deviceId = deviceId,
+        offerId = offerId,
+        publicKey = publicKey,
+        nonce = nonce,
+        expiresAt = offer.expiresAt,
+        routeBootstrap = routeBootstrap,
     ),
 )
 

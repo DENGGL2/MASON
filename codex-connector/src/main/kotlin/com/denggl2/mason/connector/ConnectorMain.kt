@@ -17,6 +17,10 @@ fun main(args: Array<String>) {
         "recover" -> runRecovery(args.drop(1))
         "pair-local" -> runLocalPairing(args.drop(1))
         "pair-private" -> runPrivatePairing(args.drop(1))
+        "pair" -> runInteractivePairing(args.drop(1))
+        "pair-cloudflare" -> runCloudflarePairing(args.drop(1))
+        "pair-cloudflare-named" -> runCloudflareNamedPairing(args.drop(1))
+        "pair-webrtc" -> runWebRtcPairing(args.drop(1))
         else -> printUsage()
     }
 }
@@ -100,4 +104,8 @@ private fun printUsage() {
     println("  mason-codex-connector recover <state-file> [working-directory]")
     println("  mason-codex-connector pair-local <port> <qr-output.png> [state-directory]")
     println("  mason-codex-connector pair-private <private-ipv4> <port> <qr-output.png> [state-directory]")
+    println("  mason-codex-connector pair [port] [qr-output.png] [state-directory]")
+    println("  mason-codex-connector pair-cloudflare <port> <qr-output.png> [state-directory] [cloudflared-path]")
+    println("  mason-codex-connector pair-cloudflare-named <port> <hostname> <tunnel-name-or-uuid> <qr-output.png> [state-directory] [cloudflared-path]")
+    println("  mason-codex-connector pair-webrtc <port> <qr-output.png> <signaling-endpoint> [state-directory]")
 }

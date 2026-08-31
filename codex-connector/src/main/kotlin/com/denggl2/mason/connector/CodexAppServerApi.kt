@@ -53,6 +53,11 @@ interface CodexRemoteControlApi : CodexThreadHistoryApi {
     }
 
     suspend fun interruptTurn(threadId: String, turnId: String): JsonElement
+
+    suspend fun resolveServerRequest(
+        request: CodexServerRequest,
+        result: JsonElement,
+    ): Unit = throw UnsupportedOperationException("Codex server request resolution is unavailable")
 }
 
 class CodexAppServerApi(
@@ -178,6 +183,13 @@ class CodexAppServerApi(
             put("turnId", turnId)
         },
     )
+
+    override suspend fun resolveServerRequest(
+        request: CodexServerRequest,
+        result: JsonElement,
+    ) {
+        client.resolveServerRequest(request, result)
+    }
 }
 
 private fun kotlinxString(value: String): JsonElement = kotlinx.serialization.json.JsonPrimitive(value)

@@ -30,6 +30,7 @@ import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -336,18 +337,31 @@ class RemoteConversationViewModel @Inject constructor(
         if (refreshJob?.isActive == true) return
         if (showLoading) _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
         refreshJob = viewModelScope.launch {
-            runCatching {
+            try {
                 val (client, localDeviceId) = remoteClient()
-                var lastError: Throwable? = null
-                repeat(if (showLoading && _uiState.value.detail == null) INITIAL_READ_ATTEMPTS else 1) { attempt ->
-                    runCatching {
-                        client.readConversation(deviceId = localDeviceId, threadId = threadId)
-                    }.onSuccess { return@runCatching it }
-                        .onFailure { lastError = it }
-                    if (attempt < INITIAL_READ_ATTEMPTS - 1) delay(INITIAL_READ_RETRY_MILLIS)
+                val attempts = if (showLoading && _uiState.value.detail == null) {
+                    INITIAL_READ_ATTEMPTS
+                } else {
+                    1
                 }
-                throw lastError ?: IllegalStateException("Unable to read the computer conversation")
-            }.onSuccess { detail ->
+                var lastError: Throwable? = null
+                var loadedDetail: RemoteConversationDetail? = null
+                for (attempt in 0 until attempts) {
+                    try {
+                        loadedDetail = client.readConversation(
+                            deviceId = localDeviceId,
+                            threadId = threadId,
+                        )
+                        break
+                    } catch (error: Throwable) {
+                        if (error is CancellationException) throw error
+                        lastError = error
+                        if (attempt < attempts - 1) delay(INITIAL_READ_RETRY_MILLIS)
+                    }
+                }
+                val detail = loadedDetail
+                    ?: throw lastError
+                    ?: IllegalStateException("Unable to read the computer conversation")
                 if (detail.executionStatus == RemoteExecutionStatus.COMPLETED) {
                     connectorStore.load()?.connectorDeviceId?.let { connectorDeviceId ->
                         readStore.markCompletionSeen(
@@ -356,12 +370,19 @@ class RemoteConversationViewModel @Inject constructor(
                         )
                     }
                 }
+                val state = _uiState.value
+                val completedSubmission =
+                    state.detail?.executionStatus == RemoteExecutionStatus.RUNNING &&
+                        detail.executionStatus != RemoteExecutionStatus.RUNNING
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     detail = detail,
                     errorMessage = null,
+                    isSubmitting = if (completedSubmission) false else state.isSubmitting,
+                    submittingLabel = if (completedSubmission) null else state.submittingLabel,
                 )
-            }.onFailure { error ->
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
                 val state = _uiState.value
                 _uiState.value = state.copy(
                     isLoading = false,
@@ -371,6 +392,8 @@ class RemoteConversationViewModel @Inject constructor(
                         state.errorMessage
                     },
                 )
+            } finally {
+                refreshJob = null
             }
         }
     }

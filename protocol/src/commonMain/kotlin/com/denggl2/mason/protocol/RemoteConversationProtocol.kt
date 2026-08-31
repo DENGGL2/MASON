@@ -1,6 +1,7 @@
 package com.denggl2.mason.protocol
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 @Serializable
 data class RemoteConversationSummary(
@@ -64,6 +65,7 @@ data class RemoteConversationAttachment(
 enum class RemoteExecutionStatus {
     IDLE,
     RUNNING,
+    WAITING_FOR_APPROVAL,
     COMPLETED,
     INTERRUPTED,
     FAILED,
@@ -207,4 +209,19 @@ data class RemoteExecutionResult(
     val threadId: String,
     val turnId: String? = null,
     val status: RemoteExecutionStatus,
+)
+
+@Serializable
+data class RemoteApprovalRequest(
+    val threadId: String,
+    val requestId: String,
+    val method: String,
+    val title: String,
+    val detail: String = "",
+    val params: JsonObject = JsonObject(emptyMap()),
+)
+
+@Serializable
+data class RemoteApprovalResolutionRequest(
+    val decision: String,
 )

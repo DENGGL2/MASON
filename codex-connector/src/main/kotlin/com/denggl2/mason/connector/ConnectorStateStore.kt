@@ -31,6 +31,7 @@ data class ConnectorStateSnapshot(
     val commands: Map<String, StoredCommandExecution> = emptyMap(),
     val pairedDevices: Map<String, PairedDeviceSnapshot> = emptyMap(),
     val remoteComposerSelections: Map<String, StoredRemoteComposerSelection> = emptyMap(),
+    val webRtcResumeOfferId: String? = null,
 )
 
 @Serializable
@@ -114,6 +115,12 @@ class ConnectorStateStore(
 
     val ownerId: String
         get() = lock.withLock { state.ownerId }
+
+    fun webRtcResumeOfferId(): String = lock.withLock {
+        state.webRtcResumeOfferId ?: UUID.randomUUID().toString().also { offerId ->
+            update(state.copy(webRtcResumeOfferId = offerId))
+        }
+    }
 
     fun snapshot(): ConnectorStateSnapshot = lock.withLock { state }
 

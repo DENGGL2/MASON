@@ -106,6 +106,40 @@ class RemoteConversationServiceTest {
     }
 
     @Test
+    fun persistedTerminalTurnOverridesStaleLiveExecutionInDetailAndList() = withStore { store ->
+        val api = FakeThreadHistoryApi(
+            listResponse = json(
+                """{"data":[{"id":"thread-1","preview":"测试会话","turns":[{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","phase":"final_answer","text":"已完成"}]}]}]}""",
+            ),
+            readResponse = json(
+                """
+                    {
+                        "thread": {
+                            "id":"thread-1",
+                            "preview":"测试会话",
+                            "turns":[{
+                                "id":"turn-1",
+                                "status":"completed",
+                                "items":[{"type":"agentMessage","phase":"final_answer","text":"已完成"}]
+                            }]
+                        }
+                    }
+                """.trimIndent(),
+            ),
+        )
+        val service = RemoteConversationService(api, store)
+
+        service.record(notification("turn/started", "thread-1", "turn-1", ""))
+
+        val detail = runBlocking { service.readConversation("thread-1") }
+        val summary = runBlocking { service.listConversations(limit = 3, cursor = null) }
+
+        assertEquals(RemoteExecutionStatus.COMPLETED, detail.executionStatus)
+        assertEquals(listOf("已完成"), detail.messages.map { it.text })
+        assertEquals(RemoteExecutionStatus.COMPLETED, summary.conversations.single().executionStatus)
+    }
+
+    @Test
     fun executionEventsExposeStartedAndCompletedTurnVersions() = withStore { store ->
         val service = RemoteConversationService(
             api = FakeThreadHistoryApi(
@@ -771,6 +805,166 @@ class RemoteConversationServiceTest {
     }
 
     @Test
+    fun codexFileMentionsBecomeImageAttachmentsAndHideSourcePathText() {
+        val image = Files.createTempFile("codex-clipboard-", ".png")
+        val imageBytes = byteArrayOf(0x01, 0x23, 0x45, 0x67)
+        Files.write(image, imageBytes)
+        try {
+            withStore { store ->
+                val api = FakeThreadHistoryApi(
+                    listResponse = json("{}"),
+                    readResponse = buildJsonObject {
+                        put("thread", buildJsonObject {
+                            put("id", "thread-codex-image")
+                            put("cwd", image.parent.toString())
+                            put("turns", buildJsonArray {
+                                add(buildJsonObject {
+                                    put("items", buildJsonArray {
+                                        add(buildJsonObject {
+                                            put("type", "agentMessage")
+                                            put(
+                                                "text",
+                                                """
+                                                    已收到图片。
+
+                                                    # Files mentioned by the user:
+
+                                                    ## ${image.fileName}: ${image}
+                                                """.trimIndent(),
+                                            )
+                                        })
+                                    })
+                                })
+                            })
+                        })
+                    },
+                )
+                val service = RemoteConversationService(
+                    api = api,
+                    store = store,
+                    workingDirectory = image.parent,
+                )
+
+                val message = runBlocking {
+                    service.readConversation("thread-codex-image").messages.single()
+                }
+                val attachment = message.attachments.single()
+
+                assertEquals("已收到图片。", message.text)
+                assertEquals("${image.fileName}", attachment.name)
+                assertEquals(RemoteAttachmentKind.IMAGE, attachment.kind)
+                assertEquals(imageBytes.toList(), runBlocking {
+                    service.downloadConversationAttachment(
+                        "thread-codex-image",
+                        attachment.attachmentId,
+                    ).bytes.toList()
+                })
+            }
+        } finally {
+            Files.deleteIfExists(image)
+        }
+    }
+
+    @Test
+    fun generatedMarkdownImagesBecomeImageAttachmentsAndHideSourceLink() {
+        val image = Files.createTempFile("generated-image-", ".png")
+        val imageBytes = byteArrayOf(0x11, 0x22, 0x33, 0x44)
+        Files.write(image, imageBytes)
+        try {
+            withStore { store ->
+                val api = FakeThreadHistoryApi(
+                    listResponse = json("{}"),
+                    readResponse = buildJsonObject {
+                        put("thread", buildJsonObject {
+                            put("id", "thread-generated-image")
+                            put("cwd", image.parent.toString())
+                            put("turns", buildJsonArray {
+                                add(buildJsonObject {
+                                    put("items", buildJsonArray {
+                                        add(buildJsonObject {
+                                            put("type", "agentMessage")
+                                            put(
+                                                "text",
+                                                "已生成图片：\n\n[查看生成结果](${image.toString().replace('\\', '/')})",
+                                            )
+                                        })
+                                    })
+                                })
+                            })
+                        })
+                    },
+                )
+                val service = RemoteConversationService(
+                    api = api,
+                    store = store,
+                    workingDirectory = image.parent,
+                )
+
+                val message = runBlocking {
+                    service.readConversation("thread-generated-image").messages.single()
+                }
+                val attachment = message.attachments.single()
+
+                assertEquals("已生成图片：", message.text)
+                assertEquals(image.fileName.toString(), attachment.name)
+                assertEquals(RemoteAttachmentKind.IMAGE, attachment.kind)
+                assertEquals(imageBytes.toList(), runBlocking {
+                    service.downloadConversationAttachment(
+                        "thread-generated-image",
+                        attachment.attachmentId,
+                    ).bytes.toList()
+                })
+            }
+        } finally {
+            Files.deleteIfExists(image)
+        }
+    }
+
+    @Test
+    fun imageGenerationResultPathBecomesImageAttachment() {
+        val image = Files.createTempFile("generated-image-result-", ".png")
+        Files.write(image, byteArrayOf(0x55, 0x66))
+        try {
+            withStore { store ->
+                val api = FakeThreadHistoryApi(
+                    listResponse = json("{}"),
+                    readResponse = buildJsonObject {
+                        put("thread", buildJsonObject {
+                            put("id", "thread-image-generation-item")
+                            put("cwd", image.parent.toString())
+                            put("turns", buildJsonArray {
+                                add(buildJsonObject {
+                                    put("items", buildJsonArray {
+                                        add(buildJsonObject {
+                                            put("type", "imageGeneration")
+                                            put("saved_path", image.toString())
+                                        })
+                                    })
+                                })
+                            })
+                        })
+                    },
+                )
+                val service = RemoteConversationService(
+                    api = api,
+                    store = store,
+                    workingDirectory = image.parent,
+                )
+
+                val message = runBlocking {
+                    service.readConversation("thread-image-generation-item").messages.single()
+                }
+
+                assertEquals("", message.text)
+                assertEquals(image.fileName.toString(), message.attachments.single().name)
+                assertEquals(RemoteAttachmentKind.IMAGE, message.attachments.single().kind)
+            }
+        } finally {
+            Files.deleteIfExists(image)
+        }
+    }
+
+    @Test
     fun newConversationOptionsDoNotUseFirstPermissionAsDefault() = withStore { store ->
         val api = FakeRemoteControlApi(
             readResponse = json("{}"),
@@ -966,11 +1160,17 @@ class RemoteConversationServiceTest {
             withStore { store ->
                 val api = FakeRemoteControlApi(
                     readResponse = json("{}"),
+                    readError = CodexRpcException(
+                        code = -32603,
+                        message = "failed to read session metadata: rollout is empty",
+                    ),
                     listResponse = threadListResponse(selectedProject.toString()),
                     modelResponse = modelOptionsResponse(),
                     permissionResponse = permissionProfilesResponse(),
                     configResponse = json("""{"config":{}}"""),
-                    startThreadResponse = json("""{"thread":{"id":"thread-created"}}"""),
+                    startThreadResponse = json(
+                        """{"thread":{"id":"thread-created","preview":"Build the feature"}}""",
+                    ),
                     startTurnResponse = json(
                         """{"turn":{"id":"turn-created","threadId":"thread-created","status":"inProgress"}}""",
                     ),
@@ -1017,6 +1217,10 @@ class RemoteConversationServiceTest {
                     ),
                     store.remoteComposerSelection("thread-created"),
                 )
+                val detail = runBlocking { service.readConversation("thread-created") }
+                assertEquals(RemoteExecutionStatus.RUNNING, detail.executionStatus)
+                assertEquals("Build the feature", detail.messages.single().text)
+                assertEquals("thread-created", detail.conversation.threadId)
             }
         } finally {
             Files.deleteIfExists(selectedProject)

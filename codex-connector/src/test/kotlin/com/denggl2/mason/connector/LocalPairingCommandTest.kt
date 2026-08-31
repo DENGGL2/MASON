@@ -46,4 +46,39 @@ class LocalPairingCommandTest {
             validatePrivatePairingHost("192.168.1.25") { false }
         }
     }
+
+    @Test
+    fun webRtcSignalingRequiresHttpsOutsideExplicitLocalTestMode() {
+        assertEquals("https://signal.example.test/signaling", validateWebRtcSignalingEndpoint(
+            "https://signal.example.test/signaling/",
+        ))
+        assertFailsWith<IllegalArgumentException> {
+            validateWebRtcSignalingEndpoint("http://signal.example.test/signaling", allowInsecureLocal = true)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            validateWebRtcSignalingEndpoint("http://127.0.0.1:48731", allowInsecureLocal = false)
+        }
+        assertEquals(
+            "http://127.0.0.1:48731",
+            validateWebRtcSignalingEndpoint("http://127.0.0.1:48731/", allowInsecureLocal = true),
+        )
+        assertEquals(
+            "http://10.0.2.2:48731",
+            validateWebRtcSignalingEndpoint("http://10.0.2.2:48731/", allowInsecureLocal = true),
+        )
+    }
+
+    @Test
+    fun cloudflareNamedPairingRequiresPublicDnsHostname() {
+        assertEquals("remote.example.com", validateCloudflareHostname(" Remote.Example.com. "))
+        assertFailsWith<IllegalArgumentException> {
+            validateCloudflareHostname("127.0.0.1")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            validateCloudflareHostname("remote")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            validateCloudflareHostname("https://remote.example.com")
+        }
+    }
 }

@@ -22,6 +22,7 @@ androidxTestExtJunit = "1.2.1"
 litertlm = "0.10.2"
 workManager = "2.9.1"
 jna = "5.17.0"
+webrtcJava = "0.14.0"
 ktor = "3.2.3"
 camerax = "1.4.2"
 mlkitBarcode = "17.3.0"
@@ -77,6 +78,7 @@ haze = { module = "dev.chrisbanes.haze:haze", version.ref = "haze" }
 
 # Windows native integration
 jna-platform = { module = "net.java.dev.jna:jna-platform", version.ref = "jna" }
+webrtc-java = { module = "dev.onvoid.webrtc:webrtc-java", version.ref = "webrtcJava" }
 
 # Serialization
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
