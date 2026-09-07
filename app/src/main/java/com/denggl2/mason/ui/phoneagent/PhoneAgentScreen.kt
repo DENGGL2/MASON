@@ -31,7 +31,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import com.denggl2.masonremote.ui.WithRemoteMaterialResources
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -236,6 +239,7 @@ private fun PhoneAgentLogDetailSheet(
     entry: PhoneAgentLogEntry,
     onDismiss: () -> Unit,
 ) {
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -293,6 +297,7 @@ private fun PhoneAgentLogDetailSheet(
             }
         }
     }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -314,7 +319,7 @@ private fun PhoneAgentScaffold(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = LocalRemoteStrings.current.t("返回"))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

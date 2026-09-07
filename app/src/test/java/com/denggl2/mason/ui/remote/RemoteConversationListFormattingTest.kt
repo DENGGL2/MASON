@@ -30,6 +30,18 @@ class RemoteConversationListFormattingTest {
     }
 
     @Test
+    fun formatsEnglishRelativeDates() {
+        assertEquals(
+            "Yesterday",
+            formatRemoteConversationTime(timestamp(2026, 8, 11, 23, 59), now, zone, english = true),
+        )
+        assertEquals(
+            "7/3",
+            formatRemoteConversationTime(timestamp(2026, 7, 3), now, zone, english = true),
+        )
+    }
+
+    @Test
     fun onlyTerminalPairingErrorsCountAsAlreadyRevoked() {
         assertTrue(remoteRevocationAlreadyFinal("DEVICE_REVOKED"))
         assertTrue(remoteRevocationAlreadyFinal("DEVICE_NOT_PAIRED"))

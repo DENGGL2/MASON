@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.semantics.Role
+import com.denggl2.masonremote.ui.LocalRemoteStrings
 
 internal val MasonSheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
 internal val MasonDialogShape = RoundedCornerShape(8.dp)
@@ -68,7 +69,7 @@ internal fun MasonDialogAction(
                 lineHeight = 20.sp,
             ),
         ) {
-            androidx.compose.material3.Text(label)
+            com.denggl2.masonremote.ui.localizedText(LocalRemoteStrings.current.displayText(label))
         }
     }
 }

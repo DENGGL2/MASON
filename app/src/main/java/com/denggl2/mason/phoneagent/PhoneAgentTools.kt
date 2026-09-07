@@ -3,14 +3,21 @@ package com.denggl2.mason.phoneagent
 import com.denggl2.mason.tool.ParameterDef
 import com.denggl2.mason.tool.Tool
 import com.denggl2.mason.tool.ToolResult
+import com.denggl2.mason.data.UiPreferencesDataStore
+import com.denggl2.mason.localization.resolveAppStrings
+import dagger.hilt.android.qualifiers.ApplicationContext
+import android.content.Context
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.first
 
 @Singleton
 class PhoneAgentActionRunner @Inject constructor(
     private val controller: PhoneAgentController,
     private val overlay: PhoneAgentOverlayController,
     private val logStore: PhoneAgentLogStore,
+    private val uiPreferencesDataStore: UiPreferencesDataStore,
+    @ApplicationContext private val context: Context,
 ) {
     suspend fun run(
         action: String,
@@ -19,7 +26,9 @@ class PhoneAgentActionRunner @Inject constructor(
         focusPoint: PhoneAgentPoint? = null,
         block: suspend () -> ToolResult,
     ): ToolResult {
-        overlay.show(action, focusPoint, controller::pause)
+        val english = uiPreferencesDataStore.preferences.first()
+            .let { context.resolveAppStrings(it.language).isEnglish }
+        overlay.show(action, focusPoint, english, controller::pause)
         val result = runCatching { block() }
             .getOrElse { ToolResult.error("屏幕助手执行失败：${it.message}") }
         val resultVersion = result.data["snapshot_version"]?.toLongOrNull() ?: snapshotVersion

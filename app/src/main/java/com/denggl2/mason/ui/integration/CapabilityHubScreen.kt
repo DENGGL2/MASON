@@ -41,7 +41,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -95,6 +97,7 @@ fun IntegrationsScreen(
     }
 
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     val providers by viewModel.appProviders.collectAsState()
     val snapshot by viewModel.snapshot.collectAsState()
     val mcpStates by viewModel.mcpStates.collectAsState()
@@ -111,16 +114,20 @@ fun IntegrationsScreen(
         pendingProviderId = null
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(viewModel, strings.language) {
         viewModel.refreshAppProviders()
-        viewModel.messages.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+        viewModel.messages.collect {
+            Toast.makeText(context, strings.displayText(it), Toast.LENGTH_SHORT).show()
+        }
     }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(viewModel, strings.language) {
         viewModel.oauthEvents.collect { event ->
             when (event) {
                 is McpOAuthEvent.OpenBrowser -> context.startActivity(event.intent)
-                is McpOAuthEvent.Completed -> Toast.makeText(context, "登录成功，工具已刷新", Toast.LENGTH_SHORT).show()
-                is McpOAuthEvent.Failed -> Toast.makeText(context, event.message, Toast.LENGTH_LONG).show()
+                is McpOAuthEvent.Completed ->
+                    Toast.makeText(context, strings.t("登录成功，工具已刷新"), Toast.LENGTH_SHORT).show()
+                is McpOAuthEvent.Failed ->
+                    Toast.makeText(context, strings.displayText(event.message), Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -133,7 +140,7 @@ fun IntegrationsScreen(
                 title = { Text("扩展能力") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = LocalRemoteStrings.current.t("返回"))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -162,7 +169,11 @@ fun IntegrationsScreen(
                     onConnect = {
                         val intent: Intent? = viewModel.authorizationIntent(providerState.provider.id)
                         if (intent == null) {
-                            Toast.makeText(context, providerState.detail, Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                context,
+                                strings.displayText(providerState.detail),
+                                Toast.LENGTH_SHORT,
+                            ).show()
                         } else {
                             pendingProviderId = providerState.provider.id
                             authorizationLauncher.launch(intent)

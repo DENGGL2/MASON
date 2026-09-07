@@ -93,7 +93,11 @@ import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import com.denggl2.masonremote.ui.RemoteStrings
+import com.denggl2.masonremote.ui.WithRemoteMaterialResources
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -146,6 +150,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -221,13 +226,17 @@ import com.denggl2.mason.data.LocalModelPreset
 import com.denggl2.mason.data.MasonAccentPresets
 import com.denggl2.mason.data.InterfaceStyle
 import com.denggl2.mason.data.FontSizePreference
+import com.denggl2.mason.data.LanguagePreference
+import com.denggl2.mason.data.MessageSendMode
 import com.denggl2.mason.data.OfficialChannelPreferences
 import com.denggl2.mason.data.ThemeMode
 import com.denggl2.mason.data.UiPreferences
 import com.denggl2.mason.data.UserMemoryItem
 import com.denggl2.mason.data.UserMemoryType
 import com.denggl2.mason.data.toComposeColor
-import com.denggl2.mason.sync.remote.PairedConnector
+import com.denggl2.masonremote.transport.PairedConnector
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.denggl2.mason.tool.shouldRequestPostNotificationPermission
 import com.denggl2.mason.ui.chat.PopupDismissGutters
 import com.denggl2.mason.ui.theme.LocalInterfaceEffects
@@ -680,6 +689,8 @@ fun SettingsScreen(
     onRegularNotificationsChange: (Boolean) -> Unit = {},
     onIslandNotificationsChange: (Boolean) -> Unit = {},
     onFontSizeChange: (FontSizePreference) -> Unit = {},
+    onLanguageChange: (LanguagePreference) -> Unit = {},
+    onMessageSendModeChange: (MessageSendMode) -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val config by viewModel.config.collectAsState()
@@ -696,7 +707,20 @@ fun SettingsScreen(
     val alwaysAllowedTools by viewModel.alwaysAllowedTools.collectAsState()
     val pairedConnector by viewModel.pairedConnector.collectAsState()
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     val uriHandler = LocalUriHandler.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshPairingState()
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshPairingState()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     var page by remember(openModelSettingsInitially) {
         mutableStateOf(
@@ -757,7 +781,7 @@ fun SettingsScreen(
         } else if (!granted) {
             Toast.makeText(
                 context,
-                "通知权限未授予，通知模式已保存，但暂时无法发送通知",
+                strings.t("通知权限未授予，通知模式已保存，但暂时无法发送通知"),
                 Toast.LENGTH_SHORT,
             ).show()
         }
@@ -946,13 +970,13 @@ fun SettingsScreen(
 
     LaunchedEffect(Unit) {
         viewModel.toastEvent.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.displayText(message), Toast.LENGTH_SHORT).show()
         }
     }
 
     LaunchedEffect(viewModel) {
         viewModel.diagnosticExportEvent.collect { file ->
-            shareDiagnosticReport(context, file)
+            shareDiagnosticReport(context, file, strings)
         }
     }
 
@@ -987,7 +1011,7 @@ fun SettingsScreen(
                     ) {
                         Icon(
                             Icons.AutoMirrored.Outlined.ArrowBack,
-                            contentDescription = "返回",
+                            contentDescription = LocalRemoteStrings.current.t("返回"),
                             tint = MaterialTheme.colorScheme.onBackground,
                         )
                     }
@@ -1063,6 +1087,7 @@ fun SettingsScreen(
                     glassFrost = uiPreferences.glassFrost,
                     selectedColor = uiPreferences.accentColor,
                     selectedFontSize = uiPreferences.fontSize,
+                    selectedLanguage = uiPreferences.language,
                     onModeChange = onThemeModeChange,
                     onStyleChange = onInterfaceStyleChange,
                     onGlassRefractionChange = onGlassRefractionChange,
@@ -1072,6 +1097,7 @@ fun SettingsScreen(
                     onGlassFrostCommit = onGlassFrostCommit,
                     onAccentColorChange = onAccentColorChange,
                     onFontSizeChange = onFontSizeChange,
+                    onLanguageChange = onLanguageChange,
                 )
                 AiServiceOverviewContent(
                     localModelId = localModel,
@@ -1145,6 +1171,8 @@ fun SettingsScreen(
                     onOpenDevicePairing = onNavigateToDevicePairing,
                     onManageDevicePairing = { showPairingManagementDialog = true },
                     onOpenPhoneAgent = onNavigateToPhoneAgent,
+                    selectedMessageSendMode = uiPreferences.messageSendMode,
+                    onMessageSendModeChange = onMessageSendModeChange,
                 )
                 AiServiceOtherSettingsContent(
                     config = config,
@@ -1277,7 +1305,7 @@ fun SettingsScreen(
                                                 } else {
                                                     Icons.Outlined.Visibility
                                                 },
-                                                contentDescription = if (keyVisible) "隐藏" else "显示",
+                                                contentDescription = LocalRemoteStrings.current.t(if (keyVisible) "隐藏" else "显示"),
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
                                         }
@@ -2061,6 +2089,7 @@ private fun <T> ModelPurposeRow(
     onClear: (() -> Unit)? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val strings = LocalRemoteStrings.current
     Box(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -2079,10 +2108,10 @@ private fun <T> ModelPurposeRow(
             Spacer(Modifier.width(12.dp))
             Text(
                 text = buildAnnotatedString {
-                    append(modelName)
+                    append(if (modelName == "未配置") strings.t("未配置") else modelName)
                     if (!connected && modelName != "未配置") {
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.error)) {
-                            append("（未连接）")
+                            append(strings.text("（未连接）", " (not connected)"))
                         }
                     }
                 },
@@ -2109,7 +2138,7 @@ private fun <T> ModelPurposeRow(
                         },
                         trailingIcon = {
                             if (selectedKey.isNullOrBlank()) {
-                                Icon(Icons.Outlined.Check, contentDescription = "当前未配置")
+                                Icon(Icons.Outlined.Check, contentDescription = strings.t("当前未配置"))
                             }
                         },
                     )
@@ -2153,7 +2182,7 @@ private fun <T> ModelPurposeRow(
                                     if (isSelected) {
                                         Icon(
                                             Icons.Outlined.Check,
-                                            contentDescription = "当前模型",
+                                            contentDescription = LocalRemoteStrings.current.t("当前模型"),
                                             modifier = Modifier.size(18.dp),
                                         )
                                     }
@@ -2320,7 +2349,7 @@ private fun RemoteModelConfigurationRow(
         }
         Icon(
             Icons.Outlined.ChevronRight,
-            contentDescription = "编辑模型配置",
+            contentDescription = LocalRemoteStrings.current.t("编辑模型配置"),
             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
             modifier = Modifier.size(17.dp),
         )
@@ -2692,6 +2721,7 @@ private fun RemoteModelConfigurationSheet(
         }
     }
 
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = requestDismiss,
         sheetState = sheetState,
@@ -2779,7 +2809,7 @@ private fun RemoteModelConfigurationSheet(
                         ) {
                             Icon(
                                 if (keyVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                                contentDescription = if (keyVisible) "隐藏" else "显示",
+                                contentDescription = LocalRemoteStrings.current.t(if (keyVisible) "隐藏" else "显示"),
                             )
                         }
                     },
@@ -2847,7 +2877,7 @@ private fun RemoteModelConfigurationSheet(
                             ) {
                                 Icon(
                                     Icons.Outlined.Delete,
-                                    contentDescription = "删除 Model ID",
+                                    contentDescription = LocalRemoteStrings.current.t("删除 Model ID"),
                                     tint = MaterialTheme.colorScheme.error,
                                 )
                             }
@@ -3125,6 +3155,7 @@ private fun RemoteModelConfigurationSheet(
                 }
             }
         }
+    }
     }
 
     if (confirmDiscard) {
@@ -3798,7 +3829,7 @@ private fun ModelPickerRow(
         if (actionLabel == null) {
             Icon(
                 Icons.Outlined.Check,
-                contentDescription = "当前",
+                contentDescription = LocalRemoteStrings.current.t("当前"),
                 tint = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.size(18.dp),
             )
@@ -3939,7 +3970,7 @@ private fun ProviderModelChoiceRow(
         if (selected) {
             Icon(
                 Icons.Outlined.Check,
-                contentDescription = "当前模型",
+                contentDescription = LocalRemoteStrings.current.t("当前模型"),
                 tint = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.size(18.dp),
             )
@@ -3948,7 +3979,7 @@ private fun ProviderModelChoiceRow(
             IconButton(onClick = delete, modifier = Modifier.size(36.dp)) {
                 Icon(
                     Icons.Outlined.Delete,
-                    contentDescription = "移除模型",
+                    contentDescription = LocalRemoteStrings.current.t("移除模型"),
                     tint = MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(18.dp),
                 )
@@ -4000,7 +4031,7 @@ private fun ProviderModelRow(
                 IconButton(onClick = it, modifier = Modifier.size(32.dp)) {
                     Icon(
                         Icons.Outlined.Delete,
-                        contentDescription = "删除模型",
+                        contentDescription = LocalRemoteStrings.current.t("删除模型"),
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(18.dp),
                     )
@@ -4068,6 +4099,8 @@ private fun SettingsOverviewContent(
     onOpenDevicePairing: () -> Unit,
     onManageDevicePairing: () -> Unit,
     onOpenPhoneAgent: () -> Unit,
+    selectedMessageSendMode: MessageSendMode,
+    onMessageSendModeChange: (MessageSendMode) -> Unit,
 ) {
     var notificationMenuExpanded by remember { mutableStateOf(false) }
     val notificationMode = when {
@@ -4120,7 +4153,7 @@ private fun SettingsOverviewContent(
                         },
                         trailingIcon = {
                             if (mode == notificationMode) {
-                                Icon(Icons.Outlined.Check, contentDescription = "当前选项")
+                                Icon(Icons.Outlined.Check, contentDescription = LocalRemoteStrings.current.t("当前选项"))
                             }
                         },
                         onClick = {
@@ -4148,6 +4181,38 @@ private fun SettingsOverviewContent(
             connector = pairedConnector,
             onOpenPairing = onOpenDevicePairing,
             onManage = onManageDevicePairing,
+        )
+    }
+
+    SectionHeader("远程")
+    SettingGroup {
+        var sendModeMenuExpanded by remember { mutableStateOf(false) }
+        val sendModeLabel = when (selectedMessageSendMode) {
+            MessageSendMode.STEER -> "插队"
+            MessageSendMode.QUEUE -> "排队"
+        }
+        SelectionSettingRow(
+            title = "进行中发送消息",
+            value = sendModeLabel,
+            expanded = sendModeMenuExpanded,
+            onClick = { sendModeMenuExpanded = true },
+            onDismiss = { sendModeMenuExpanded = false },
+            menuContent = {
+                MessageSendMode.entries.forEach { mode ->
+                    DropdownMenuItem(
+                        text = { Text(if (mode == MessageSendMode.STEER) "插队" else "排队") },
+                        trailingIcon = {
+                            if (mode == selectedMessageSendMode) {
+                                Icon(Icons.Outlined.Check, contentDescription = LocalRemoteStrings.current.t("当前选项"))
+                            }
+                        },
+                        onClick = {
+                            sendModeMenuExpanded = false
+                            onMessageSendModeChange(mode)
+                        },
+                    )
+                }
+            },
         )
     }
 }
@@ -4248,7 +4313,7 @@ private fun OverviewSettingRow(
         Spacer(Modifier.width(8.dp))
         Icon(
             Icons.Outlined.ChevronRight,
-            contentDescription = "打开设置项",
+            contentDescription = LocalRemoteStrings.current.t("打开设置项"),
             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
             modifier = Modifier.size(18.dp),
         )
@@ -4435,7 +4500,7 @@ private fun MemoryItemRow(
         IconButton(onClick = onDelete) {
             Icon(
                 Icons.Outlined.Delete,
-                contentDescription = "删除",
+                contentDescription = LocalRemoteStrings.current.t("删除"),
                 tint = MaterialTheme.colorScheme.error,
                 modifier = Modifier.size(19.dp),
             )
@@ -4494,7 +4559,7 @@ private fun OfficialChannelRow(
                 ) {
                     Icon(
                         Icons.Outlined.Info,
-                        contentDescription = "查看详情",
+                        contentDescription = LocalRemoteStrings.current.t("查看详情"),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(17.dp),
                     )
@@ -4671,7 +4736,7 @@ private fun LocalModelManagementRow(
                 IconButton(onClick = onDelete) {
                     Icon(
                         Icons.Outlined.Delete,
-                        contentDescription = "删除本地模型",
+                        contentDescription = LocalRemoteStrings.current.t("删除本地模型"),
                         tint = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -5099,7 +5164,7 @@ private fun ModelSelectionIndicator(selected: Boolean) {
         if (selected) {
             Icon(
                 Icons.Outlined.Check,
-                contentDescription = "已选择",
+                contentDescription = LocalRemoteStrings.current.t("已选择"),
                 tint = MaterialTheme.colorScheme.onPrimary,
                 modifier = Modifier.size(14.dp),
             )
@@ -5124,7 +5189,7 @@ private fun ApiKeyInput(
             IconButton(onClick = { onKeyVisibleChange(!keyVisible) }) {
                 Icon(
                     imageVector = if (keyVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                    contentDescription = if (keyVisible) "隐藏" else "显示",
+                    contentDescription = LocalRemoteStrings.current.t(if (keyVisible) "隐藏" else "显示"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -5220,6 +5285,7 @@ private fun AppearanceSettingsContent(
     glassFrost: Float,
     selectedColor: Long,
     selectedFontSize: FontSizePreference,
+    selectedLanguage: LanguagePreference,
     onModeChange: (ThemeMode) -> Unit,
     onStyleChange: (InterfaceStyle) -> Unit,
     onGlassRefractionChange: (Boolean) -> Unit,
@@ -5229,6 +5295,7 @@ private fun AppearanceSettingsContent(
     onGlassFrostCommit: (Float) -> Unit,
     onAccentColorChange: (Long) -> Unit,
     onFontSizeChange: (FontSizePreference) -> Unit,
+    onLanguageChange: (LanguagePreference) -> Unit,
 ) {
     SettingGroup {
         ThemeModeSelectionRow(
@@ -5239,6 +5306,11 @@ private fun AppearanceSettingsContent(
         FontSizeSelectionRow(
             selectedFontSize = selectedFontSize,
             onFontSizeChange = onFontSizeChange,
+        )
+        GroupDivider()
+        LanguageSelectionRow(
+            selectedLanguage = selectedLanguage,
+            onLanguageChange = onLanguageChange,
         )
         if (INTERFACE_STYLE_SETTING_VISIBLE) {
             GroupDivider()
@@ -5408,7 +5480,7 @@ private fun GlassValueRow(
                     )
                     Icon(
                         Icons.Outlined.Edit,
-                        contentDescription = inputContentDescription,
+                        contentDescription = LocalRemoteStrings.current.t(inputContentDescription),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
                             .padding(start = 8.dp)
@@ -5496,6 +5568,45 @@ private fun SimpleLineSlider(
 }
 
 @Composable
+private fun LanguageSelectionRow(
+    selectedLanguage: LanguagePreference,
+    onLanguageChange: (LanguagePreference) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val strings = LocalRemoteStrings.current
+    val options = listOf(
+        LanguagePreference.SYSTEM to strings.text("跟随系统", "Follow system"),
+        LanguagePreference.CHINESE to strings.text("中文", "Chinese"),
+        // The product name of the language is intentionally English in both
+        // locales, matching the language picker in the embedded Remote app.
+        LanguagePreference.ENGLISH to "English",
+    )
+    SelectionSettingRow(
+        title = strings.text("语言", "Language"),
+        value = options.first { it.first == selectedLanguage }.second,
+        expanded = expanded,
+        onClick = { expanded = true },
+        onDismiss = { expanded = false },
+        menuContent = {
+            options.forEach { (language, label) ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    trailingIcon = {
+                        if (language == selectedLanguage) {
+                            Icon(Icons.Outlined.Check, contentDescription = LocalRemoteStrings.current.t("当前选项"))
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        onLanguageChange(language)
+                    },
+                )
+            }
+        },
+    )
+}
+
+@Composable
 private fun InterfaceStyleSelectionRow(
     selectedStyle: InterfaceStyle,
     onStyleChange: (InterfaceStyle) -> Unit,
@@ -5504,7 +5615,7 @@ private fun InterfaceStyleSelectionRow(
     val visibleSelectedStyle = when (selectedStyle) {
         InterfaceStyle.NATIVE -> InterfaceStyle.NATIVE
         InterfaceStyle.GLASS -> InterfaceStyle.GLASS
-        else -> InterfaceStyle.ACRYLIC
+        else -> InterfaceStyle.NATIVE
     }
     data class StyleOption(
         val style: InterfaceStyle,
@@ -5513,11 +5624,6 @@ private fun InterfaceStyleSelectionRow(
     )
     val android12Requirement = android12RequirementDescription(Build.VERSION.SDK_INT)
     val options = listOf(
-        StyleOption(
-            style = InterfaceStyle.ACRYLIC,
-            label = "亚克力",
-            description = android12Requirement,
-        ),
         StyleOption(
             style = InterfaceStyle.NATIVE,
             label = "原生",
@@ -5552,7 +5658,7 @@ private fun InterfaceStyleSelectionRow(
                     },
                     trailingIcon = {
                         if (option.style == visibleSelectedStyle) {
-                            Icon(Icons.Outlined.Check, contentDescription = "当前风格")
+                            Icon(Icons.Outlined.Check, contentDescription = LocalRemoteStrings.current.t("当前风格"))
                         }
                     },
                     onClick = {
@@ -5595,7 +5701,7 @@ private fun FontSizeSelectionRow(
                     text = { Text(label) },
                     trailingIcon = {
                         if (fontSize == selectedFontSize) {
-                            Icon(Icons.Outlined.Check, contentDescription = "当前字体大小")
+                            Icon(Icons.Outlined.Check, contentDescription = LocalRemoteStrings.current.t("当前字体大小"))
                         }
                     },
                     onClick = {
@@ -5632,7 +5738,7 @@ private fun ThemeModeSelectionRow(
                     text = { Text(label) },
                     trailingIcon = {
                         if (mode == selectedMode) {
-                            Icon(Icons.Outlined.Check, contentDescription = "当前模式")
+                            Icon(Icons.Outlined.Check, contentDescription = LocalRemoteStrings.current.t("当前模式"))
                         }
                     },
                     onClick = {
@@ -5672,7 +5778,7 @@ private fun AccentColorSelectionRow(
                 text = { Text("黑色") },
                 trailingIcon = {
                     if (selectedColor == blackAccent.color) {
-                        Icon(Icons.Outlined.Check, contentDescription = "当前主题色")
+                        Icon(Icons.Outlined.Check, contentDescription = LocalRemoteStrings.current.t("当前主题色"))
                     }
                 },
                 onClick = {
@@ -5746,7 +5852,7 @@ private fun SettingsDropdownArrow(
     Box(contentAlignment = Alignment.Center) {
         Icon(
             Icons.Outlined.ExpandMore,
-            contentDescription = if (expanded) expandedDescription else collapsedDescription,
+            contentDescription = LocalRemoteStrings.current.t(if (expanded) expandedDescription else collapsedDescription),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
                 .size(19.dp)
@@ -6180,7 +6286,7 @@ private fun ProviderEndpointSelector(
                         },
                         trailingIcon = {
                             if (endpoint.id == selected.id) {
-                                Icon(Icons.Outlined.Check, contentDescription = "当前区域")
+                                Icon(Icons.Outlined.Check, contentDescription = LocalRemoteStrings.current.t("当前区域"))
                             }
                         },
                         onClick = {
@@ -6468,9 +6574,9 @@ private fun AboutSettingsContent(
     }
 }
 
-private fun shareDiagnosticReport(context: Context, file: File) {
+private fun shareDiagnosticReport(context: Context, file: File, strings: RemoteStrings) {
     if (!file.isFile) {
-        Toast.makeText(context, "诊断记录不存在", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("诊断记录不存在"), Toast.LENGTH_SHORT).show()
         return
     }
     val uri = FileProvider.getUriForFile(
@@ -6481,16 +6587,16 @@ private fun shareDiagnosticReport(context: Context, file: File) {
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_STREAM, uri)
-        putExtra(Intent.EXTRA_SUBJECT, "Mason 诊断记录")
-        clipData = ClipData.newRawUri("Mason 诊断记录", uri)
+        putExtra(Intent.EXTRA_SUBJECT, strings.t("Mason 诊断记录"))
+        clipData = ClipData.newRawUri(strings.t("Mason 诊断记录"), uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     runCatching {
-        context.startActivity(Intent.createChooser(intent, "分享 Mason 诊断记录"))
+        context.startActivity(Intent.createChooser(intent, strings.t("分享 Mason 诊断记录")))
     }.onFailure { error ->
         Toast.makeText(
             context,
-            "打开分享面板失败：${error.message ?: error.javaClass.simpleName}",
+            strings.displayText("打开分享面板失败：${error.message ?: error.javaClass.simpleName}"),
             Toast.LENGTH_SHORT,
         ).show()
     }

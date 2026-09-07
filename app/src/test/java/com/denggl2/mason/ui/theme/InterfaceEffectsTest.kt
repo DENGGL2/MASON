@@ -35,7 +35,7 @@ class InterfaceEffectsTest {
         assertTrue(effects.glassMaterialEnabled)
         assertFalse(effects.glassRefractionEnabled)
         assertEquals(1f, effects.backdropEffectAlpha, 0.0001f)
-        assertEquals(0.42f, effects.compactSurfaceAlpha, 0.0001f)
+        assertEquals(0.10f, effects.compactSurfaceAlpha, 0.0001f)
         assertEquals(0.72f, effects.largeSurfaceAlpha, 0.0001f)
     }
 
@@ -55,7 +55,7 @@ class InterfaceEffectsTest {
         )
 
         assertEquals(0.25f, clear.compactSurfaceAlpha, 0.0001f)
-        assertEquals(0.42857143f, clear.largeSurfaceAlpha, 0.0001f)
+        assertEquals(1f, clear.largeSurfaceAlpha, 0.0001f)
         assertEquals(1f, clear.backdropEffectAlpha, 0.0001f)
         assertEquals(1f, opaque.compactSurfaceAlpha, 0.0001f)
         assertEquals(1f, opaque.largeSurfaceAlpha, 0.0001f)
@@ -161,15 +161,16 @@ class InterfaceEffectsTest {
     }
 
     @Test
-    fun `acrylic keeps blur without glass refraction`() {
+    fun `legacy acrylic is normalized to native`() {
         val effects = resolveInterfaceEffects(InterfaceStyle.ACRYLIC, true, sdkInt = 35)
 
-        assertTrue(effects.backdropBlurEnabled)
-        assertTrue(effects.progressiveEdgeBlurEnabled)
+        assertEquals(InterfaceStyle.NATIVE, effects.effectiveStyle)
+        assertFalse(effects.backdropBlurEnabled)
+        assertFalse(effects.progressiveEdgeBlurEnabled)
         assertFalse(effects.glassMaterialEnabled)
         assertFalse(effects.glassRefractionEnabled)
-        assertEquals(1f, effects.backdropEffectAlpha)
-        assertEquals(0.80f, effects.compactSurfaceAlpha)
-        assertEquals(0.80f, effects.largeSurfaceAlpha)
+        assertEquals(0f, effects.backdropEffectAlpha)
+        assertEquals(1f, effects.compactSurfaceAlpha)
+        assertEquals(1f, effects.largeSurfaceAlpha)
     }
 }

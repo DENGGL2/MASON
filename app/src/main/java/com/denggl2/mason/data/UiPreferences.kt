@@ -9,11 +9,23 @@ enum class ThemeMode {
 }
 
 enum class InterfaceStyle {
+    /** Hidden compatibility value from pre-Remote builds. New UI never emits it. */
     ACRYLIC,
     NATIVE,
     GLASS,
     // Retained as a hidden compatibility value for older builds.
     MATERIAL3,
+}
+
+enum class LanguagePreference {
+    SYSTEM,
+    CHINESE,
+    ENGLISH,
+}
+
+enum class MessageSendMode {
+    STEER,
+    QUEUE,
 }
 
 enum class FontSizePreference(val scale: Float) {
@@ -25,14 +37,16 @@ enum class FontSizePreference(val scale: Float) {
 
 data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val interfaceStyle: InterfaceStyle = InterfaceStyle.ACRYLIC,
-    val glassRefractionEnabled: Boolean = false,
+    val interfaceStyle: InterfaceStyle = InterfaceStyle.NATIVE,
+    val glassRefractionEnabled: Boolean = true,
     val glassTransparency: Float = DEFAULT_GLASS_TRANSPARENCY,
     val glassFrost: Float = DEFAULT_GLASS_FROST,
     val accentColor: Long = DEFAULT_ACCENT_COLOR,
     val regularNotificationsEnabled: Boolean = false,
     val islandNotificationsEnabled: Boolean = false,
     val fontSize: FontSizePreference = FontSizePreference.MEDIUM,
+    val language: LanguagePreference = LanguagePreference.SYSTEM,
+    val messageSendMode: MessageSendMode = MessageSendMode.QUEUE,
 )
 
 data class AccentPreset(
@@ -51,8 +65,8 @@ val MasonAccentPresets = listOf(
 )
 
 const val DEFAULT_ACCENT_COLOR: Long = 0xFF20201F
-const val DEFAULT_GLASS_TRANSPARENCY: Float = 0.58f
-const val DEFAULT_GLASS_FROST: Float = 0f
+const val DEFAULT_GLASS_TRANSPARENCY: Float = 0.90f
+const val DEFAULT_GLASS_FROST: Float = 0.10f
 
 internal fun normalizeGlassTransparency(value: Float): Float =
     if (value.isFinite()) value.coerceIn(0f, 1f) else DEFAULT_GLASS_TRANSPARENCY

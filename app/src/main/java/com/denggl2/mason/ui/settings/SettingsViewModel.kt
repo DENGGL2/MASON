@@ -55,10 +55,9 @@ import com.denggl2.mason.agent.ToolGrantStore
 import com.denggl2.mason.agent.TaskRunStore
 import com.denggl2.mason.model.LocalModelEngineRegistry
 import com.denggl2.mason.sync.SyncManager
-import com.denggl2.mason.sync.remote.PairedConnector
-import com.denggl2.mason.sync.remote.PairedConnectorStore
-import com.denggl2.mason.sync.remote.PinnedConnectorClient
-import com.denggl2.mason.sync.security.AndroidDeviceIdentityStore
+import com.denggl2.masonremote.data.PairingStore
+import com.denggl2.masonremote.transport.PairedConnector
+import com.denggl2.masonremote.transport.revokeRemotePairing
 import com.denggl2.mason.tool.NotificationTool
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -164,7 +163,6 @@ class SettingsViewModel @Inject constructor(
     private val chatClient: ChatClient,
     private val modelRepository: AiModelRepository,
     private val syncManager: SyncManager,
-    private val connectorStore: PairedConnectorStore,
     private val crashDao: CrashDao,
     private val userMemoryStore: UserMemoryStore,
     private val officialChannelStore: OfficialChannelPreferencesDataStore,
@@ -193,7 +191,9 @@ class SettingsViewModel @Inject constructor(
     val automationPreferences: StateFlow<AutomationPreferences> = automationPreferencesStore.preferences
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AutomationPreferences())
 
-    val pairedConnector: StateFlow<PairedConnector?> = connectorStore.connector
+    private val remotePairingStore = PairingStore(context)
+    private val _pairedConnector = MutableStateFlow(remotePairingStore.currentConnector())
+    val pairedConnector: StateFlow<PairedConnector?> = _pairedConnector.asStateFlow()
 
     private val _alwaysAllowedTools = MutableStateFlow(toolGrantStore.listAlwaysAllowed())
     val alwaysAllowedTools = _alwaysAllowedTools.asStateFlow()
@@ -334,14 +334,21 @@ class SettingsViewModel @Inject constructor(
         _toastEvent.tryEmit("已撤销 $toolName 的永久授权")
     }
 
+    fun refreshPairingState() {
+        _pairedConnector.value = remotePairingStore.currentConnector()
+    }
+
     fun cancelDevicePairing() {
-        val connector = connectorStore.load() ?: return
-        connectorStore.clear()
+        val connector = remotePairingStore.currentConnector() ?: return
+        // Remove the local route immediately so the UI and drawer stop using
+        // it even when the computer is offline. Remote revocation is only a
+        // best-effort cleanup of the desktop authorization.
+        remotePairingStore.clearCurrentConnector()
+        _pairedConnector.value = null
         _toastEvent.tryEmit("已取消设备配对")
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                val deviceId = syncManager.getLocalDeviceId()
-                PinnedConnectorClient(connector, AndroidDeviceIdentityStore()).revoke(deviceId)
+                revokeRemotePairing(context, connector)
             }
         }
     }

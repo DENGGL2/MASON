@@ -25,7 +25,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -74,7 +76,11 @@ fun PermissionScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回", tint = MaterialTheme.colorScheme.onBackground)
+                        Icon(
+                            Icons.AutoMirrored.Outlined.ArrowBack,
+                            LocalRemoteStrings.current.t("返回"),
+                            tint = MaterialTheme.colorScheme.onBackground,
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

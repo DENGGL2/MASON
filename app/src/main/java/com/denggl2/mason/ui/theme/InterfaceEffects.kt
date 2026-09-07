@@ -34,11 +34,12 @@ internal fun resolveInterfaceEffects(
     sdkInt: Int,
 ): InterfaceEffects {
     val backdropSupported = sdkInt >= 31
-    val glassSupported = requestedStyle == InterfaceStyle.GLASS && backdropSupported
-    val effectiveStyle = when {
-        requestedStyle == InterfaceStyle.GLASS && !backdropSupported -> InterfaceStyle.NATIVE
-        else -> requestedStyle
+    val normalizedStyle = when (requestedStyle) {
+        InterfaceStyle.GLASS -> InterfaceStyle.GLASS
+        else -> InterfaceStyle.NATIVE
     }
+    val glassSupported = normalizedStyle == InterfaceStyle.GLASS && backdropSupported
+    val effectiveStyle = if (glassSupported) InterfaceStyle.GLASS else InterfaceStyle.NATIVE
     val glassTransparency = normalizeGlassTransparency(requestedGlassTransparency)
     val glassFrost = normalizeGlassFrost(requestedGlassFrost)
     val compactGlassAlpha = 1f - glassTransparency
@@ -49,16 +50,12 @@ internal fun resolveInterfaceEffects(
         compactGlassAlpha
     }
     return InterfaceEffects(
-        requestedStyle = requestedStyle,
+        requestedStyle = normalizedStyle,
         effectiveStyle = effectiveStyle,
-        backdropBlurEnabled = backdropSupported && requestedStyle != InterfaceStyle.NATIVE,
-        // Acrylic keeps its current progressive edges; Glass uses the new Open Design treatment.
+        backdropBlurEnabled = backdropSupported && normalizedStyle != InterfaceStyle.NATIVE,
         progressiveEdgeBlurEnabled = backdropSupported &&
-            requestedStyle != InterfaceStyle.NATIVE &&
-            (
-                requestedStyle != InterfaceStyle.GLASS ||
-                    (GLASS_PROGRESSIVE_EDGES_ENABLED && glassFrost > 0f)
-            ),
+            normalizedStyle != InterfaceStyle.NATIVE &&
+            (normalizedStyle != InterfaceStyle.GLASS || (GLASS_PROGRESSIVE_EDGES_ENABLED && glassFrost > 0f)),
         glassMaterialEnabled = glassSupported && GLASS_COMPONENT_MATERIAL_ENABLED,
         glassRefractionEnabled = glassSupported &&
             requestedGlassRefraction &&
@@ -68,17 +65,17 @@ internal fun resolveInterfaceEffects(
             // Transparency controls the material tint only. The sampled backdrop
             // stays available for frost and refraction at every transparency value.
             glassSupported -> 1f
-            backdropSupported && requestedStyle != InterfaceStyle.NATIVE -> 1f
+            backdropSupported && normalizedStyle != InterfaceStyle.NATIVE -> 1f
             else -> 0f
         },
         compactSurfaceAlpha = when {
             glassSupported -> compactGlassAlpha
-            requestedStyle == InterfaceStyle.NATIVE || !backdropSupported -> 1f
+            normalizedStyle == InterfaceStyle.NATIVE || !backdropSupported -> 1f
             else -> 0.80f
         },
         largeSurfaceAlpha = when {
             glassSupported -> largeGlassAlpha
-            requestedStyle == InterfaceStyle.NATIVE || !backdropSupported -> 1f
+            normalizedStyle == InterfaceStyle.NATIVE || !backdropSupported -> 1f
             else -> 0.80f
         },
     )

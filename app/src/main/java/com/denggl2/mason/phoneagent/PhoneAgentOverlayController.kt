@@ -47,7 +47,12 @@ class PhoneAgentOverlayController @Inject constructor(
     private var hideRunnable: Runnable? = null
     private var notificationJob: kotlinx.coroutines.Job? = null
 
-    fun show(action: String, focusPoint: PhoneAgentPoint? = null, onStop: () -> Unit) {
+    fun show(
+        action: String,
+        focusPoint: PhoneAgentPoint? = null,
+        english: Boolean = false,
+        onStop: () -> Unit,
+    ) {
         handler.post {
             hideNow()
             val canDrawOverlay = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
@@ -75,12 +80,12 @@ class PhoneAgentOverlayController @Inject constructor(
                     }.getOrNull()
                     if (result?.success != true || result.data["live_update_requested"] != "true") {
                         handler.post {
-                            if (canDrawOverlay && overlayView == null) showFloating(action, onStop)
+                            if (canDrawOverlay && overlayView == null) showFloating(action, english, onStop)
                         }
                     }
                 }
             } else if (canDrawOverlay) {
-                showFloating(action, onStop)
+                showFloating(action, english, onStop)
             }
 
             hideRunnable = Runnable(::hideNow).also {
@@ -116,7 +121,7 @@ class PhoneAgentOverlayController @Inject constructor(
             .onSuccess { edgeView = view }
     }
 
-    private fun showFloating(action: String, onStop: () -> Unit) {
+    private fun showFloating(action: String, english: Boolean, onStop: () -> Unit) {
         val density = context.resources.displayMetrics.density
         val container = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -133,7 +138,7 @@ class PhoneAgentOverlayController @Inject constructor(
             }
         }
         val label = TextView(context).apply {
-            text = "Mason 屏幕助手 · $action"
+            text = if (english) "MASON screen assistant · ${englishAction(action)}" else "Mason 屏幕助手 · $action"
             setTextColor(Color.WHITE)
             textSize = 14f
             includeFontPadding = false
@@ -145,7 +150,7 @@ class PhoneAgentOverlayController @Inject constructor(
             includeFontPadding = false
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-            contentDescription = "停止屏幕助手"
+            contentDescription = if (english) "Stop screen assistant" else "停止屏幕助手"
             setOnClickListener {
                 onStop()
                 hideNow()
@@ -183,6 +188,18 @@ class PhoneAgentOverlayController @Inject constructor(
         }
         runCatching { windowManager.addView(container, params) }
             .onSuccess { overlayView = container }
+    }
+
+    private fun englishAction(action: String): String = when (action) {
+        "读取屏幕" -> "Read screen"
+        "屏幕截图" -> "Take screenshot"
+        "点击控件" -> "Tap control"
+        "坐标点击" -> "Tap coordinate"
+        "滑动屏幕" -> "Swipe screen"
+        "滚动控件" -> "Scroll control"
+        "输入文字" -> "Enter text"
+        "系统导航" -> "System navigation"
+        else -> action
     }
 
     private fun hideNow() {

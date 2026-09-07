@@ -1,5 +1,6 @@
 package com.denggl2.mason.ui.conversation
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.os.Environment
@@ -20,7 +21,9 @@ import com.denggl2.mason.sync.remote.PairedConnectorStore
 import com.denggl2.mason.sync.remote.PinnedConnectorClient
 import com.denggl2.mason.sync.security.AndroidDeviceIdentityStore
 import com.denggl2.mason.tool.ConversationDispatchTool
+import com.denggl2.masonremote.data.PairingStore
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,6 +61,7 @@ class ConversationListViewModel @Inject constructor(
     private val taskRunStore: TaskRunStore,
     private val connectorStore: PairedConnectorStore,
     configDataStore: ApiConfigDataStore,
+    @ApplicationContext context: Context,
 ) : ViewModel() {
 
     private val _conversations = MutableStateFlow<List<ConversationListItem>>(emptyList())
@@ -68,10 +72,23 @@ class ConversationListViewModel @Inject constructor(
     val remoteConversations: StateFlow<RemoteConversationListUiState> = _remoteConversations.asStateFlow()
     val apiConfig: StateFlow<ApiConfig> = configDataStore.config
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ApiConfig())
+    private val remotePairingStore = PairingStore(context)
 
     init {
         viewModelScope.launch {
-            connectorStore.connector.collect { connector ->
+            remotePairingStore.connector.collect { remoteConnector ->
+                // The drawer only needs the display identity. Keep its legacy
+                // state shape for the old, now-unreachable inline list code,
+                // while sourcing the record from the embedded Remote store.
+                val connector = remoteConnector?.let {
+                    PairedConnector(
+                        connectorDeviceId = it.connectorDeviceId,
+                        endpoint = it.endpoint,
+                        tlsCertificateSha256 = it.tlsCertificateSha256,
+                        pairedAt = it.pairedAt,
+                        displayName = it.displayName,
+                    )
+                }
                 _remoteConversations.value = RemoteConversationListUiState(connector = connector)
             }
         }

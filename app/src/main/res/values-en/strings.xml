@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="automation_service_label">MASON automation</string>
+    <string name="phone_agent_service_label">MASON screen assistant</string>
+    <string name="phone_agent_accessibility_description">Allow MASON to read the current screen and perform taps, text input, scrolling, and system navigation after you approve.</string>
+    <string name="camera_permission_rationale">Camera access is required to scan the pairing QR code from the computer.</string>
+</resources>

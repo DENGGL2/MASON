@@ -29,12 +29,18 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.denggl2.mason.data.InterfaceStyle
 import com.denggl2.mason.data.FontSizePreference
+import com.denggl2.mason.data.LanguagePreference
+import com.denggl2.mason.data.MessageSendMode
 import com.denggl2.mason.data.ThemeMode
 import com.denggl2.mason.data.UiPreferences
 import com.denggl2.mason.ui.chat.ChatScreen
-import com.denggl2.mason.ui.pairing.DevicePairingScreen
-import com.denggl2.mason.ui.remote.RemoteConversationListScreen
-import com.denggl2.mason.ui.remote.RemoteConversationScreen
+import com.denggl2.masonremote.MasonRemoteRoot
+import com.denggl2.masonremote.RemoteHostSettings
+import com.denggl2.masonremote.ui.settings.RemoteInterfaceStyle
+import com.denggl2.masonremote.ui.settings.RemoteLanguagePreference
+import com.denggl2.masonremote.ui.settings.RemoteMessageSendMode
+import com.denggl2.masonremote.ui.settings.RemoteThemeMode
+import com.denggl2.masonremote.ui.settings.TaskNotificationMode
 import com.denggl2.mason.ui.collection.CollectionKind
 import com.denggl2.mason.ui.collection.CollectionListScreen
 import com.denggl2.mason.ui.integration.IntegrationsScreen
@@ -59,13 +65,11 @@ object Routes {
     const val PHONE_AGENT = "phone_agent"
     const val PHONE_AGENT_LOGS = "phone_agent/logs"
     const val REMOTE_CONVERSATIONS = "remote_conversations"
-    const val REMOTE_CONVERSATION = "remote_conversation/{threadId}"
     const val COLLECTION = "collection/{kind}"
 
     fun chat(conversationId: Long) = "chat/$conversationId"
     fun newChat(fresh: Boolean = false, sessionId: String) = "chat_new/$fresh/$sessionId"
     fun collection(kind: CollectionKind) = "collection/${kind.routeName}"
-    fun remoteConversation(threadId: String) = "remote_conversation/${Uri.encode(threadId)}"
 }
 
 private const val FRESH_CONVERSATION_APPLIED_KEY = "freshConversationApplied"
@@ -81,6 +85,8 @@ fun MasonNavGraph(
     openConversationId: Long? = null,
     notificationTaskCommand: String? = null,
     notificationArtifactPath: String? = null,
+    notificationRemoteThreadId: String? = null,
+    onRemoteNotificationConsumed: () -> Unit = {},
     onThemeModeChange: (ThemeMode) -> Unit,
     onInterfaceStyleChange: (InterfaceStyle) -> Unit,
     onGlassRefractionChange: (Boolean) -> Unit,
@@ -92,6 +98,8 @@ fun MasonNavGraph(
     onRegularNotificationsChange: (Boolean) -> Unit,
     onIslandNotificationsChange: (Boolean) -> Unit,
     onFontSizeChange: (FontSizePreference) -> Unit,
+    onLanguageChange: (LanguagePreference) -> Unit,
+    onMessageSendModeChange: (MessageSendMode) -> Unit,
 ) {
     val navController = rememberNavController()
     val startSessionId = remember { UUID.randomUUID().toString() }
@@ -166,6 +174,16 @@ fun MasonNavGraph(
                 popUpTo(startRoute) { inclusive = false }
                 launchSingleTop = true
             }
+            }
+        }
+    }
+
+    LaunchedEffect(notificationRemoteThreadId) {
+        if (notificationRemoteThreadId != null &&
+            navController.currentDestination?.route != Routes.REMOTE_CONVERSATIONS
+        ) {
+            navController.navigate(Routes.REMOTE_CONVERSATIONS) {
+                launchSingleTop = true
             }
         }
     }
@@ -267,7 +285,7 @@ fun MasonNavGraph(
                 onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
                 onConversationSelected = ::navigateToConversation,
                 onNewChat = ::navigateToNewChat,
-                onDevicePairing = { navController.navigate(Routes.DEVICE_PAIRING) },
+                onDevicePairing = { navController.navigate(Routes.REMOTE_CONVERSATIONS) },
                 onOpenRemoteConversations = {
                     navController.navigate(Routes.REMOTE_CONVERSATIONS)
                 },
@@ -312,7 +330,7 @@ fun MasonNavGraph(
                 onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
                 onConversationSelected = ::navigateToConversation,
                 onNewChat = ::navigateToNewChat,
-                onDevicePairing = { navController.navigate(Routes.DEVICE_PAIRING) },
+                onDevicePairing = { navController.navigate(Routes.REMOTE_CONVERSATIONS) },
                 onOpenRemoteConversations = {
                     navController.navigate(Routes.REMOTE_CONVERSATIONS)
                 },
@@ -348,7 +366,7 @@ fun MasonNavGraph(
                     navController.navigate(Routes.INTEGRATIONS)
                 },
                 onNavigateToDevicePairing = {
-                    navController.navigate(Routes.DEVICE_PAIRING)
+                    navController.navigate(Routes.REMOTE_CONVERSATIONS)
                 },
                 onNavigateToPhoneAgent = {
                     navController.navigate(Routes.PHONE_AGENT)
@@ -365,6 +383,8 @@ fun MasonNavGraph(
                 onRegularNotificationsChange = onRegularNotificationsChange,
                 onIslandNotificationsChange = onIslandNotificationsChange,
                 onFontSizeChange = onFontSizeChange,
+                onLanguageChange = onLanguageChange,
+                onMessageSendModeChange = onMessageSendModeChange,
             )
         }
 
@@ -379,7 +399,7 @@ fun MasonNavGraph(
                     navController.navigate(Routes.INTEGRATIONS)
                 },
                 onNavigateToDevicePairing = {
-                    navController.navigate(Routes.DEVICE_PAIRING)
+                    navController.navigate(Routes.REMOTE_CONVERSATIONS)
                 },
                 onNavigateToPhoneAgent = {
                     navController.navigate(Routes.PHONE_AGENT)
@@ -396,6 +416,8 @@ fun MasonNavGraph(
                 onRegularNotificationsChange = onRegularNotificationsChange,
                 onIslandNotificationsChange = onIslandNotificationsChange,
                 onFontSizeChange = onFontSizeChange,
+                onLanguageChange = onLanguageChange,
+                onMessageSendModeChange = onMessageSendModeChange,
             )
         }
 
@@ -410,7 +432,17 @@ fun MasonNavGraph(
         }
 
         composable(Routes.DEVICE_PAIRING) {
-            DevicePairingScreen(onBack = { navController.popBackStack() })
+            // Keep the legacy route resolvable for restored navigation state,
+            // but always render the embedded Remote experience and its
+            // PairingStore. The old MASON pairing screen must not create a
+            // second record format.
+            MasonRemoteRoot(
+                settings = uiPreferences.toRemoteHostSettings(),
+                onBack = { navController.popBackStack() },
+                notificationActivityClass = com.denggl2.mason.MainActivity::class.java,
+                notificationThreadId = notificationRemoteThreadId,
+                onNotificationThreadConsumed = onRemoteNotificationConsumed,
+            )
         }
 
         composable(Routes.PHONE_AGENT) {
@@ -425,26 +457,13 @@ fun MasonNavGraph(
         }
 
         composable(Routes.REMOTE_CONVERSATIONS) {
-            RemoteConversationListScreen(
+            MasonRemoteRoot(
+                settings = uiPreferences.toRemoteHostSettings(),
                 onBack = { navController.popBackStack() },
-                onConversationSelected = { threadId ->
-                    navController.navigate(Routes.remoteConversation(threadId))
-                },
-                onPairingDisconnected = {
-                    navController.navigate(Routes.DEVICE_PAIRING) {
-                        popUpTo(Routes.REMOTE_CONVERSATIONS) { inclusive = true }
-                    }
-                },
+                notificationActivityClass = com.denggl2.mason.MainActivity::class.java,
+                notificationThreadId = notificationRemoteThreadId,
+                onNotificationThreadConsumed = onRemoteNotificationConsumed,
             )
-        }
-
-        composable(
-            route = Routes.REMOTE_CONVERSATION,
-            arguments = listOf(
-                navArgument("threadId") { type = NavType.StringType },
-            ),
-        ) {
-            RemoteConversationScreen(onBack = { navController.popBackStack() })
         }
 
         composable(
@@ -466,3 +485,38 @@ fun MasonNavGraph(
         }
     }
 }
+
+private fun UiPreferences.toRemoteHostSettings(): RemoteHostSettings = RemoteHostSettings(
+    themeMode = when (themeMode) {
+        ThemeMode.SYSTEM -> RemoteThemeMode.SYSTEM
+        ThemeMode.LIGHT -> RemoteThemeMode.LIGHT
+        ThemeMode.DARK -> RemoteThemeMode.DARK
+    },
+    interfaceStyle = when (interfaceStyle) {
+        InterfaceStyle.GLASS -> RemoteInterfaceStyle.GLASS
+        else -> RemoteInterfaceStyle.NATIVE
+    },
+    fontSize = when (fontSize) {
+        FontSizePreference.SMALL -> com.denggl2.masonremote.ui.settings.RemoteFontSizePreference.SMALL
+        FontSizePreference.MEDIUM -> com.denggl2.masonremote.ui.settings.RemoteFontSizePreference.MEDIUM
+        FontSizePreference.LARGE -> com.denggl2.masonremote.ui.settings.RemoteFontSizePreference.LARGE
+        FontSizePreference.EXTRA_LARGE -> com.denggl2.masonremote.ui.settings.RemoteFontSizePreference.EXTRA_LARGE
+    },
+    language = when (language) {
+        LanguagePreference.SYSTEM -> RemoteLanguagePreference.SYSTEM
+        LanguagePreference.CHINESE -> RemoteLanguagePreference.CHINESE
+        LanguagePreference.ENGLISH -> RemoteLanguagePreference.ENGLISH
+    },
+    glassRefractionEnabled = glassRefractionEnabled,
+    glassTransparency = glassTransparency,
+    glassFrost = glassFrost,
+    notificationMode = when {
+        islandNotificationsEnabled -> TaskNotificationMode.ISLAND
+        regularNotificationsEnabled -> TaskNotificationMode.REGULAR
+        else -> TaskNotificationMode.DISABLED
+    },
+    messageSendMode = when (messageSendMode) {
+        MessageSendMode.STEER -> RemoteMessageSendMode.STEER
+        MessageSendMode.QUEUE -> RemoteMessageSendMode.QUEUE
+    },
+)

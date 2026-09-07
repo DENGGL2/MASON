@@ -5,18 +5,18 @@ import org.junit.Test
 
 class UiPreferencesLogicTest {
     @Test
-    fun `interface style decoder preserves visible styles`() {
-        assertEquals(InterfaceStyle.ACRYLIC, decodeInterfaceStyle("ACRYLIC"))
+    fun `interface style decoder preserves supported styles`() {
+        assertEquals(InterfaceStyle.NATIVE, decodeInterfaceStyle("ACRYLIC"))
         assertEquals(InterfaceStyle.NATIVE, decodeInterfaceStyle("NATIVE"))
         assertEquals(InterfaceStyle.GLASS, decodeInterfaceStyle("GLASS"))
     }
 
     @Test
-    fun `interface style decoder falls back for legacy and unknown values`() {
-        assertEquals(InterfaceStyle.ACRYLIC, decodeInterfaceStyle("LIQUID_GLASS"))
-        assertEquals(InterfaceStyle.ACRYLIC, decodeInterfaceStyle("MATERIAL3"))
-        assertEquals(InterfaceStyle.ACRYLIC, decodeInterfaceStyle("UNKNOWN"))
-        assertEquals(InterfaceStyle.ACRYLIC, decodeInterfaceStyle(null))
+    fun `interface style decoder falls back to native for legacy and unknown values`() {
+        assertEquals(InterfaceStyle.NATIVE, decodeInterfaceStyle("LIQUID_GLASS"))
+        assertEquals(InterfaceStyle.NATIVE, decodeInterfaceStyle("MATERIAL3"))
+        assertEquals(InterfaceStyle.NATIVE, decodeInterfaceStyle("UNKNOWN"))
+        assertEquals(InterfaceStyle.NATIVE, decodeInterfaceStyle(null))
     }
 
     @Test

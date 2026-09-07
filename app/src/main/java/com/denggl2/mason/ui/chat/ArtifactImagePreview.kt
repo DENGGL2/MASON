@@ -49,7 +49,8 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
@@ -89,9 +90,16 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.denggl2.mason.data.ArtifactMetadata
+import com.denggl2.mason.ui.theme.LocalInterfaceStyle
 import com.denggl2.mason.ui.theme.LocalInterfaceEffects
 import com.denggl2.mason.ui.theme.floatingSurfaceEdge
 import androidx.compose.ui.graphics.luminance
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import com.denggl2.masonremote.ui.RemoteInterfaceEffectsProvider
+import com.denggl2.masonremote.ui.remote.RemoteImagePreviewHeader
+import com.denggl2.masonremote.ui.remote.RemoteImagePreviewDialog
+import com.denggl2.masonremote.ui.remote.RemotePreviewImage
+import com.denggl2.masonremote.ui.settings.RemoteInterfaceStyle
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Locale
@@ -136,7 +144,7 @@ internal fun ArtifactImageThumbnail(
 
                 is ArtifactBitmapState.Ready -> Image(
                     bitmap = state.bitmap.asImageBitmap(),
-                    contentDescription = "预览 ${artifact.name}",
+                    contentDescription = LocalRemoteStrings.current.displayText("预览 ${artifact.name}"),
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit,
                 )
@@ -318,7 +326,7 @@ private fun ArtifactSvgImagePreviewDialog(
             ) {
                 ArtifactImagePreviewAction(
                     icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                    contentDescription = "\u8fd4\u56de",
+                    contentDescription = LocalRemoteStrings.current.t("返回"),
                     onClick = onDismiss,
                     enabled = true,
                     size = 44.dp,
@@ -346,14 +354,14 @@ private fun ArtifactSvgImagePreviewDialog(
             ) {
                 ArtifactImagePreviewAction(
                     icon = Icons.Outlined.FileDownload,
-                    contentDescription = if (saveAction.saving) "正在保存图片" else "保存图片到本地",
+                    contentDescription = LocalRemoteStrings.current.t(if (saveAction.saving) "正在保存图片" else "保存图片到本地"),
                     enabled = !saveAction.saving && svgState !is ArtifactSvgState.Loading,
                     showProgress = saveAction.saving,
                     onClick = saveAction.onSave,
                 )
                 ArtifactImagePreviewAction(
                     icon = Icons.Outlined.Share,
-                    contentDescription = "分享图片",
+                    contentDescription = LocalRemoteStrings.current.t("分享图片"),
                     enabled = svgState !is ArtifactSvgState.Loading,
                     onClick = onShare,
                 )
@@ -369,160 +377,121 @@ internal fun ArtifactImagePreviewDialog(
     onDismiss: () -> Unit,
     onShare: () -> Unit,
 ) {
-    if (isSvgImageArtifact(artifact)) {
-        ArtifactSvgImagePreviewDialog(
-            artifact = artifact,
-            onDismiss = onDismiss,
-            onShare = onShare,
-        )
-        return
-    }
-    val bitmapState by rememberArtifactBitmap(artifact, ARTIFACT_PREVIEW_MAX_EDGE)
+    val previewState by rememberArtifactRemotePreviewImage(artifact)
     val saveAction = rememberArtifactImageSaveAction(artifact)
-    var scale by remember(artifact.path) { mutableFloatStateOf(MIN_IMAGE_SCALE) }
-    var offset by remember(artifact.path) { mutableStateOf(Offset.Zero) }
-    var viewportSize by remember(artifact.path) { mutableStateOf(IntSize.Zero) }
+    val hostStyle = LocalInterfaceStyle.current
+    val remoteStyle = when (hostStyle) {
+        com.denggl2.mason.data.InterfaceStyle.GLASS -> RemoteInterfaceStyle.GLASS
+        else -> RemoteInterfaceStyle.NATIVE
+    }
+    val effects = LocalInterfaceEffects.current
+    val strings = LocalRemoteStrings.current
 
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .artifactPreviewMaterial()
-                .clipToBounds(),
+        ArtifactPreviewWindowEffects()
+        RemoteInterfaceEffectsProvider(
+            interfaceStyle = remoteStyle,
+            glassRefractionEnabled = effects.glassRefractionEnabled,
+            glassTransparency = effects.compactSurfaceAlpha.let { alpha ->
+                // Convert the host's compact surface alpha back to the Remote
+                // transparency convention (1 - alpha) for visual parity.
+                (1f - alpha).coerceIn(0f, 1f)
+            },
+            glassFrost = effects.glassFrost,
         ) {
-            ArtifactPreviewWindowEffects()
-            when (val state = bitmapState) {
-                ArtifactBitmapState.Loading -> CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center),
-                    color = Color.White,
-                    strokeWidth = 2.dp,
-                )
-
-                is ArtifactBitmapState.Failed -> Text(
-                    text = state.message,
-                    color = Color.White.copy(alpha = 0.78f),
-                    fontSize = 13.sp,
-                    modifier = Modifier.align(Alignment.Center),
-                )
-
-                is ArtifactBitmapState.Ready -> {
-                    val bitmap = state.bitmap
-                    Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = artifact.name,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .onSizeChanged { size ->
-                                viewportSize = size
-                                offset = clampPreviewOffset(
-                                    offset = offset,
-                                    scale = scale,
-                                    viewportSize = size,
-                                    imageWidth = bitmap.width,
-                                    imageHeight = bitmap.height,
-                                )
-                            }
-                            .pointerInput(bitmap.width, bitmap.height, viewportSize) {
-                                detectTransformGestures { centroid, pan, zoom, _ ->
-                                    if (viewportSize.width <= 0 || viewportSize.height <= 0) {
-                                        return@detectTransformGestures
-                                    }
-                                    val zoomed = applyPreviewZoom(
-                                        centroid = centroid,
-                                        zoom = zoom,
-                                        pan = pan,
-                                        scale = scale,
-                                        offset = offset,
-                                        viewportSize = viewportSize,
-                                        imageWidth = bitmap.width,
-                                        imageHeight = bitmap.height,
-                                    )
-                                    scale = zoomed.scale
-                                    offset = zoomed.offset
-                                }
-                            }
-                            .pointerInteropFilter { event ->
-                                if (event.actionMasked != MotionEvent.ACTION_SCROLL) return@pointerInteropFilter false
-                                val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-                                if (wheelDelta == 0f) return@pointerInteropFilter false
-                                val zoomed = applyPreviewZoom(
-                                    centroid = Offset(event.x, event.y),
-                                    zoom = if (wheelDelta > 0f) 1.12f else 0.89f,
-                                    pan = Offset.Zero,
-                                    scale = scale,
-                                    offset = offset,
-                                    viewportSize = viewportSize,
-                                    imageWidth = bitmap.width,
-                                    imageHeight = bitmap.height,
-                                )
-                                scale = zoomed.scale
-                                offset = zoomed.offset
-                                true
-                            }
-                            .graphicsLayer {
-                                scaleX = scale
-                                scaleY = scale
-                                translationX = offset.x
-                                translationY = offset.y
-                            },
+            when (val state = previewState) {
+                ArtifactRemotePreviewState.Loading -> Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .artifactPreviewMaterial(),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.align(Alignment.Center),
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                    )
+                    RemoteImagePreviewHeader(
+                        onDismiss = onDismiss,
+                        modifier = Modifier.align(Alignment.TopCenter),
                     )
                 }
-            }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 10.dp, vertical = 8.dp)
-                    .align(Alignment.TopCenter),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ArtifactImagePreviewAction(
-                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                    contentDescription = "\u8fd4\u56de",
-                    onClick = onDismiss,
-                    enabled = true,
-                    size = 44.dp,
-                )
-                Text(
-                    text = "图片预览",
-                    color = MaterialTheme.colorScheme.onBackground,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                is ArtifactRemotePreviewState.Failed -> Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 12.dp),
-                )
-                Spacer(Modifier.size(44.dp))
-            }
+                        .fillMaxSize()
+                        .artifactPreviewMaterial(),
+                ) {
+                    Text(
+                        text = strings.displayText(state.message),
+                        color = Color.White.copy(alpha = 0.78f),
+                        fontSize = 13.sp,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                    RemoteImagePreviewHeader(
+                        onDismiss = onDismiss,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+                }
 
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 22.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                ArtifactImagePreviewAction(
-                    icon = Icons.Outlined.FileDownload,
-                    contentDescription = if (saveAction.saving) "正在保存图片" else "保存图片到本地",
-                    enabled = !saveAction.saving && bitmapState !is ArtifactBitmapState.Loading,
-                    showProgress = saveAction.saving,
-                    onClick = saveAction.onSave,
-                )
-                ArtifactImagePreviewAction(
-                    icon = Icons.Outlined.Share,
-                    contentDescription = "分享图片",
-                    enabled = bitmapState !is ArtifactBitmapState.Loading,
-                    onClick = onShare,
+                is ArtifactRemotePreviewState.Ready -> RemoteImagePreviewDialog(
+                    image = state.image,
+                    onDismiss = onDismiss,
+                    onShare = onShare,
+                    onSave = saveAction.onSave,
+                    saveInProgress = saveAction.saving,
                 )
             }
+        }
+    }
+}
+
+private sealed interface ArtifactRemotePreviewState {
+    data object Loading : ArtifactRemotePreviewState
+    data class Ready(val image: RemotePreviewImage) : ArtifactRemotePreviewState
+    data class Failed(val message: String) : ArtifactRemotePreviewState
+}
+
+@Composable
+private fun rememberArtifactRemotePreviewImage(
+    artifact: ArtifactMetadata,
+): State<ArtifactRemotePreviewState> {
+    val context = LocalContext.current
+    return produceState<ArtifactRemotePreviewState>(
+        initialValue = ArtifactRemotePreviewState.Loading,
+        key1 = artifact.path,
+        key2 = artifact.bytes,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val validated = validateImageArtifact(context, artifact).getOrThrow()
+                val isSvg = validated.mimeType == "image/svg+xml"
+                val maxBytes = if (isSvg) MAX_SVG_PREVIEW_BYTES else MAX_RASTER_PREVIEW_BYTES
+                require(validated.file.length() <= maxBytes) {
+                    if (isSvg) "SVG 图片超过 8 MB" else "图片超过 100 MB，无法直接预览"
+                }
+                val rawBytes = validated.file.readBytes()
+                val previewBytes = if (isSvg) {
+                    normalizeSvgForPreview(rawBytes).toByteArray(Charsets.UTF_8)
+                } else {
+                    rawBytes
+                }
+                require(previewBytes.isNotEmpty()) { "图片内容为空" }
+                require(previewBytes.size.toLong() <= maxBytes) {
+                    if (isSvg) "SVG 图片超过 8 MB" else "图片超过 100 MB，无法直接预览"
+                }
+                RemotePreviewImage(
+                    attachmentId = "artifact:${artifact.path}",
+                    name = artifact.name,
+                    mimeType = validated.mimeType,
+                    bytes = previewBytes,
+                )
+            }.fold(
+                onSuccess = ArtifactRemotePreviewState::Ready,
+                onFailure = { ArtifactRemotePreviewState.Failed(it.message ?: "图片无法预览") },
+            )
         }
     }
 }
@@ -695,6 +664,7 @@ private data class ArtifactImageSaveAction(
 @Composable
 private fun rememberArtifactImageSaveAction(artifact: ArtifactMetadata): ArtifactImageSaveAction {
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     val scope = rememberCoroutineScope()
     var saving by remember(artifact.path) { mutableStateOf(false) }
     val performSave = {
@@ -706,8 +676,8 @@ private fun rememberArtifactImageSaveAction(artifact: ArtifactMetadata): Artifac
                 Toast.makeText(
                     context,
                     result.fold(
-                        onSuccess = { saved -> "已保存到 ${saved.directory}" },
-                        onFailure = { error -> "保存失败：${error.message ?: "无法写入图片"}" },
+                        onSuccess = { saved -> strings.displayText("已保存到 ${saved.directory}") },
+                        onFailure = { error -> strings.displayText("保存失败：${error.message ?: strings.t("无法写入图片")}") },
                     ),
                     Toast.LENGTH_SHORT,
                 ).show()
@@ -720,7 +690,7 @@ private fun rememberArtifactImageSaveAction(artifact: ArtifactMetadata): Artifac
         if (granted) {
             performSave()
         } else {
-            Toast.makeText(context, "需要存储权限才能保存图片", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.t("需要存储权限才能保存图片"), Toast.LENGTH_SHORT).show()
         }
     }
     return ArtifactImageSaveAction(

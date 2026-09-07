@@ -32,6 +32,8 @@ class UiPreferencesDataStore @Inject constructor(
         val KEY_REGULAR_NOTIFICATIONS_ENABLED = booleanPreferencesKey("regular_notifications_enabled")
         val KEY_ISLAND_NOTIFICATIONS_ENABLED = booleanPreferencesKey("island_notifications_enabled")
         val KEY_FONT_SIZE = stringPreferencesKey("font_size")
+        val KEY_LANGUAGE = stringPreferencesKey("language")
+        val KEY_MESSAGE_SEND_MODE = stringPreferencesKey("message_send_mode")
     }
 
     val preferences: Flow<UiPreferences> = context.uiPreferencesStore.data.map { prefs ->
@@ -40,7 +42,9 @@ class UiPreferencesDataStore @Inject constructor(
                 ?.let { value -> ThemeMode.entries.firstOrNull { it.name == value } }
                 ?: ThemeMode.SYSTEM,
             interfaceStyle = decodeInterfaceStyle(prefs[KEY_INTERFACE_STYLE]),
-            glassRefractionEnabled = prefs[KEY_GLASS_REFRACTION_ENABLED] ?: false,
+            // Match the embedded Remote default. Older records that do not
+            // contain this key should receive the current Remote behavior.
+            glassRefractionEnabled = prefs[KEY_GLASS_REFRACTION_ENABLED] ?: true,
             glassTransparency = normalizeGlassTransparency(
                 prefs[KEY_GLASS_TRANSPARENCY] ?: DEFAULT_GLASS_TRANSPARENCY,
             ),
@@ -57,6 +61,12 @@ class UiPreferencesDataStore @Inject constructor(
             fontSize = prefs[KEY_FONT_SIZE]
                 ?.let { value -> FontSizePreference.entries.firstOrNull { it.name == value } }
                 ?: FontSizePreference.MEDIUM,
+            language = prefs[KEY_LANGUAGE]
+                ?.let { value -> LanguagePreference.entries.firstOrNull { it.name == value } }
+                ?: LanguagePreference.SYSTEM,
+            messageSendMode = prefs[KEY_MESSAGE_SEND_MODE]
+                ?.let { value -> MessageSendMode.entries.firstOrNull { it.name == value } }
+                ?: MessageSendMode.QUEUE,
         )
     }
 
@@ -113,13 +123,27 @@ class UiPreferencesDataStore @Inject constructor(
             prefs[KEY_FONT_SIZE] = fontSize.name
         }
     }
+
+    suspend fun updateLanguage(language: LanguagePreference) {
+        context.uiPreferencesStore.edit { prefs ->
+            prefs[KEY_LANGUAGE] = language.name
+        }
+    }
+
+    suspend fun updateMessageSendMode(mode: MessageSendMode) {
+        context.uiPreferencesStore.edit { prefs ->
+            prefs[KEY_MESSAGE_SEND_MODE] = mode.name
+        }
+    }
 }
 
 internal fun decodeInterfaceStyle(value: String?): InterfaceStyle = when (value) {
     InterfaceStyle.NATIVE.name -> InterfaceStyle.NATIVE
     InterfaceStyle.GLASS.name -> InterfaceStyle.GLASS
-    InterfaceStyle.ACRYLIC.name -> InterfaceStyle.ACRYLIC
-    else -> InterfaceStyle.ACRYLIC
+    // Acrylic was removed from the Remote design. Old values use native.
+    InterfaceStyle.ACRYLIC.name -> InterfaceStyle.NATIVE
+    InterfaceStyle.MATERIAL3.name -> InterfaceStyle.NATIVE
+    else -> InterfaceStyle.NATIVE
 }
 
 internal fun legacyNotificationsEnabled(

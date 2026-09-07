@@ -69,7 +69,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import com.denggl2.masonremote.ui.WithRemoteMaterialResources
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -152,6 +155,7 @@ fun RemoteConversationScreen(
     onBack: () -> Unit,
     viewModel: RemoteConversationViewModel = hiltViewModel(),
 ) {
+    val strings = LocalRemoteStrings.current
     val uiState by viewModel.uiState.collectAsState()
     val detail = uiState.detail
     val running = detail?.executionStatus == RemoteExecutionStatus.RUNNING
@@ -458,15 +462,15 @@ fun RemoteConversationScreen(
             ArtifactImagePreviewDialog(
                 artifact = artifact,
                 onDismiss = viewModel::dismissPreview,
-                onShare = { shareArtifact(context, artifact) },
+                onShare = { shareArtifact(context, artifact, strings = strings) },
             )
         } else {
             ArtifactPreviewDialog(
                 artifact = artifact,
                 onDismiss = viewModel::dismissPreview,
-                onOpen = { openArtifact(context, artifact, edit = false) },
-                onEdit = { openArtifact(context, artifact, edit = true) },
-                onShare = { shareArtifact(context, artifact) },
+                onOpen = { openArtifact(context, artifact, edit = false, strings = strings) },
+                onEdit = { openArtifact(context, artifact, edit = true, strings = strings) },
+                onShare = { shareArtifact(context, artifact, strings = strings) },
             )
         }
     }
@@ -489,7 +493,7 @@ private fun RemoteScrollToBottomButton(
         ) {
             Icon(
                 Icons.Outlined.KeyboardArrowDown,
-                contentDescription = "回到最新消息",
+                contentDescription = LocalRemoteStrings.current.t("回到最新消息"),
                 tint = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.size(24.dp),
             )
@@ -671,7 +675,7 @@ private fun RemoteConversationComposer(
                         Box {
                             ComposerIconButton(
                                 icon = Icons.Outlined.Add,
-                                contentDescription = "添加",
+                                contentDescription = LocalRemoteStrings.current.t("添加"),
                                 enabled = enabled,
                                 selected = addMenuExpanded,
                                 onClick = {
@@ -992,7 +996,7 @@ private fun RemoteSelectorPill(
                             Spacer(Modifier.width(5.dp))
                             Icon(
                                 Icons.Outlined.Check,
-                                contentDescription = "当前选项",
+                                contentDescription = LocalRemoteStrings.current.t("当前选项"),
                                 modifier = Modifier.size(16.dp),
                             )
                         }
@@ -1148,7 +1152,7 @@ private fun RemoteMessage(
                         } else {
                             Icon(
                                 Icons.Outlined.FileDownload,
-                                contentDescription = "从电脑读取并预览",
+                                contentDescription = LocalRemoteStrings.current.t("从电脑读取并预览"),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(17.dp),
                             )

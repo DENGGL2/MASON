@@ -36,7 +36,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -74,6 +76,7 @@ fun ManualIntegrationsScreen(
     val mcpStates by viewModel.mcpStates.collectAsState()
     val a2aStates by viewModel.a2aStates.collectAsState()
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     var editorType by remember(openMcpEditorOnStart) {
         mutableStateOf(if (openMcpEditorOnStart) IntegrationEditorType.Mcp else null)
     }
@@ -81,8 +84,10 @@ fun ManualIntegrationsScreen(
     var editingA2a by remember { mutableStateOf<A2aAgentConfig?>(null) }
     var pendingRemoval by remember { mutableStateOf<PendingRemoval?>(null) }
 
-    LaunchedEffect(Unit) {
-        viewModel.messages.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    LaunchedEffect(viewModel, strings.language) {
+        viewModel.messages.collect {
+            Toast.makeText(context, strings.displayText(it), Toast.LENGTH_SHORT).show()
+        }
     }
     val bottomSafePadding = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
 
@@ -94,7 +99,7 @@ fun ManualIntegrationsScreen(
                 title = { Text("手动配置") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = LocalRemoteStrings.current.t("返回"))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),

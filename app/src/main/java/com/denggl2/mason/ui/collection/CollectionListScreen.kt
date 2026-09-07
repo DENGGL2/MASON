@@ -69,7 +69,10 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import com.denggl2.masonremote.ui.RemoteStrings
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -184,6 +187,7 @@ fun CollectionListScreen(
     viewModel: CollectionListViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     val skillState by viewModel.skillState.collectAsState()
     val automationState by viewModel.automationState.collectAsState()
     val automationCapabilityIssues by viewModel.automationCapabilityIssues.collectAsState()
@@ -274,14 +278,14 @@ fun CollectionListScreen(
 
     LaunchedEffect(skillState.message) {
         skillState.message?.let { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.displayText(message), Toast.LENGTH_SHORT).show()
             viewModel.consumeMessage()
         }
     }
 
     LaunchedEffect(automationState.message) {
         automationState.message?.let { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.displayText(message), Toast.LENGTH_SHORT).show()
             viewModel.consumeAutomationMessage()
         }
     }
@@ -328,7 +332,7 @@ fun CollectionListScreen(
                     ) {
                         Icon(
                             Icons.AutoMirrored.Outlined.ArrowBack,
-                            contentDescription = "返回",
+                            contentDescription = LocalRemoteStrings.current.t("返回"),
                             tint = MaterialTheme.colorScheme.onBackground,
                         )
                     }
@@ -359,7 +363,7 @@ fun CollectionListScreen(
                         ) {
                             Icon(
                                 imageVector = if (searchActive) Icons.Outlined.Close else Icons.Outlined.Search,
-                                contentDescription = if (searchActive) "关闭搜索" else "搜索",
+                                contentDescription = LocalRemoteStrings.current.t(if (searchActive) "关闭搜索" else "搜索"),
                                 tint = MaterialTheme.colorScheme.onBackground,
                             )
                         }
@@ -453,12 +457,12 @@ fun CollectionListScreen(
                                                 selectedArtifactPaths = selectedArtifactPaths + entry.path
                                             }
                                         },
-                                        onOpen = { openEntry(context, entry, edit = false) },
+                                        onOpen = { openEntry(context, entry, edit = false, strings = strings) },
                                         onEdit = {
                                             entry.automation?.let { editingAutomation = it }
-                                                ?: openEntry(context, entry, edit = true)
+                                                ?: openEntry(context, entry, edit = true, strings = strings)
                                         },
-                                        onShare = { shareEntry(context, entry) },
+                                        onShare = { shareEntry(context, entry, strings = strings) },
                                         onToggleSkill = entry.skillEnabled?.let { enabled ->
                                             { viewModel.setSkillEnabled(entry.path, !enabled) }
                                         },
@@ -597,7 +601,7 @@ fun CollectionListScreen(
                             }
                             Toast.makeText(
                                 context,
-                                "已删除 ${deletedPaths.size} 个产出",
+                                strings.displayText("已删除 ${deletedPaths.size} 个产出"),
                                 Toast.LENGTH_SHORT,
                             ).show()
                         }
@@ -624,12 +628,12 @@ fun CollectionListScreen(
                 entries = entries.map { item -> if (item.path == entry.path) updated else item }
                 previewEntry = updated
             },
-            onOpen = { openEntry(context, entry, edit = false) },
+            onOpen = { openEntry(context, entry, edit = false, strings = strings) },
             onEdit = {
                 entry.automation?.let { editingAutomation = it }
-                    ?: openEntry(context, entry, edit = true)
+                    ?: openEntry(context, entry, edit = true, strings = strings)
             },
-            onShare = { shareEntry(context, entry) },
+            onShare = { shareEntry(context, entry, strings = strings) },
         )
     }
 
@@ -775,6 +779,7 @@ private fun CollectionEntryRow(
     onShowAutomationLogs: (() -> Unit)?,
     automationStatus: String?,
 ) {
+    val strings = LocalRemoteStrings.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -839,7 +844,8 @@ private fun CollectionEntryRow(
                     Spacer(Modifier.height(3.dp))
                 }
                 Text(
-                    "${entry.typeLabel} · ${entry.sourceLabel} · ${formatModifiedTime(entry.modifiedAt)} · ${entry.sizeLabel}",
+                    "${strings.displayText(entry.typeLabel)} · ${strings.displayText(entry.sourceLabel)} · " +
+                        "${formatModifiedTime(entry.modifiedAt, strings)} · ${strings.displayText(entry.sizeLabel)}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.70f),
                     fontSize = 10.sp,
                     maxLines = 1,
@@ -1695,8 +1701,9 @@ private fun EntryPreviewDialog(
     onEdit: () -> Unit,
     onShare: () -> Unit,
 ) {
-    val previewText = remember(entry.path, entry.modifiedAt) {
-        buildPreviewText(entry)
+    val strings = LocalRemoteStrings.current
+    val previewText = remember(entry.path, entry.modifiedAt, strings.isEnglish) {
+        buildPreviewText(entry, strings)
     }
     var editingTitle by remember(entry.path) { mutableStateOf(false) }
     val titleFocusRequester = remember { FocusRequester() }
@@ -1750,14 +1757,14 @@ private fun EntryPreviewDialog(
                                     editingTitle = true
                                 },
                             ) {
-                                Icon(Icons.Outlined.Edit, contentDescription = "编辑标题")
+                                Icon(Icons.Outlined.Edit, contentDescription = LocalRemoteStrings.current.t("编辑标题"))
                             }
                         }
                     }
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "${entry.typeLabel} · ${entry.sourceLabel}",
+                    "${strings.displayText(entry.typeLabel)} · ${strings.displayText(entry.sourceLabel)}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
                 )
@@ -2046,22 +2053,38 @@ private fun File.readMeaningfulLine(): String? =
             ?.take(140)
     }.getOrNull()
 
-private fun buildPreviewText(entry: CollectionEntry): String {
+private fun buildPreviewText(entry: CollectionEntry, strings: RemoteStrings): String {
     val file = entry.previewFile ?: return if (entry.isDirectory) {
-        "这个文件夹里暂时没有可预览的说明文件。\n\n路径：${entry.path}"
+        strings.text(
+            "这个文件夹里暂时没有可预览的说明文件。\n\n路径：${entry.path}",
+            "This folder has no previewable description file yet.\n\nPath: ${entry.path}",
+        )
     } else {
-        "暂时无法预览这个文件。\n\n路径：${entry.path}"
+        strings.text(
+            "暂时无法预览这个文件。\n\n路径：${entry.path}",
+            "This file cannot be previewed right now.\n\nPath: ${entry.path}",
+        )
     }
 
     if (!file.isTextLike()) {
-        return "这个文件适合用本地软件打开预览。\n\n文件：${file.name}\n路径：${file.absolutePath}"
+        return strings.text(
+            "这个文件适合用本地软件打开预览。\n\n文件：${file.name}\n路径：${file.absolutePath}",
+            "Open this file in a local app to preview it.\n\nFile: ${file.name}\nPath: ${file.absolutePath}",
+        )
     }
 
     return runCatching {
         val text = file.readText(Charsets.UTF_8)
-        if (text.length > 6000) text.take(6000) + "\n\n…已截取前 6000 字" else text
+        if (text.length > 6000) {
+            text.take(6000) + strings.text("\n\n…已截取前 6000 字", "\n\n…Truncated after 6,000 characters")
+        } else {
+            text
+        }
     }.getOrElse { error ->
-        "读取预览失败：${error.message ?: error.javaClass.simpleName}\n\n路径：${file.absolutePath}"
+        strings.text(
+            "读取预览失败：${error.message ?: error.javaClass.simpleName}\n\n路径：${file.absolutePath}",
+            "Preview read failed: ${error.message ?: error.javaClass.simpleName}\n\nPath: ${file.absolutePath}",
+        )
     }
 }
 
@@ -2073,10 +2096,15 @@ private fun File.isTextLike(): Boolean {
     )
 }
 
-private fun openEntry(context: Context, entry: CollectionEntry, edit: Boolean) {
+private fun openEntry(
+    context: Context,
+    entry: CollectionEntry,
+    edit: Boolean,
+    strings: RemoteStrings,
+) {
     val file = entry.previewFile ?: File(entry.path)
     if (!file.exists() || file.isDirectory) {
-        Toast.makeText(context, "暂时没有可打开的文件", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("暂时没有可打开的文件"), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -2088,23 +2116,34 @@ private fun openEntry(context: Context, entry: CollectionEntry, edit: Boolean) {
     }
 
     runCatching {
-        val chooser = Intent.createChooser(intent, if (edit) "选择编辑应用" else "选择打开应用").apply {
+        val chooser = Intent.createChooser(
+            intent,
+            strings.t(if (edit) "选择编辑应用" else "选择打开应用"),
+        ).apply {
             putExtra("android.intent.extra.AUTO_LAUNCH_SINGLE_CHOICE", false)
         }
         context.startActivity(chooser)
     }.onFailure { error ->
         if (error is ActivityNotFoundException) {
-            Toast.makeText(context, "没有找到可用应用", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.t("没有找到可用应用"), Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(context, "打开失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                strings.displayText("打开失败：${error.message ?: error.javaClass.simpleName}"),
+                Toast.LENGTH_SHORT,
+            ).show()
         }
     }
 }
 
-private fun shareEntry(context: Context, entry: CollectionEntry) {
+private fun shareEntry(
+    context: Context,
+    entry: CollectionEntry,
+    strings: RemoteStrings,
+) {
     val file = entry.previewFile ?: File(entry.path)
     if (!file.exists() || file.isDirectory) {
-        Toast.makeText(context, "暂时没有可分享的文件", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("暂时没有可分享的文件"), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -2116,9 +2155,13 @@ private fun shareEntry(context: Context, entry: CollectionEntry) {
     }
 
     runCatching {
-        context.startActivity(Intent.createChooser(intent, "分享 ${file.name}"))
+        context.startActivity(Intent.createChooser(intent, strings.displayText("分享 ${file.name}")))
     }.onFailure { error ->
-        Toast.makeText(context, "分享失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            strings.displayText("分享失败：${error.message ?: error.javaClass.simpleName}"),
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 }
 
@@ -2151,9 +2194,10 @@ private fun File.safePath(): String = try {
     absolutePath
 }
 
-private fun formatModifiedTime(value: Long): String {
-    if (value <= 0L) return "未知时间"
-    return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(value))
+private fun formatModifiedTime(value: Long, strings: RemoteStrings): String {
+    if (value <= 0L) return strings.text("未知时间", "Unknown time")
+    val locale = if (strings.isEnglish) Locale.ENGLISH else Locale.getDefault()
+    return SimpleDateFormat("yyyy-MM-dd HH:mm", locale).format(Date(value))
 }
 
 private fun formatFileSize(bytes: Long): String {

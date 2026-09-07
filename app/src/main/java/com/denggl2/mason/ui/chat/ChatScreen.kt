@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ContentValues
 import android.content.ContextWrapper
+import android.content.res.Configuration
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -133,7 +134,11 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import com.denggl2.masonremote.ui.RemoteStrings
+import com.denggl2.masonremote.ui.WithRemoteMaterialResources
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -190,6 +195,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -1158,6 +1164,7 @@ internal fun ChatScreen(
     historyViewModel: ConversationListViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     val uiState by viewModel.uiState.collectAsState()
     val apiConfig by viewModel.apiConfig.collectAsState()
     val installedSkills by viewModel.installedSkills.collectAsState()
@@ -1454,7 +1461,7 @@ internal fun ChatScreen(
 
     LaunchedEffect(Unit) {
         historyViewModel.toastEvent.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.displayText(message), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1785,7 +1792,7 @@ internal fun ChatScreen(
                                 Box(modifier = Modifier.size(24.dp)) {
                                     Icon(
                                         Icons.Outlined.Menu,
-                                        contentDescription = "打开菜单",
+                                        contentDescription = LocalRemoteStrings.current.t("打开菜单"),
                                         tint = MaterialTheme.colorScheme.onBackground,
                                         modifier = Modifier
                                             .size(23.dp)
@@ -1847,7 +1854,7 @@ internal fun ChatScreen(
                             ) {
                                 Icon(
                                     Icons.Outlined.KeyboardArrowDown,
-                                    contentDescription = "回到最新消息",
+                                    contentDescription = LocalRemoteStrings.current.t("回到最新消息"),
                                     tint = MaterialTheme.colorScheme.onBackground,
                                     modifier = Modifier.size(24.dp),
                                 )
@@ -2096,6 +2103,7 @@ private fun ToolApprovalDetailSheet(
         ToolRiskLevel.Medium -> "需要确认"
         ToolRiskLevel.High -> "高风险"
     }
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = MasonSheetShape,
@@ -2177,6 +2185,7 @@ private fun ToolApprovalDetailSheet(
             Spacer(Modifier.height(18.dp))
         }
     }
+}
 }
 
 @Composable
@@ -2415,7 +2424,7 @@ private fun MasonDrawer(
                     ) {
                         Icon(
                             Icons.Outlined.Close,
-                            contentDescription = "关闭搜索",
+                            contentDescription = LocalRemoteStrings.current.t("关闭搜索"),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(16.dp),
                         )
@@ -2462,7 +2471,7 @@ private fun MasonDrawer(
                     ) {
                         Icon(
                             Icons.Outlined.Search,
-                            contentDescription = "搜索对话",
+                            contentDescription = LocalRemoteStrings.current.t("搜索对话"),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(17.dp),
                         )
@@ -2722,33 +2731,60 @@ private fun AdaptiveChatLayout(
                 }
             }
         }
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            gesturesEnabled = drawerState.currentValue == DrawerValue.Open,
-            scrimColor = Color.Transparent,
-            drawerContent = drawerContent,
-            content = {
-                Box(modifier = Modifier.fillMaxSize().then(openGestureModifier)) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        content()
+        WithMaterialEnglishResources {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                gesturesEnabled = drawerState.currentValue == DrawerValue.Open,
+                scrimColor = Color.Transparent,
+                drawerContent = drawerContent,
+                content = {
+                    Box(modifier = Modifier.fillMaxSize().then(openGestureModifier)) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            content()
+                        }
+                        if (
+                            drawerState.currentValue == DrawerValue.Open ||
+                                drawerState.targetValue == DrawerValue.Open
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.12f))
+                                    .clickable {
+                                        drawerGestureScope.launch { drawerState.close() }
+                                    },
+                            )
+                        }
                     }
-                    if (
-                        drawerState.currentValue == DrawerValue.Open ||
-                            drawerState.targetValue == DrawerValue.Open
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.12f))
-                                .clickable {
-                                    drawerGestureScope.launch { drawerState.close() }
-                                },
-                        )
-                    }
-                }
-            },
-        )
+                },
+            )
+        }
     }
+}
+
+/**
+ * Material3 reads its built-in drawer semantics from the current resource
+ * configuration. The app has an in-app language preference, so provide a
+ * matching configuration context for that library-owned string.
+ */
+@Composable
+private fun WithMaterialEnglishResources(content: @Composable () -> Unit) {
+    val strings = LocalRemoteStrings.current
+    if (!strings.isEnglish) {
+        content()
+        return
+    }
+    val context = LocalContext.current
+    val englishContext = remember(context) {
+        val configuration = Configuration(context.resources.configuration)
+        configuration.setLocale(Locale.ENGLISH)
+        context.createConfigurationContext(configuration)
+    }
+    CompositionLocalProvider(
+        LocalContext provides englishContext,
+        LocalConfiguration provides englishContext.resources.configuration,
+        content = content,
+    )
 }
 
 internal fun shouldOpenDrawerFromGesture(
@@ -2769,15 +2805,17 @@ private fun TopModelMenuButton(
     onExpandedChange: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
+    val strings = LocalRemoteStrings.current
     Box {
         GlassIconButton(
             onClick = { onExpandedChange(!expanded) },
         ) {
             Icon(
                 imageVector = ImageVector.vectorResource(R.drawable.ic_model_switch),
-                contentDescription =
-                    "当前模型：聊天 ${summary.chatModelName}，识图 ${summary.visionModelName}，" +
-                        "图片生成 ${summary.imageModelName}",
+                contentDescription = strings.text(
+                    "当前模型：聊天 ${summary.chatModelName}，识图 ${summary.visionModelName}，图片生成 ${summary.imageModelName}",
+                    "Current model: Chat ${summary.chatModelName}, Vision ${summary.visionModelName}, Image generation ${summary.imageModelName}",
+                ),
                 tint = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.size(23.dp),
             )
@@ -2813,7 +2851,7 @@ private fun TopModelMenuButton(
                     ) {
                         Icon(
                             Icons.Outlined.Settings,
-                            contentDescription = "打开模型配置",
+                            contentDescription = LocalRemoteStrings.current.t("打开模型配置"),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp),
                         )
@@ -3136,6 +3174,7 @@ private fun DrawerConversationItem(
 
 @Composable
 private fun EmptyChatState(modifier: Modifier = Modifier) {
+    val strings = LocalRemoteStrings.current
     var variantIndex by rememberSaveable { mutableIntStateOf(nextEmptyChatVariantIndex()) }
     val variant = emptyChatVariants[variantIndex]
     val primaryMotion = remember { Animatable(0f) }
@@ -3440,7 +3479,9 @@ private fun EmptyChatState(modifier: Modifier = Modifier) {
                                 R.drawable.mason_empty_chat_computer
                             },
                         ),
-                        contentDescription = "石头屏幕助手，${variant.prompt}",
+                        contentDescription = strings.displayText(
+                            "石头屏幕助手，${strings.displayText(variant.prompt)}",
+                        ),
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit,
                     )
@@ -3800,7 +3841,7 @@ internal fun ActivitySummaryRow(
             if (onClick != null) {
                 Icon(
                     if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                    contentDescription = if (expanded) "收起" else "展开",
+                    contentDescription = LocalRemoteStrings.current.t(if (expanded) "收起" else "展开"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
@@ -3894,7 +3935,7 @@ private fun TaskProcessLine(
                 Spacer(Modifier.width(6.dp))
                 Icon(
                     Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                    contentDescription = "查看执行详情",
+                    contentDescription = LocalRemoteStrings.current.t("查看执行详情"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
@@ -4083,6 +4124,7 @@ private fun ToolExecutionDetailSheet(
         redactSensitiveToolText(detail.result?.content ?: detail.step.error ?: "暂无返回内容")
     }
 
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = MasonSheetShape,
@@ -4163,6 +4205,7 @@ private fun ToolExecutionDetailSheet(
             Spacer(Modifier.height(28.dp))
         }
     }
+    }
 }
 
 @Composable
@@ -4183,7 +4226,7 @@ private fun ExecutionDetailSection(
             IconButton(onClick = onCopy, modifier = Modifier.size(34.dp)) {
                 Icon(
                     Icons.Outlined.ContentCopy,
-                    contentDescription = "复制$label",
+                    contentDescription = LocalRemoteStrings.current.displayText("复制$label"),
                     modifier = Modifier.size(16.dp),
                 )
             }
@@ -4992,6 +5035,8 @@ private fun UserMessageActionSheet(
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = MasonSheetShape,
@@ -5018,7 +5063,7 @@ private fun UserMessageActionSheet(
                 label = "复制消息",
                 onClick = {
                     clipboard.setText(AnnotatedString(copyContent))
-                    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, strings.t("已复制"), Toast.LENGTH_SHORT).show()
                     onDismiss()
                 },
             )
@@ -5033,6 +5078,7 @@ private fun UserMessageActionSheet(
             Spacer(Modifier.height(18.dp))
         }
     }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -5044,6 +5090,8 @@ private fun AssistantActionSheet(
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = MasonSheetShape,
@@ -5070,7 +5118,7 @@ private fun AssistantActionSheet(
                 label = "复制回答",
                 onClick = {
                     clipboard.setText(AnnotatedString(content))
-                    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, strings.t("已复制"), Toast.LENGTH_SHORT).show()
                     onDismiss()
                 },
             )
@@ -5087,11 +5135,12 @@ private fun AssistantActionSheet(
                 label = "分享回答",
                 onClick = {
                     onDismiss()
-                    shareText(context, content)
+                    shareText(context, content, strings)
                 },
             )
             Spacer(Modifier.height(18.dp))
         }
+    }
     }
 }
 
@@ -5210,16 +5259,18 @@ private fun MarkdownTableBlock(
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val strings = LocalRemoteStrings.current
     var showFullScreen by remember(table) { mutableStateOf(false) }
     val copyTable = {
         clipboard.setText(AnnotatedString(messageTableToTsv(table)))
-        Toast.makeText(context, "表格已复制", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("表格已复制"), Toast.LENGTH_SHORT).show()
     }
     val downloadTable = {
         val savedName = saveMessageTableCsv(context, table)
         Toast.makeText(
             context,
-            savedName?.let { "已下载 $it" } ?: "表格下载失败",
+            savedName?.let { strings.displayText("已下载 $it") }
+                ?: strings.t("表格下载失败"),
             Toast.LENGTH_SHORT,
         ).show()
     }
@@ -5259,7 +5310,7 @@ private fun MarkdownTableBlock(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(onClick = { showFullScreen = false }) {
-                        Icon(Icons.Outlined.Close, contentDescription = "关闭表格")
+                        Icon(Icons.Outlined.Close, contentDescription = LocalRemoteStrings.current.t("关闭表格"))
                     }
                     Text(
                         "表格",
@@ -5269,10 +5320,10 @@ private fun MarkdownTableBlock(
                         modifier = Modifier.weight(1f),
                     )
                     IconButton(onClick = copyTable) {
-                        Icon(Icons.Outlined.ContentCopy, contentDescription = "复制表格")
+                        Icon(Icons.Outlined.ContentCopy, contentDescription = LocalRemoteStrings.current.t("复制表格"))
                     }
                     IconButton(onClick = downloadTable) {
-                        Icon(Icons.Outlined.FileDownload, contentDescription = "下载表格")
+                        Icon(Icons.Outlined.FileDownload, contentDescription = LocalRemoteStrings.current.t("下载表格"))
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
@@ -5321,13 +5372,13 @@ private fun TableToolbar(
             modifier = Modifier.weight(1f),
         )
         IconButton(onClick = onExpand, modifier = Modifier.size(34.dp)) {
-            Icon(Icons.Outlined.OpenInFull, contentDescription = "全屏查看", tint = actionColor, modifier = Modifier.size(15.dp))
+            Icon(Icons.Outlined.OpenInFull, contentDescription = LocalRemoteStrings.current.t("全屏查看"), tint = actionColor, modifier = Modifier.size(15.dp))
         }
         IconButton(onClick = onCopy, modifier = Modifier.size(34.dp)) {
-            Icon(Icons.Outlined.ContentCopy, contentDescription = "复制表格", tint = actionColor, modifier = Modifier.size(15.dp))
+            Icon(Icons.Outlined.ContentCopy, contentDescription = LocalRemoteStrings.current.t("复制表格"), tint = actionColor, modifier = Modifier.size(15.dp))
         }
         IconButton(onClick = onDownload, modifier = Modifier.size(34.dp)) {
-            Icon(Icons.Outlined.FileDownload, contentDescription = "下载表格", tint = actionColor, modifier = Modifier.size(16.dp))
+            Icon(Icons.Outlined.FileDownload, contentDescription = LocalRemoteStrings.current.t("下载表格"), tint = actionColor, modifier = Modifier.size(16.dp))
         }
     }
 }
@@ -5457,6 +5508,7 @@ private fun CodeBlock(
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -5480,13 +5532,13 @@ private fun CodeBlock(
             IconButton(
                 onClick = {
                     clipboard.setText(AnnotatedString(code))
-                    Toast.makeText(context, "代码已复制", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, strings.t("代码已复制"), Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.size(30.dp),
             ) {
                 Icon(
                     Icons.Outlined.ContentCopy,
-                    contentDescription = "复制代码",
+                    contentDescription = LocalRemoteStrings.current.t("复制代码"),
                     tint = actionColor,
                     modifier = Modifier.size(15.dp),
                 )
@@ -5598,6 +5650,7 @@ private fun OutputMentionStrip(outputs: List<String>) {
 @Composable
 internal fun ArtifactMentionStrip(artifacts: List<ArtifactMetadata>) {
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     var previewArtifact by remember { mutableStateOf<ArtifactMetadata?>(null) }
     Column {
         artifacts.forEachIndexed { index, artifact ->
@@ -5659,23 +5712,23 @@ internal fun ArtifactMentionStrip(artifacts: List<ArtifactMetadata>) {
                     Spacer(Modifier.width(4.dp))
                     MessageActionButton(
                         icon = Icons.Outlined.Visibility,
-                        contentDescription = "预览产出",
+                        contentDescription = LocalRemoteStrings.current.t("预览产出"),
                         onClick = { previewArtifact = artifact },
                     )
                     MessageActionButton(
                         icon = Icons.Outlined.FileDownload,
-                        contentDescription = "打开产出",
-                        onClick = { openArtifact(context, artifact, edit = false) },
+                        contentDescription = LocalRemoteStrings.current.t("打开产出"),
+                        onClick = { openArtifact(context, artifact, edit = false, strings = strings) },
                     )
                     MessageActionButton(
                         icon = Icons.Outlined.Edit,
-                        contentDescription = "编辑产出",
-                        onClick = { openArtifact(context, artifact, edit = true) },
+                        contentDescription = LocalRemoteStrings.current.t("编辑产出"),
+                        onClick = { openArtifact(context, artifact, edit = true, strings = strings) },
                     )
                     MessageActionButton(
                         icon = Icons.Outlined.Share,
-                        contentDescription = "分享产出",
-                        onClick = { shareArtifact(context, artifact) },
+                        contentDescription = LocalRemoteStrings.current.t("分享产出"),
+                        onClick = { shareArtifact(context, artifact, strings = strings) },
                     )
                 }
             }
@@ -5692,15 +5745,15 @@ internal fun ArtifactMentionStrip(artifacts: List<ArtifactMetadata>) {
             ArtifactImagePreviewDialog(
                 artifact = artifact,
                 onDismiss = { previewArtifact = null },
-                onShare = { shareArtifact(context, artifact) },
+                onShare = { shareArtifact(context, artifact, strings = strings) },
             )
         } else {
             ArtifactPreviewDialog(
                 artifact = artifact,
                 onDismiss = { previewArtifact = null },
-                onOpen = { openArtifact(context, artifact, edit = false) },
-                onEdit = { openArtifact(context, artifact, edit = true) },
-                onShare = { shareArtifact(context, artifact) },
+                onOpen = { openArtifact(context, artifact, edit = false, strings = strings) },
+                onEdit = { openArtifact(context, artifact, edit = true, strings = strings) },
+                onShare = { shareArtifact(context, artifact, strings = strings) },
             )
         }
     }
@@ -5715,6 +5768,7 @@ internal fun ArtifactPreviewDialog(
     onEdit: () -> Unit,
     onShare: () -> Unit,
 ) {
+    val strings = LocalRemoteStrings.current
     val previewText = remember(artifact.path, artifact.bytes) {
         buildArtifactPreviewText(artifact)
     }
@@ -5723,6 +5777,7 @@ internal fun ArtifactPreviewDialog(
         enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
     )
 
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = MasonSheetShape,
@@ -5771,7 +5826,7 @@ internal fun ArtifactPreviewDialog(
                 IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
                     Icon(
                         Icons.Outlined.Close,
-                        contentDescription = "关闭预览",
+                        contentDescription = LocalRemoteStrings.current.t("关闭预览"),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
                     )
@@ -5830,6 +5885,7 @@ internal fun ArtifactPreviewDialog(
             Spacer(Modifier.height(22.dp))
         }
     }
+    }
 }
 
 @Composable
@@ -5864,10 +5920,11 @@ private fun ArtifactSheetAction(
 @Composable
 private fun ReferenceStrip(references: List<String>) {
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         itemsIndexed(references) { index, reference ->
             Box(
-                modifier = Modifier.clickable { openUrl(context, reference) },
+                modifier = Modifier.clickable { openUrl(context, reference, strings) },
             ) {
                 InfoChip(
                     icon = Icons.Outlined.CheckCircle,
@@ -6023,7 +6080,7 @@ private fun SkillContextChip(
         ) {
             Icon(
                 Icons.Outlined.Close,
-                contentDescription = "移除 Skill",
+                contentDescription = LocalRemoteStrings.current.t("移除 Skill"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(12.dp),
             )
@@ -6072,7 +6129,7 @@ private fun AttachmentContextChip(
         ) {
             Icon(
                 Icons.Outlined.Close,
-                contentDescription = "移除附件",
+                contentDescription = LocalRemoteStrings.current.t("移除附件"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(12.dp),
             )
@@ -6192,7 +6249,7 @@ private fun InputBar(
                 Box {
                     ComposerIconButton(
                         icon = Icons.Outlined.Add,
-                        contentDescription = "添加",
+                        contentDescription = LocalRemoteStrings.current.t("添加"),
                         enabled = enabled,
                         selected = addMenuExpanded,
                         onClick = {
@@ -6428,7 +6485,7 @@ private fun RiskApprovalPill(
             ) {
                 Icon(
                     Icons.Outlined.Check,
-                    contentDescription = "允许一次",
+                    contentDescription = LocalRemoteStrings.current.t("允许一次"),
                     tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(17.dp),
                 )
@@ -6558,7 +6615,7 @@ private fun ModelModeSwitcher(
             Spacer(Modifier.width(2.dp))
             Icon(
                 Icons.Outlined.KeyboardArrowDown,
-                contentDescription = "切换模型模式",
+                contentDescription = LocalRemoteStrings.current.t("切换模型模式"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
                     .size(17.dp)
@@ -6627,7 +6684,7 @@ private fun ModelModeMenuRow(
         if (selected) {
             Icon(
                 Icons.Outlined.CheckCircle,
-                contentDescription = "已选择",
+                contentDescription = LocalRemoteStrings.current.t("已选择"),
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(17.dp),
             )
@@ -6716,14 +6773,14 @@ internal fun ComposerSendButton(
         when (action) {
             ComposerPrimaryAction.Stop -> Icon(
                 imageVector = Icons.Filled.Stop,
-                contentDescription = "停止生成",
+                contentDescription = LocalRemoteStrings.current.t("停止生成"),
                 tint = MaterialTheme.colorScheme.onPrimary,
                 modifier = Modifier.size(17.dp),
             )
             ComposerPrimaryAction.Send,
             ComposerPrimaryAction.Disabled -> Icon(
                 imageVector = Icons.Outlined.ArrowUpward,
-                contentDescription = "发送",
+                contentDescription = LocalRemoteStrings.current.t("发送"),
                 tint = if (enabled) {
                     MaterialTheme.colorScheme.onPrimary
                 } else {
@@ -6772,6 +6829,7 @@ internal fun SkillPickerSheet(
     val skillEdgeBlurState = rememberProgressiveEdgeBlurState(
         enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
     )
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = MasonSheetShape,
@@ -6843,6 +6901,7 @@ internal fun SkillPickerSheet(
                 }
             }
         }
+    }
     }
 }
 
@@ -7059,22 +7118,31 @@ private fun formatDuration(processingMs: Long): String =
         String.format(Locale.getDefault(), "%.1f 秒", processingMs / 1000f)
     }
 
-private fun shareText(context: Context, text: String) {
+private fun shareText(context: Context, text: String, strings: RemoteStrings) {
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_TEXT, text)
     }
     runCatching {
-        context.startActivity(Intent.createChooser(intent, "分享 Mason 回复"))
+        context.startActivity(Intent.createChooser(intent, strings.t("分享 Mason 回复")))
     }.onFailure { error ->
-        Toast.makeText(context, "分享失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            strings.displayText("分享失败：${error.message ?: error.javaClass.simpleName}"),
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 }
 
-internal fun openArtifact(context: Context, artifact: ArtifactMetadata, edit: Boolean) {
+internal fun openArtifact(
+    context: Context,
+    artifact: ArtifactMetadata,
+    edit: Boolean,
+    strings: RemoteStrings,
+) {
     val file = File(artifact.path)
     if (!file.exists() || file.isDirectory) {
-        Toast.makeText(context, "文件不存在或无法打开", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("文件不存在或无法打开"), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -7085,17 +7153,30 @@ internal fun openArtifact(context: Context, artifact: ArtifactMetadata, edit: Bo
     }
 
     runCatching {
-        context.startActivity(Intent.createChooser(intent, if (edit) "选择编辑应用" else "选择打开应用"))
+        context.startActivity(
+            Intent.createChooser(
+                intent,
+                strings.t(if (edit) "选择编辑应用" else "选择打开应用"),
+            ),
+        )
     }.onFailure { error ->
         if (error is ActivityNotFoundException) {
-            Toast.makeText(context, "没有找到可用应用", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.t("没有找到可用应用"), Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(context, "打开失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                strings.displayText("打开失败：${error.message ?: error.javaClass.simpleName}"),
+                Toast.LENGTH_SHORT,
+            ).show()
         }
     }
 }
 
-internal fun shareArtifact(context: Context, artifact: ArtifactMetadata) {
+internal fun shareArtifact(
+    context: Context,
+    artifact: ArtifactMetadata,
+    strings: RemoteStrings,
+) {
     val validatedImage = if (
         isPreviewableImageArtifact(
             artifact,
@@ -7105,7 +7186,7 @@ internal fun shareArtifact(context: Context, artifact: ArtifactMetadata) {
         validateImageArtifact(context, artifact).getOrElse { error ->
             Toast.makeText(
                 context,
-                "图片无法分享：${error.message ?: "文件校验失败"}",
+                strings.displayText("图片无法分享：${error.message ?: "文件校验失败"}"),
                 Toast.LENGTH_SHORT,
             ).show()
             return
@@ -7115,7 +7196,7 @@ internal fun shareArtifact(context: Context, artifact: ArtifactMetadata) {
     }
     val file = validatedImage?.file ?: File(artifact.path)
     if (!file.exists() || file.isDirectory) {
-        Toast.makeText(context, "文件不存在或无法分享", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("文件不存在或无法分享"), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -7129,9 +7210,13 @@ internal fun shareArtifact(context: Context, artifact: ArtifactMetadata) {
     }
 
     runCatching {
-        context.startActivity(Intent.createChooser(intent, "分享 ${artifact.name}"))
+        context.startActivity(Intent.createChooser(intent, strings.displayText("分享 ${artifact.name}")))
     }.onFailure { error ->
-        Toast.makeText(context, "分享失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            strings.displayText("分享失败：${error.message ?: error.javaClass.simpleName}"),
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 }
 
@@ -7197,11 +7282,11 @@ private fun formatArtifactSize(bytes: Long): String {
     return "%.1f %s".format(Locale.US, value, units[unitIndex])
 }
 
-private fun openUrl(context: Context, url: String) {
+private fun openUrl(context: Context, url: String, strings: RemoteStrings) {
     runCatching {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     }.onFailure {
-        Toast.makeText(context, "无法打开链接", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("无法打开链接"), Toast.LENGTH_SHORT).show()
     }
 }
 

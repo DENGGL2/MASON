@@ -57,7 +57,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import com.denggl2.masonremote.ui.WithRemoteMaterialResources
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -653,7 +656,7 @@ internal fun RemoteBackButton(
         ) {
             Icon(
                 Icons.AutoMirrored.Outlined.ArrowBack,
-                contentDescription = "返回",
+                contentDescription = LocalRemoteStrings.current.t("返回"),
                 tint = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.size(23.dp),
             )
@@ -679,7 +682,7 @@ private fun RemoteNewConversationButton(
                 imageVector = androidx.compose.ui.graphics.vector.ImageVector.vectorResource(
                     R.drawable.ic_remote_new_conversation,
                 ),
-                contentDescription = "新建远端对话",
+                contentDescription = LocalRemoteStrings.current.t("新建远端对话"),
                 tint = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.size(20.dp),
             )
@@ -724,6 +727,7 @@ private fun RemoteNewConversationSheet(
         keyboard?.show()
     }
 
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = {
             if (expandedSelector != null) expandedSelector = null else onDismiss()
@@ -909,6 +913,7 @@ private fun RemoteNewConversationSheet(
             Spacer(Modifier.height(2.dp))
         }
     }
+    }
 }
 
 @Composable
@@ -1000,7 +1005,7 @@ private fun RemoteNewSelector(
                         if (item.id == selectedId) {
                             Icon(
                                 Icons.Outlined.Check,
-                                contentDescription = "当前选项",
+                                contentDescription = LocalRemoteStrings.current.t("当前选项"),
                             )
                         }
                     },
@@ -1229,7 +1234,10 @@ private fun RemoteConversationListRow(
                     }
                     Spacer(Modifier.weight(1f))
                     Text(
-                        text = formatRemoteConversationTime(conversation.updatedAt),
+                        text = formatRemoteConversationTime(
+                            updatedAt = conversation.updatedAt,
+                            english = LocalRemoteStrings.current.isEnglish,
+                        ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 10.sp,
                         maxLines = 1,
@@ -1322,6 +1330,7 @@ internal fun formatRemoteConversationTime(
     updatedAt: Long,
     nowMillis: Long = System.currentTimeMillis(),
     zoneId: ZoneId = ZoneId.systemDefault(),
+    english: Boolean = false,
 ): String {
     if (updatedAt <= 0) return ""
     val timestampMillis = if (updatedAt < 100_000_000_000L) updatedAt * 1_000 else updatedAt
@@ -1329,9 +1338,9 @@ internal fun formatRemoteConversationTime(
     val today = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate()
     return when (val date = dateTime.toLocalDate()) {
         today -> dateTime.format(DateTimeFormatter.ofPattern("HH:mm"))
-        today.minusDays(1) -> "昨天"
+        today.minusDays(1) -> if (english) "Yesterday" else "昨天"
         else -> if (date.year == today.year) {
-            dateTime.format(DateTimeFormatter.ofPattern("M月d日"))
+            dateTime.format(DateTimeFormatter.ofPattern(if (english) "M/d" else "M月d日"))
         } else {
             dateTime.format(DateTimeFormatter.ofPattern("yyyy/M/d"))
         }

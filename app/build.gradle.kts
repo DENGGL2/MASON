@@ -14,8 +14,8 @@ android {
     namespace = "com.denggl2.mason"
     defaultConfig {
         applicationId = "com.denggl2.mason"
-        versionCode = 11
-        versionName = "0.2.9"
+        versionCode = 12
+        versionName = "0.2.10"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         if (masonArm64Only) {
             ndk {
@@ -80,6 +80,7 @@ dependencies {
     implementation(project(":sync"))
     implementation(project(":crash-guard"))
     implementation(project(":llama-runtime"))
+    implementation(project(":remote"))
 
     debugImplementation(libs.compose.ui.tooling)
     testImplementation("junit:junit:4.13.2")
