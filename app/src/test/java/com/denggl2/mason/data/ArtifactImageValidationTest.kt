@@ -1,7 +1,11 @@
 package com.denggl2.mason.data
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -22,5 +26,35 @@ class ArtifactImageValidationTest {
         assertTrue("127.0.0.1".isPrivateArtifactHost())
         assertTrue("192.168.1.10".isPrivateArtifactHost())
         assertTrue("172.20.1.5".isPrivateArtifactHost())
+    }
+
+    @Test
+    fun artifactStreamsCopyInChunksAndEnforceTheLimit() = runBlocking {
+        val content = "chunked artifact".repeat(1_000).toByteArray()
+        val output = ByteArrayOutputStream()
+
+        val copied = copyArtifactStream(
+            input = ByteArrayInputStream(content),
+            output = output,
+            maxBytes = content.size.toLong(),
+        )
+
+        assertEquals(content.size.toLong(), copied)
+        assertTrue(content.contentEquals(output.toByteArray()))
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                copyArtifactStream(
+                    input = ByteArrayInputStream(content),
+                    output = ByteArrayOutputStream(),
+                    maxBytes = 10,
+                )
+            }
+        }
+        Unit
+    }
+
+    @Test
+    fun base64SourceDoesNotAllocateAnIntermediateByteArray() {
+        assertEquals("YWJj", AsciiCharSequenceInputStream("YWJj").readBytes().toString(Charsets.US_ASCII))
     }
 }

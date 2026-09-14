@@ -2,11 +2,16 @@ package com.denggl2.mason.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -18,6 +23,7 @@ enum class LocalModelDownloadStatus {
     Checking,
     Downloading,
     Paused,
+    Cancelled,
     Verifying,
     Completed,
     Failed,
@@ -98,7 +104,8 @@ class LocalModelDownloader @Inject constructor(
                 }
                 .build()
 
-            client.newCall(request).execute().use { response ->
+            val downloadContext = coroutineContext
+            client.newCall(request).executeCancellable { response ->
                 check(response.isSuccessful) { "模型源返回 HTTP ${response.code}" }
                 val append = existingBytes > 0L && response.code == 206
                 var downloadedBytes = if (append) existingBytes else 0L
@@ -120,7 +127,7 @@ class LocalModelDownloader @Inject constructor(
                         val buffer = ByteArray(DEFAULT_BUFFER_SIZE * 16)
                         var lastUpdateAt = 0L
                         while (true) {
-                            coroutineContext.ensureActive()
+                            downloadContext.ensureActive()
                             val count = input.read(buffer)
                             if (count < 0) break
                             output.write(buffer, 0, count)
@@ -174,6 +181,10 @@ class LocalModelDownloader @Inject constructor(
         localModelStore.stateFor(model)
     }
 
+    suspend fun resetPartialDownload(modelId: String) {
+        localModelStore.resetPartialDownload(modelId)
+    }
+
     private suspend fun sha256(file: java.io.File): String {
         val digest = MessageDigest.getInstance("SHA-256")
         FileInputStream(file).buffered().use { input ->
@@ -187,6 +198,38 @@ class LocalModelDownloader @Inject constructor(
         }
         return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
     }
+}
+
+internal suspend fun <T> Call.executeCancellable(block: (Response) -> T): T =
+    suspendCancellableCoroutine { continuation ->
+    continuation.invokeOnCancellation { cancel() }
+
+    enqueue(
+        object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) {
+                    continuation.resumeWith(Result.failure(e))
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                runCatching { response.use(block) }
+                    .onSuccess { value ->
+                        if (continuation.isActive) {
+                            continuation.resumeWith(Result.success(value))
+                        }
+                    }
+                    .onFailure { error ->
+                        if (continuation.isActive) {
+                            continuation.resumeWith(Result.failure(error))
+                        }
+                    }
+                if (continuation.isCancelled) {
+                    response.close()
+                }
+            }
+        },
+    )
 }
 
 internal fun formatDownloadBytes(bytes: Long): String {

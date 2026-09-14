@@ -1,6 +1,11 @@
 package com.denggl2.mason.agent
 
+import com.denggl2.mason.data.ModelContribution
+import com.denggl2.mason.data.stripModelParticipationMarkers
 import com.denggl2.mason.llm.model.ToolCall
+import com.denggl2.mason.phoneagent.PhoneAgentToolNames
+import com.denggl2.mason.tool.ToolApprovalHint
+import com.denggl2.mason.tool.ToolSecurityHints
 import com.denggl2.mason.llm.model.ChatMessage
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -52,6 +57,17 @@ enum class TaskRunStatus {
     Cancelled,
 }
 
+/** Why an unfinished task stopped. Persisted so recovery never has to guess. */
+@Serializable
+enum class TaskInterruptionReason {
+    AppRestarted,
+    NetworkInterrupted,
+    UserPaused,
+    WaitingForApproval,
+    WaitingForInput,
+    ExecutionFailed,
+}
+
 @Serializable
 data class TaskRun(
     val id: String,
@@ -66,8 +82,10 @@ data class TaskRun(
     val summary: String? = null,
     val artifactPaths: List<String> = emptyList(),
     val lastError: String? = null,
+    val interruptionReason: TaskInterruptionReason? = null,
     val agentExecution: AgentExecutionCheckpoint? = null,
     val agentPlan: AgentPlanState? = null,
+    val modelContributions: List<ModelContribution> = emptyList(),
     val schemaVersion: Int = 4,
 )
 
@@ -91,6 +109,8 @@ data class AgentExecutionCheckpoint(
     val pendingCalls: List<ToolCall> = emptyList(),
     val pendingApprovalCallId: String? = null,
     val approvedCallIds: List<String> = emptyList(),
+    /** Successful calls are never replayed after a process restart. */
+    val completedCallFingerprints: List<String> = emptyList(),
     val waitingForInput: Boolean = false,
 )
 
@@ -142,6 +162,11 @@ object ToolPolicy {
             permissions = listOf("android.permission.ACCESS_FINE_LOCATION"),
             backgroundAllowed = true,
         ),
+        "conversation_dispatch" to rule(
+            ToolRiskLevel.High,
+            mandatoryApproval = true,
+            persistentGrantAllowed = false,
+        ),
         "clipboard" to rule(ToolRiskLevel.Medium),
         "http_request" to rule(ToolRiskLevel.Medium),
         "file_read" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
@@ -150,22 +175,37 @@ object ToolPolicy {
         "get_battery_info" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
         "get_wifi_info" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
         "get_bluetooth_info" to rule(ToolRiskLevel.Low, backgroundAllowed = true),
+        PhoneAgentToolNames.OBSERVE to rule(ToolRiskLevel.Medium),
+        PhoneAgentToolNames.SCREENSHOT to rule(
+            ToolRiskLevel.High,
+            mandatoryApproval = true,
+            persistentGrantAllowed = false,
+        ),
+        PhoneAgentToolNames.CLICK_NODE to rule(ToolRiskLevel.High),
+        PhoneAgentToolNames.TAP to rule(ToolRiskLevel.High),
+        PhoneAgentToolNames.SWIPE to rule(ToolRiskLevel.High),
+        PhoneAgentToolNames.SCROLL to rule(ToolRiskLevel.High),
+        PhoneAgentToolNames.SET_TEXT to rule(ToolRiskLevel.High),
+        PhoneAgentToolNames.GLOBAL_ACTION to rule(ToolRiskLevel.High),
     )
 
-    fun profileFor(toolName: String): ToolSecurityProfile = when {
+    fun profileFor(
+        toolName: String,
+        securityHints: ToolSecurityHints? = null,
+    ): ToolSecurityProfile = when {
         toolName.startsWith("a2a__") -> rule(
             ToolRiskLevel.High,
             mandatoryApproval = true,
             persistentGrantAllowed = false,
         )
-        toolName.startsWith("mcp__") -> rule(ToolRiskLevel.High)
+        toolName.startsWith("mcp__") -> mcpRule(securityHints)
         else -> rules[toolName] ?: rule(ToolRiskLevel.Low)
     }.toProfile(toolName)
 
     fun riskFor(toolName: String): ToolRiskLevel = profileFor(toolName).risk
 
     fun requiresUserApproval(toolName: String): Boolean =
-        profileFor(toolName).risk != ToolRiskLevel.Low
+        profileFor(toolName).risk == ToolRiskLevel.High
 
     fun requiresMandatoryApproval(toolName: String): Boolean =
         profileFor(toolName).mandatoryApproval
@@ -180,6 +220,32 @@ object ToolPolicy {
         ToolRiskLevel.High -> "这个操作可能修改手机状态、写入数据、发送消息、打开应用，或捕获敏感信息。"
         ToolRiskLevel.Medium -> "这个操作可能读取隐私数据、位置、剪贴板、联系人，或访问外部网络内容。"
         ToolRiskLevel.Low -> "这个操作主要是只读或低风险。"
+    }
+
+    fun approvalReason(profile: ToolSecurityProfile): String = when (profile.risk) {
+        ToolRiskLevel.High -> "这个远程工具可能修改或删除数据，需要确认后执行。"
+        ToolRiskLevel.Medium -> "这个远程工具会读取数据或访问外部服务。"
+        ToolRiskLevel.Low -> "这个远程工具声明为只读且不访问开放网络。"
+    }
+
+    private fun mcpRule(hints: ToolSecurityHints?): ToolCapabilityRule {
+        if (hints == null) return rule(ToolRiskLevel.High)
+        if (hints.approvalHint == ToolApprovalHint.AlwaysAsk) {
+            return rule(
+                ToolRiskLevel.High,
+                mandatoryApproval = true,
+                persistentGrantAllowed = false,
+            )
+        }
+        if (hints.destructiveHint != false || hints.readOnlyHint != true) {
+            return rule(ToolRiskLevel.High)
+        }
+        val risk = if (hints.openWorldHint == true) ToolRiskLevel.Medium else ToolRiskLevel.Low
+        return rule(
+            risk = risk,
+            mandatoryApproval = false,
+            persistentGrantAllowed = hints.approvalHint != ToolApprovalHint.AlwaysAsk,
+        )
     }
 
     private fun rule(
@@ -315,6 +381,7 @@ object TaskStepFactory {
         "alarm" -> "处理闹钟"
         "camera" -> "使用相机"
         "location" -> "读取位置"
+        "conversation_dispatch" -> "发送到其他对话"
         else -> "执行 $toolName"
     }
 }
@@ -364,6 +431,7 @@ fun ToolCall.fingerprint(): String = "${function.name}:${function.arguments.trim
 
 fun AgentExecutionCheckpoint.canExecute(calls: List<ToolCall>): Boolean {
     if (round >= MAX_AGENT_TOOL_ROUNDS) return false
+    if (calls.any { it.fingerprint() in completedCallFingerprints }) return false
     val previous = callFingerprints.groupingBy { it }.eachCount()
     return calls.none { (previous[it.fingerprint()] ?: 0) >= MAX_IDENTICAL_TOOL_CALLS }
 }
@@ -413,6 +481,12 @@ internal fun TaskRun.recoverAfterProcessRestart(now: Long = System.currentTimeMi
     },
     updatedAt = now,
     finishedAt = null,
+    interruptionReason = when {
+        interruptionReason == TaskInterruptionReason.UserPaused -> TaskInterruptionReason.UserPaused
+        agentExecution?.pendingApprovalCallId != null -> TaskInterruptionReason.WaitingForApproval
+        agentExecution?.waitingForInput == true -> TaskInterruptionReason.WaitingForInput
+        else -> TaskInterruptionReason.AppRestarted
+    },
 )
 
 private val terminalStepStatuses = setOf(
@@ -466,7 +540,7 @@ private fun TaskRun.withoutEmbeddedTaskRunMarkers(): TaskRun = copy(
 )
 
 private fun ChatMessage.withoutTaskRunMarkers(): ChatMessage = copy(
-    content = content?.let(::stripTaskRunMarkers),
+    content = content?.let(::stripTaskRunMarkers)?.let(::stripModelParticipationMarkers),
 )
 
 private fun findLastTaskRunMarker(content: String): ParsedTaskRunMarker? {

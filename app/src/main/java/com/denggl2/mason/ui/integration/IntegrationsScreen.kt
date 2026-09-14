@@ -3,12 +3,16 @@ package com.denggl2.mason.ui.integration
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -21,7 +25,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material3.AlertDialog
+import com.denggl2.mason.ui.theme.MasonAlertDialog as AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -32,7 +36,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -70,6 +76,7 @@ fun ManualIntegrationsScreen(
     val mcpStates by viewModel.mcpStates.collectAsState()
     val a2aStates by viewModel.a2aStates.collectAsState()
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     var editorType by remember(openMcpEditorOnStart) {
         mutableStateOf(if (openMcpEditorOnStart) IntegrationEditorType.Mcp else null)
     }
@@ -77,18 +84,22 @@ fun ManualIntegrationsScreen(
     var editingA2a by remember { mutableStateOf<A2aAgentConfig?>(null) }
     var pendingRemoval by remember { mutableStateOf<PendingRemoval?>(null) }
 
-    LaunchedEffect(Unit) {
-        viewModel.messages.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    LaunchedEffect(viewModel, strings.language) {
+        viewModel.messages.collect {
+            Toast.makeText(context, strings.displayText(it), Toast.LENGTH_SHORT).show()
+        }
     }
+    val bottomSafePadding = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
 
     Scaffold(
-        contentWindowInsets = WindowInsets.safeDrawing,
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
         topBar = {
             TopAppBar(
                 title = { Text("手动配置") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = LocalRemoteStrings.current.t("返回"))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -96,8 +107,15 @@ fun ManualIntegrationsScreen(
         },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = 16.dp,
+                end = 16.dp,
+                bottom = 16.dp + bottomSafePadding,
+            ),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {

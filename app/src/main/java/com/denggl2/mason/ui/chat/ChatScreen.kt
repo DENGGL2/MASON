@@ -2,40 +2,68 @@ package com.denggl2.mason.ui.chat
 
 import android.content.Context
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ContentValues
+import android.content.ContextWrapper
+import android.content.res.Configuration
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.OpenableColumns
+import android.provider.MediaStore
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -45,6 +73,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -53,15 +82,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.EventNote
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.AttachFile
-import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.DataUsage
+import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
@@ -71,19 +102,27 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Image as ImageIcon
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Timer
+import androidx.compose.material.icons.outlined.TableChart
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DrawerState
+import androidx.compose.material3.rememberDrawerState
+import com.denggl2.mason.ui.theme.MasonAlertDialog as AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -95,65 +134,131 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import com.denggl2.masonremote.ui.RemoteStrings
+import com.denggl2.masonremote.ui.WithRemoteMaterialResources
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalGraphicsContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.denggl2.mason.R
 import com.denggl2.mason.data.ArtifactMetadata
 import com.denggl2.mason.data.extractArtifactMetadataMarkers
+import com.denggl2.mason.data.extractModelParticipation
+import com.denggl2.mason.data.ModelContribution
+import com.denggl2.mason.data.ModelParticipation
 import com.denggl2.mason.data.stripArtifactMarkers
-import com.denggl2.mason.data.ApiConfig
+import com.denggl2.mason.data.stripModelParticipationMarkers
 import com.denggl2.mason.data.AiModelPreset
 import com.denggl2.mason.data.AiProviderCatalog
+import com.denggl2.mason.data.ApiConfig
 import com.denggl2.mason.data.LocalModelCatalog
-import com.denggl2.mason.data.LocalModelFileState
-import com.denggl2.mason.data.ModelCapabilityHealth
-import com.denggl2.mason.model.resolveVisionModel
-import com.denggl2.mason.data.LocalModelInstallState
+import com.denggl2.mason.data.configuredChatModelRef
+import com.denggl2.mason.data.configuredImageModelRef
+import com.denggl2.mason.data.configuredVisionModelRef
+import com.denggl2.mason.data.connection
 import com.denggl2.mason.data.MasonSkillParameter
 import com.denggl2.mason.agent.TaskStep
+import com.denggl2.mason.agent.TaskStepKind
 import com.denggl2.mason.agent.TaskStepStatus
 import com.denggl2.mason.agent.TaskRunStatus
 import com.denggl2.mason.agent.ToolApprovalRequest
+import com.denggl2.mason.agent.extractTaskRunMarker
 import com.denggl2.mason.agent.stripTaskRunMarkers
 import com.denggl2.mason.automation.AutomationApplyResult
 import com.denggl2.mason.automation.AutomationDraft
 import com.denggl2.mason.automation.AutomationDraftService
 import com.denggl2.mason.agent.ToolRiskLevel
-import com.denggl2.mason.llm.TokenUsage
 import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.integration.CapabilityRequirement
 import com.denggl2.mason.integration.CapabilityRequirementStatus
@@ -162,26 +267,815 @@ import com.denggl2.mason.integration.stripCapabilityRequirementMarkers
 import com.denggl2.mason.tool.NotificationTool
 import com.denggl2.mason.ui.conversation.ConversationListItem
 import com.denggl2.mason.ui.conversation.ConversationListViewModel
+import com.denggl2.mason.ui.conversation.RemoteConversationListUiState
+import com.denggl2.mason.ui.theme.LocalInterfaceEffects
+import com.denggl2.mason.ui.theme.MASON_OVERLAY_SCRIM_ALPHA
+import com.denggl2.mason.ui.theme.MasonSheetShape
+import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
+import com.denggl2.mason.ui.theme.WindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
+import com.denggl2.mason.ui.theme.captureWindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.floatingSurfaceEdge
+import com.denggl2.mason.ui.theme.floatingSurfaceShadowColor
+import com.denggl2.mason.ui.theme.glassRefraction
+import com.denggl2.mason.ui.theme.progressiveEdgeBlur
+import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
+import com.denggl2.mason.ui.theme.rememberWindowBackdropSnapshot
+import com.denggl2.mason.ui.theme.requiresBackdropSample
+import com.denggl2.mason.ui.theme.resolveBackdropCaptureScale
+import com.denggl2.mason.ui.theme.resolveBackdropBlurRadius
+import com.denggl2.mason.ui.theme.windowBackdrop
+import com.denggl2.mason.ui.theme.windowBackdropMaterial
+import com.denggl2.mason.ui.theme.masonOverlayWindowInsets
+import com.denggl2.mason.ui.theme.masonSheetContainerColor
+import com.denggl2.mason.ui.theme.masonSheetSurface
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.haze
+import dev.chrisbanes.haze.hazeChild
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
-private val TIME_FORMAT = SimpleDateFormat("HH:mm", Locale.getDefault())
-private const val MAX_COLLAPSED_LENGTH = 500
 private const val USER_CONTEXT_HEADER = "Mason 附加上下文"
+private val TOOL_DETAIL_JSON = Json { prettyPrint = true }
+private val masonGlassShadowBlur = 20.dp
+private const val LIVE_BACKDROP_BLUR_ENABLED = true
+private const val CHAT_POPUP_BACKDROP_WAIT_MILLIS = 300L
+private const val DROPDOWN_ENTER_DURATION_MILLIS = 180
+private const val DROPDOWN_EXIT_DURATION_MILLIS = 120
+private val DropdownEnterEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
+private val DropdownExitEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
+
+internal fun Modifier.masonGlassShadow(
+    cornerRadius: Dp,
+    blurRadius: Dp = masonGlassShadowBlur,
+): Modifier = composed {
+    val graphicsContext = LocalGraphicsContext.current
+    val density = LocalDensity.current
+    val shadowColor = floatingSurfaceShadowColor()
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        return@composed drawBehind {
+            val blurPx = blurRadius.toPx()
+            val cornerPx = cornerRadius.toPx()
+            val shadowMask = Path().apply {
+                addRoundRect(
+                    RoundRect(
+                        Rect(Offset.Zero, size),
+                        CornerRadius(cornerPx, cornerPx),
+                    ),
+                )
+            }
+            val layers = 12
+            clipPath(shadowMask, clipOp = ClipOp.Difference) {
+                for (layer in layers downTo 1) {
+                    val spread = blurPx * layer / layers
+                    drawRoundRect(
+                        color = shadowColor.copy(alpha = shadowColor.alpha * 0.04f),
+                        topLeft = Offset(-spread, -spread),
+                        size = Size(size.width + spread * 2f, size.height + spread * 2f),
+                        cornerRadius = CornerRadius(cornerPx + spread),
+                    )
+                }
+            }
+        }
+    }
+    val shadowLayer = remember(graphicsContext, density.density, cornerRadius, blurRadius) {
+        graphicsContext.createGraphicsLayer().also { layer ->
+            // Figma's shadow blur is a diameter-like value; RenderEffect expects sigma.
+            val blurSigmaPx = with(density) { blurRadius.toPx() } * 0.5f
+            layer.renderEffect = BlurEffect(
+                radiusX = blurSigmaPx,
+                radiusY = blurSigmaPx,
+                edgeTreatment = TileMode.Decal,
+            )
+        }
+    }
+    DisposableEffect(graphicsContext, shadowLayer) {
+        onDispose { graphicsContext.releaseGraphicsLayer(shadowLayer) }
+    }
+    drawWithContent {
+        val blurPx = blurRadius.toPx()
+        val cornerPx = cornerRadius.toPx()
+        val contentSize = size
+        val paddingPx = blurPx
+        val layerSize = IntSize(
+            width = (contentSize.width + paddingPx * 2f).toInt().coerceAtLeast(1),
+            height = (contentSize.height + paddingPx * 2f).toInt().coerceAtLeast(1),
+        )
+        shadowLayer.record(layerSize) {
+            drawRoundRect(
+                color = shadowColor,
+                topLeft = Offset(paddingPx, paddingPx),
+                size = contentSize,
+                cornerRadius = CornerRadius(cornerPx),
+            )
+        }
+        val shadowMask = Path().apply {
+            addRoundRect(
+                RoundRect(
+                    Rect(Offset.Zero, contentSize),
+                    CornerRadius(cornerPx, cornerPx),
+                ),
+            )
+        }
+        clipPath(shadowMask, clipOp = ClipOp.Difference) {
+            translate(left = -paddingPx, top = -paddingPx) {
+                drawLayer(shadowLayer)
+            }
+        }
+        drawContent()
+    }
+}
+
+@Composable
+internal fun ChatGlassDropdown(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    width: Dp,
+    cornerRadius: Dp,
+    alignEnd: Boolean,
+    subduedMaterial: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    var popupMounted by remember { mutableStateOf(expanded) }
+    val popupMotion = remember { Animatable(0f) }
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            popupMounted = true
+        } else if (popupMounted) {
+            popupMotion.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(
+                    durationMillis = DROPDOWN_EXIT_DURATION_MILLIS,
+                    easing = DropdownExitEasing,
+                ),
+            )
+            popupMounted = false
+        }
+    }
+    if (!popupMounted) return
+
+    val density = LocalDensity.current
+    val interfaceEffects = LocalInterfaceEffects.current
+    var surfacePosition by remember { mutableStateOf(IntOffset.Zero) }
+    var opensAbove by remember { mutableStateOf(false) }
+    val backdropBlurRadius = if (subduedMaterial) {
+        12.dp
+    } else {
+        interfaceEffects.resolveBackdropBlurRadius(nonGlassRadius = 15.dp)
+    }
+    val backdropRequired = interfaceEffects.requiresBackdropSample(
+        blurRadius = backdropBlurRadius,
+        includeRefraction = !subduedMaterial,
+    )
+    val popupBackdrop = rememberWindowBackdropSnapshot(
+        enabled = backdropRequired,
+        captureScale = interfaceEffects.resolveBackdropCaptureScale(
+            includeRefraction = !subduedMaterial,
+        ),
+    )
+    val shadowGutter = if (subduedMaterial) 12.dp else 24.dp
+    val positionProvider = remember(density, alignEnd) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize,
+            ): IntOffset = with(density) {
+                val gutterPx = shadowGutter.roundToPx()
+                val gapPx = 4.dp.roundToPx()
+                val surfaceWidth = popupContentSize.width - gutterPx * 2
+                val surfaceHeight = popupContentSize.height - gutterPx * 2
+                val desiredSurfaceX = if (alignEnd) {
+                    anchorBounds.right - surfaceWidth
+                } else {
+                    anchorBounds.left
+                }
+                val surfaceX = desiredSurfaceX.coerceIn(
+                    gutterPx,
+                    (windowSize.width - surfaceWidth - gutterPx).coerceAtLeast(gutterPx),
+                )
+                val belowY = anchorBounds.bottom + gapPx
+                val aboveY = anchorBounds.top - gapPx - surfaceHeight
+                val nextOpensAbove = belowY + surfaceHeight + gutterPx > windowSize.height
+                val desiredSurfaceY = if (!nextOpensAbove) {
+                    belowY
+                } else {
+                    aboveY
+                }
+                if (opensAbove != nextOpensAbove) {
+                    opensAbove = nextOpensAbove
+                }
+                val surfaceY = desiredSurfaceY.coerceIn(
+                    gutterPx,
+                    (windowSize.height - surfaceHeight - gutterPx).coerceAtLeast(gutterPx),
+                )
+                val nextSurfacePosition = IntOffset(surfaceX, surfaceY)
+                if (surfacePosition != nextSurfacePosition) {
+                    surfacePosition = nextSurfacePosition
+                }
+                IntOffset(surfaceX - gutterPx, surfaceY - gutterPx)
+            }
+        }
+    }
+    val shape = RoundedCornerShape(cornerRadius)
+    val positionReady = surfacePosition != IntOffset.Zero
+    val backdropReady = popupBackdrop != null && positionReady
+    var opaqueFallbackLocked by remember { mutableStateOf(false) }
+    LaunchedEffect(backdropRequired, backdropReady) {
+        if (!backdropRequired) {
+            opaqueFallbackLocked = false
+        } else if (!backdropReady && !opaqueFallbackLocked) {
+            delay(CHAT_POPUP_BACKDROP_WAIT_MILLIS)
+            opaqueFallbackLocked = true
+        }
+    }
+    val useBackdrop = backdropReady && !opaqueFallbackLocked
+    val popupReady = positionReady && (
+        !backdropRequired ||
+            useBackdrop ||
+            opaqueFallbackLocked
+        )
+    val popupSurfaceAlpha = when {
+        backdropRequired && !useBackdrop -> 1f
+        subduedMaterial -> interfaceEffects.compactSurfaceAlpha.coerceAtLeast(0.82f)
+        else -> interfaceEffects.compactSurfaceAlpha
+    }
+    LaunchedEffect(expanded, popupReady) {
+        when {
+            !expanded -> Unit
+            !popupReady -> popupMotion.snapTo(0f)
+            else -> popupMotion.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = DROPDOWN_ENTER_DURATION_MILLIS,
+                    easing = DropdownEnterEasing,
+                ),
+            )
+        }
+    }
+    Popup(
+        popupPositionProvider = positionProvider,
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(
+            focusable = true,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Box {
+            Box(
+                modifier = Modifier
+                .padding(shadowGutter)
+                .graphicsLayer {
+                    val progress = popupMotion.value
+                    val closing = !expanded
+                    val hiddenScale = if (closing) 0.98f else 0.96f
+                    val hiddenOffset = if (closing) 4.dp.toPx() else 6.dp.toPx()
+                    val scale = hiddenScale + (1f - hiddenScale) * progress
+                    alpha = if (popupReady) progress else 0f
+                    scaleX = scale
+                    scaleY = scale
+                    translationY = (if (opensAbove) 1f else -1f) *
+                        hiddenOffset * (1f - progress)
+                    transformOrigin = TransformOrigin(
+                        pivotFractionX = if (alignEnd) 1f else 0f,
+                        pivotFractionY = if (opensAbove) 1f else 0f,
+                    )
+                },
+            ) {
+            Box(
+                modifier = Modifier
+                    .width(width)
+                    .then(
+                        if (subduedMaterial) {
+                            Modifier
+                                .masonGlassShadow(cornerRadius, blurRadius = 8.dp)
+                                .border(
+                                    width = 0.5.dp,
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
+                                    shape = shape,
+                                )
+                        } else {
+                            Modifier
+                                .masonGlassShadow(cornerRadius)
+                                .floatingSurfaceEdge(shape)
+                        },
+                    )
+                    .clip(shape),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .glassRefraction(
+                            enabled = useBackdrop &&
+                                !subduedMaterial &&
+                                interfaceEffects.glassRefractionEnabled,
+                            cornerRadius = cornerRadius,
+                        )
+                        .windowBackdrop(
+                            snapshot = if (useBackdrop) popupBackdrop else null,
+                            windowPosition = surfacePosition,
+                            blurRadius = backdropBlurRadius,
+                            effectAlpha = interfaceEffects.backdropEffectAlpha,
+                        ),
+                )
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(
+                            MaterialTheme.colorScheme.surface.copy(
+                                alpha = popupSurfaceAlpha,
+                            ),
+                            shape,
+                        ),
+                )
+                Column(content = content)
+            }
+            }
+            PopupDismissGutters(
+                gutter = shadowGutter,
+                onDismissRequest = onDismissRequest,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun BoxScope.PopupDismissGutters(
+    gutter: Dp,
+    onDismissRequest: () -> Unit,
+) {
+    val dismissInteractionSource = remember { MutableInteractionSource() }
+    val dismissModifier = Modifier.clickable(
+        interactionSource = dismissInteractionSource,
+        indication = null,
+        onClick = onDismissRequest,
+    )
+    Box(Modifier.matchParentSize()) {
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(gutter)
+                .then(dismissModifier),
+        )
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(gutter)
+                .then(dismissModifier),
+        )
+        Box(
+            Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxHeight()
+                .width(gutter)
+                .then(dismissModifier),
+        )
+        Box(
+            Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .width(gutter)
+                .then(dismissModifier),
+        )
+    }
+}
+
+internal enum class ChatBackdropBlur {
+    Strong,
+    Soft,
+    Drawer,
+}
+
+internal val LocalChatBackdropState = staticCompositionLocalOf<HazeState?> { null }
+
+@Composable
+private fun ChatSheetDragHandle(
+    modifier: Modifier = Modifier,
+    topPadding: Dp = 10.dp,
+    bottomPadding: Dp = 8.dp,
+) {
+    Box(
+        modifier = modifier
+            .padding(top = topPadding, bottom = bottomPadding)
+            .size(width = 38.dp, height = 4.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f)),
+    )
+}
+
+@Composable
+private fun BoxScope.ChatSheetEdgeFades(
+    scrollState: ScrollState,
+    blurState: HazeState?,
+    surfaceColor: Color,
+) {
+    val topAlpha by animateFloatAsState(
+        targetValue = if (scrollState.canScrollBackward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "chat_sheet_top_fade",
+    )
+    val bottomAlpha by animateFloatAsState(
+        targetValue = if (scrollState.canScrollForward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "chat_sheet_bottom_fade",
+    )
+    ChatSheetEdgeFades(blurState, surfaceColor, topAlpha, bottomAlpha)
+}
+
+@Composable
+private fun BoxScope.ChatSheetEdgeFades(
+    listState: LazyListState,
+    blurState: HazeState?,
+    surfaceColor: Color,
+) {
+    val topAlpha by animateFloatAsState(
+        targetValue = if (listState.canScrollBackward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "chat_sheet_list_top_fade",
+    )
+    val bottomAlpha by animateFloatAsState(
+        targetValue = if (listState.canScrollForward) 1f else 0f,
+        animationSpec = tween(180),
+        label = "chat_sheet_list_bottom_fade",
+    )
+    ChatSheetEdgeFades(blurState, surfaceColor, topAlpha, bottomAlpha)
+}
+
+@Composable
+private fun BoxScope.ChatSheetEdgeFades(
+    blurState: HazeState?,
+    surfaceColor: Color,
+    topAlpha: Float,
+    bottomAlpha: Float,
+) {
+    val glassMaterialEnabled = LocalInterfaceEffects.current.glassMaterialEnabled
+    val fadeSurface = surfaceColor.copy(alpha = if (glassMaterialEnabled) 0.10f else 0.995f)
+    if (topAlpha > 0f) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(48.dp)
+                .graphicsLayer { alpha = topAlpha }
+                .progressiveEdgeBlur(
+                    state = blurState,
+                    edge = ProgressiveBlurEdge.Top,
+                    backgroundColor = surfaceColor,
+                )
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0f to fadeSurface,
+                            0.32f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.82f),
+                            0.70f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.28f),
+                            1f to Color.Transparent,
+                        ),
+                    ),
+                ),
+        )
+    }
+    if (bottomAlpha > 0f) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(48.dp)
+                .graphicsLayer { alpha = bottomAlpha }
+                .progressiveEdgeBlur(
+                    state = blurState,
+                    edge = ProgressiveBlurEdge.Bottom,
+                    backgroundColor = surfaceColor,
+                )
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0f to Color.Transparent,
+                            0.30f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.28f),
+                            0.68f to fadeSurface.copy(alpha = fadeSurface.alpha * 0.82f),
+                            1f to fadeSurface,
+                        ),
+                    ),
+                ),
+        )
+    }
+}
+
+@Composable
+internal fun rememberChatBackdropState(enabled: Boolean): HazeState? {
+    if (!enabled || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+    return remember { HazeState() }
+}
+
+internal fun Modifier.captureChatBackdrop(state: HazeState?): Modifier {
+    if (state == null) return this
+    return this.haze(state)
+}
+
+private fun Modifier.chatBackdrop(
+    blur: ChatBackdropBlur = ChatBackdropBlur.Strong,
+): Modifier = composed {
+    val state = LocalChatBackdropState.current ?: return@composed this
+    val interfaceEffects = LocalInterfaceEffects.current
+    val backdropBaseColor = MaterialTheme.colorScheme.surface
+    val blurRadius = interfaceEffects.resolveBackdropBlurRadius(
+        nonGlassRadius = when (blur) {
+            ChatBackdropBlur.Strong -> 32.dp
+            ChatBackdropBlur.Soft -> 20.dp
+            ChatBackdropBlur.Drawer -> 32.dp
+        },
+    )
+    this.hazeChild(
+        state = state,
+        style = HazeStyle(
+            backgroundColor = backdropBaseColor,
+            tint = HazeTint(Color.Transparent),
+            blurRadius = blurRadius,
+            noiseFactor = 0f,
+            fallbackTint = HazeTint(Color.Transparent),
+        ),
+    ) {
+        blurEnabled = interfaceEffects.backdropEffectAlpha > 0f
+        alpha = interfaceEffects.backdropEffectAlpha
+    }
+}
+
+private fun Modifier.drawerListEdgeFadeMask(
+    topProgress: Float,
+    bottomProgress: Float,
+    topFadeHeight: Dp,
+    bottomFadeHeight: Dp,
+): Modifier = graphicsLayer {
+    compositingStrategy = CompositingStrategy.Offscreen
+}.drawWithContent {
+    drawContent()
+    val topStop = (topFadeHeight.toPx() / size.height).coerceIn(0f, 0.45f)
+    val bottomStop = (1f - (bottomFadeHeight.toPx() / size.height)).coerceIn(0.55f, 1f)
+    val bottomRange = 1f - bottomStop
+    fun topMaskAlpha(smoothStep: Float) = 1f - topProgress * (1f - smoothStep)
+    fun bottomMaskAlpha(smoothStep: Float) = 1f - bottomProgress * smoothStep
+    drawRect(
+        brush = Brush.verticalGradient(
+            0f to Color.White.copy(alpha = topMaskAlpha(0f)),
+            topStop * 0.25f to Color.White.copy(alpha = topMaskAlpha(0.15625f)),
+            topStop * 0.50f to Color.White.copy(alpha = topMaskAlpha(0.50f)),
+            topStop * 0.75f to Color.White.copy(alpha = topMaskAlpha(0.84375f)),
+            topStop to Color.White,
+            bottomStop to Color.White,
+            bottomStop + bottomRange * 0.25f to Color.White.copy(alpha = bottomMaskAlpha(0.15625f)),
+            bottomStop + bottomRange * 0.50f to Color.White.copy(alpha = bottomMaskAlpha(0.50f)),
+            bottomStop + bottomRange * 0.75f to Color.White.copy(alpha = bottomMaskAlpha(0.84375f)),
+            1f to Color.White.copy(alpha = bottomMaskAlpha(1f)),
+        ),
+        blendMode = BlendMode.DstIn,
+    )
+}
+
+internal fun Modifier.blurLayerOuterEdgeFeather(
+    edge: ProgressiveBlurEdge,
+    featherHeight: Dp,
+): Modifier = graphicsLayer {
+    compositingStrategy = CompositingStrategy.Offscreen
+}.drawWithContent {
+    drawContent()
+    val featherFraction = (featherHeight.toPx() / size.height).coerceIn(0f, 1f)
+    val mask = when (edge) {
+        ProgressiveBlurEdge.Top -> Brush.verticalGradient(
+            0f to Color.Transparent,
+            featherFraction to Color.White,
+            1f to Color.White,
+        )
+        ProgressiveBlurEdge.Bottom -> Brush.verticalGradient(
+            0f to Color.White,
+            (1f - featherFraction) to Color.White,
+            1f to Color.Transparent,
+        )
+    }
+    drawRect(brush = mask, blendMode = BlendMode.DstIn)
+}
+
+internal enum class ChatSurfaceRole {
+    Compact,
+    Large,
+}
+
+@Composable
+private fun chatFloatingSurfaceAlpha(
+    role: ChatSurfaceRole,
+    blurred: Float,
+    fallback: Float,
+): Float {
+    val interfaceEffects = LocalInterfaceEffects.current
+    return when {
+        !interfaceEffects.backdropBlurEnabled -> 1f
+        interfaceEffects.glassMaterialEnabled -> when (role) {
+            ChatSurfaceRole.Compact -> interfaceEffects.compactSurfaceAlpha
+            ChatSurfaceRole.Large -> interfaceEffects.largeSurfaceAlpha
+        }
+        LocalChatBackdropState.current != null -> blurred
+        else -> fallback
+    }
+}
+
+@Composable
+internal fun BoxScope.ChatGlassMaterial(
+    shape: Shape,
+    cornerRadius: Dp,
+    role: ChatSurfaceRole,
+    blur: ChatBackdropBlur = ChatBackdropBlur.Strong,
+    refraction: Boolean = false,
+    blurredAlpha: Float,
+    fallbackAlpha: Float,
+    borderWidth: Dp = 0.5.dp,
+    borderColor: Color? = null,
+) {
+    val interfaceEffects = LocalInterfaceEffects.current
+    Box(modifier = Modifier.matchParentSize().clip(shape)) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .glassRefraction(
+                    enabled = refraction && interfaceEffects.glassRefractionEnabled,
+                    cornerRadius = cornerRadius,
+                )
+                .chatBackdrop(blur),
+        )
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    MaterialTheme.colorScheme.surface.copy(
+                        alpha = chatFloatingSurfaceAlpha(
+                            role = role,
+                            blurred = blurredAlpha,
+                            fallback = fallbackAlpha,
+                        ),
+                    ),
+                    shape,
+                ),
+        )
+    }
+    if (borderWidth > 0.dp) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .floatingSurfaceEdge(
+                    shape = shape,
+                    nonGlassWidth = borderWidth,
+                    nonGlassColor = borderColor,
+                ),
+        )
+    }
+}
+
+@Composable
+private fun GlassIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(48.dp)
+            .masonGlassShadow(cornerRadius = 24.dp)
+            .clip(CircleShape),
+    ) {
+        ChatGlassMaterial(
+            shape = CircleShape,
+            cornerRadius = 24.dp,
+            role = ChatSurfaceRole.Compact,
+            refraction = true,
+            blurredAlpha = 0.80f,
+            fallbackAlpha = 1f,
+        )
+        IconButton(
+            onClick = onClick,
+            modifier = Modifier.matchParentSize(),
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+                content = content,
+            )
+        }
+    }
+}
+
 private data class AnswerSection(val label: String, val text: String)
-private enum class AttachmentKind { Image, File }
-private data class PendingAttachment(
+private data class ToolExecutionDetail(
+    val step: TaskStep,
+    val result: ChatMessage?,
+)
+private enum class EmptyChatExpression {
+    Tilted,
+    Surprised,
+    Smile,
+    Frown,
+    Question,
+}
+private data class EmptyChatVariant(
+    val expression: EmptyChatExpression,
+    val layers: List<Int>,
+    val prompt: String,
+    val idleDelayMs: Long,
+    val faceAspectRatio: Float,
+)
+private val emptyChatVariants = listOf(
+    EmptyChatVariant(
+        expression = EmptyChatExpression.Tilted,
+        layers = listOf(
+            R.drawable.mason_empty_face_tilted_0,
+            R.drawable.mason_empty_face_tilted_1,
+            R.drawable.mason_empty_face_tilted_2,
+        ),
+        prompt = "我们应该先做什么？",
+        idleDelayMs = 3_800L,
+        faceAspectRatio = 74f / 68f,
+    ),
+    EmptyChatVariant(
+        expression = EmptyChatExpression.Surprised,
+        layers = listOf(
+            R.drawable.mason_empty_face_surprised_0,
+            R.drawable.mason_empty_face_surprised_1,
+            R.drawable.mason_empty_face_surprised_2,
+        ),
+        prompt = "今天想试点不一样的吗？",
+        idleDelayMs = 4_600L,
+        faceAspectRatio = 59f / 67f,
+    ),
+    EmptyChatVariant(
+        expression = EmptyChatExpression.Smile,
+        layers = listOf(
+            R.drawable.mason_empty_face_smile_0,
+            R.drawable.mason_empty_face_smile_1,
+            R.drawable.mason_empty_face_smile_2,
+        ),
+        prompt = "一起把想法做出来。",
+        idleDelayMs = 3_400L,
+        faceAspectRatio = 80f / 69f,
+    ),
+    EmptyChatVariant(
+        expression = EmptyChatExpression.Frown,
+        layers = listOf(
+            R.drawable.mason_empty_face_frown_0,
+            R.drawable.mason_empty_face_frown_1,
+            R.drawable.mason_empty_face_frown_2,
+        ),
+        prompt = "卡住的事，也可以从这里开始。",
+        idleDelayMs = 4_200L,
+        faceAspectRatio = 74f / 61f,
+    ),
+    EmptyChatVariant(
+        expression = EmptyChatExpression.Question,
+        layers = listOf(
+            R.drawable.mason_empty_face_question_0,
+            R.drawable.mason_empty_face_question_1,
+            R.drawable.mason_empty_face_question_2,
+        ),
+        prompt = "现在最值得解决的问题是什么？",
+        idleDelayMs = 4_900L,
+        faceAspectRatio = 66f / 74f,
+    ),
+)
+private val emptyChatVariantCursor = AtomicInteger(0)
+
+private fun nextEmptyChatVariantIndex(): Int =
+    emptyChatVariantCursor.getAndUpdate { current -> (current + 1) % emptyChatVariants.size }
+
+private fun emptyChatRubberBand(value: Float, limit: Float): Float {
+    val magnitude = abs(value)
+    if (magnitude <= limit) return value
+    return kotlin.math.sign(value) * (limit + (magnitude - limit) * 0.18f)
+}
+
+internal enum class AttachmentKind { Image, File }
+internal data class PendingAttachment(
     val kind: AttachmentKind,
     val name: String,
     val uri: String,
 )
-private data class SkillOption(
+internal data class SkillOption(
     val name: String,
     val description: String,
     val path: String,
+    val invocationName: String = name,
     val instructions: String = "",
     val parameters: List<MasonSkillParameter> = emptyList(),
     val parameterValues: Map<String, String> = emptyMap(),
@@ -191,60 +1085,194 @@ private data class UserMessagePresentation(
     val attachments: List<PendingAttachment>,
     val skill: SkillOption?,
 )
-private enum class MessageBlockKind { Heading, Paragraph, Bullet, Numbered, Code, Quote, Divider }
-private data class MessageTextBlock(
-    val kind: MessageBlockKind,
-    val text: String,
-    val meta: String? = null,
+
+internal data class ChatModelMenuSummary(
+    val chatModelName: String,
+    val visionModelName: String,
+    val imageModelName: String,
+    val hasConfiguredModel: Boolean,
 )
-private enum class ModelAvailability { Available, Warning, Unavailable }
-private data class ModelStatusItem(
-    val label: String,
-    val modelName: String,
-    val status: String,
-    val availability: ModelAvailability,
-    val icon: ImageVector,
-)
+
+internal enum class ComposerPrimaryAction {
+    Send,
+    Stop,
+    Disabled,
+}
+
+internal fun composerPrimaryAction(
+    isGenerating: Boolean,
+    hasSendableInput: Boolean,
+): ComposerPrimaryAction = when {
+    hasSendableInput -> ComposerPrimaryAction.Send
+    isGenerating -> ComposerPrimaryAction.Stop
+    else -> ComposerPrimaryAction.Disabled
+}
+
+internal fun shouldShowScrollToBottom(
+    hasMessages: Boolean,
+    canScrollForward: Boolean,
+    scrollInProgress: Boolean,
+): Boolean = hasMessages && canScrollForward && !scrollInProgress
+
+internal fun chatModelMenuSummary(config: ApiConfig): ChatModelMenuSummary {
+    val remoteReference = config.configuredChatModelRef()
+    val remoteName = remoteReference?.modelId
+    val localName = config.localModel
+        .takeIf(String::isNotBlank)
+        ?.let { LocalModelCatalog.get(it)?.name ?: it }
+    val chatModelName = when {
+        config.localModelDirectEnabled -> localName ?: "未配置"
+        config.dynamicLocalRoutingEnabled -> listOfNotNull(remoteName, localName)
+            .distinct()
+            .joinToString(" / ")
+            .ifBlank { "未配置" }
+        remoteReference != null -> remoteReference.modelId
+        else -> "未配置"
+    }
+    val visionModelName = config.configuredVisionModelRef()?.modelId ?: "未配置"
+    val imageModelName = config.configuredImageModelRef()?.modelId ?: "未配置"
+
+    return ChatModelMenuSummary(
+        chatModelName = chatModelName,
+        visionModelName = visionModelName,
+        imageModelName = imageModelName,
+        hasConfiguredModel = listOf(chatModelName, visionModelName, imageModelName)
+            .any { it != "未配置" },
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun ChatScreen(
+internal fun ChatScreen(
     onNavigateToSettings: () -> Unit,
+    onNavigateToModelSettings: () -> Unit,
     onNavigateToIntegrations: () -> Unit = {},
     onNavigateToPermission: () -> Unit = {},
-    onConversationSelected: (Long) -> Unit,
+    onConversationSelected: (Long, Boolean) -> Unit,
     onNewChat: (() -> Unit)? = null,
-    onOpenArtifacts: () -> Unit,
-    onOpenSkills: () -> Unit,
-    onOpenAutomations: () -> Unit,
+    onDevicePairing: () -> Unit = {},
+    onOpenRemoteConversations: () -> Unit = {},
+    onOpenWorkbench: () -> Unit,
     notificationTaskCommand: String? = null,
-    onBack: (() -> Unit)? = null,
+    startFresh: Boolean = false,
+    onStartFreshConsumed: () -> Unit = {},
+    drawerResetGeneration: Int = 0,
+    drawerBackdropSnapshot: WindowBackdropSnapshot?,
+    onDrawerBackdropSnapshotChange: (WindowBackdropSnapshot?) -> Unit,
+    onConversationBound: (Long?) -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel(),
     historyViewModel: ConversationListViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     val uiState by viewModel.uiState.collectAsState()
     val apiConfig by viewModel.apiConfig.collectAsState()
     val installedSkills by viewModel.installedSkills.collectAsState()
     val conversations by historyViewModel.conversations.collectAsState()
+    val remoteConversations by historyViewModel.remoteConversations.collectAsState()
     val drawerConversations = remember(conversations) {
         conversations.filterNot { item ->
             item.lastMessage == null && item.conversation.title == "新对话"
         }
     }
-    var inputText by remember { mutableStateOf("") }
+    LaunchedEffect(startFresh) {
+        if (startFresh) {
+            viewModel.startFreshConversation()
+            onStartFreshConsumed()
+        }
+    }
+    LaunchedEffect(startFresh, uiState.conversationId, uiState.messages.size) {
+        onConversationBound(
+            uiState.conversationId
+                ?.takeIf { !startFresh || uiState.messages.any { message -> message.role == "user" } },
+        )
+    }
+    DisposableEffect(uiState.conversationId) {
+        val conversationId = uiState.conversationId
+        conversationId?.let(historyViewModel::markConversationForegrounded)
+        onDispose {
+            conversationId?.let(historyViewModel::markConversationBackgrounded)
+        }
+    }
+    var inputText by rememberSaveable { mutableStateOf("") }
     var pendingAttachments by remember { mutableStateOf<List<PendingAttachment>>(emptyList()) }
     var selectedSkill by remember { mutableStateOf<SkillOption?>(null) }
     var parameterizingSkill by remember { mutableStateOf<SkillOption?>(null) }
     var showSkillPicker by remember { mutableStateOf(false) }
-    var showModelStatusSheet by remember { mutableStateOf(false) }
+    var topModelMenuExpanded by remember { mutableStateOf(false) }
+    var selectedToolExecution by remember { mutableStateOf<ToolExecutionDetail?>(null) }
+    var showApprovalDetails by remember { mutableStateOf(false) }
     var pendingDrawerDeleteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var showExitConfirmation by remember { mutableStateOf(false) }
+    var composerExpanded by rememberSaveable { mutableStateOf(false) }
+    var followLatestMessages by remember { mutableStateOf(true) }
+    var scrollToBottomInProgress by remember { mutableStateOf(false) }
+    var drawerSessionActive by remember { mutableStateOf(false) }
+    var drawerContentResetGeneration by remember { mutableIntStateOf(0) }
     var processedNotificationCommand by remember(notificationTaskCommand) { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    var initiallyPositionedConversationId by remember { mutableStateOf<Long?>(null) }
+    var initiallyPositionedFreshConversation by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    var inputBarHeightPx by remember(density) {
+        mutableIntStateOf(with(density) { 96.dp.roundToPx() })
+    }
+    val inputBarHeight = with(density) { inputBarHeightPx.toDp() }
+    val topFadeRevealDistancePx = with(density) { 24.dp.toPx() }
+    val topFadeProgress = remember(listState, topFadeRevealDistancePx) {
+        derivedStateOf {
+            if (listState.firstVisibleItemIndex > 0) {
+                1f
+            } else {
+                (listState.firstVisibleItemScrollOffset / topFadeRevealDistancePx).coerceIn(0f, 1f)
+            }
+        }
+    }
     val focusManager = LocalFocusManager.current
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val listIsDragged by listState.interactionSource.collectIsDraggedAsState()
+    val activity = remember(context) { context.findActivity() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    var handledDrawerResetGeneration by rememberSaveable {
+        mutableIntStateOf(drawerResetGeneration)
+    }
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(drawerState.currentValue, drawerState.targetValue) {
+        if (drawerState.currentValue != DrawerValue.Closed || drawerState.targetValue != DrawerValue.Closed) {
+            drawerSessionActive = true
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+        } else {
+            // Keep the root exit handler disabled until the drawer's own back event is fully settled.
+            delay(120)
+            if (drawerState.currentValue == DrawerValue.Closed && drawerState.targetValue == DrawerValue.Closed) {
+                val shouldResetDrawerContent = drawerSessionActive
+                drawerSessionActive = false
+                if (shouldResetDrawerContent) drawerContentResetGeneration += 1
+            }
+        }
+    }
+
+    LaunchedEffect(drawerResetGeneration) {
+        if (handledDrawerResetGeneration != drawerResetGeneration) {
+            drawerState.snapTo(DrawerValue.Closed)
+            drawerSessionActive = false
+            drawerContentResetGeneration += 1
+            handledDrawerResetGeneration = drawerResetGeneration
+        }
+    }
+
+    BackHandler(enabled = !showExitConfirmation) {
+        if (drawerSessionActive) {
+            scope.launch {
+                drawerState.close()
+            }
+        } else {
+            showExitConfirmation = true
+        }
+    }
+
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
             persistAttachmentReadPermission(context, it)
@@ -266,10 +1294,23 @@ fun ChatScreen(
         }
     }
 
+    val toolResultsByCallId = remember(uiState.messages) {
+        uiState.messages
+            .filter { it.role == "tool" && !it.tool_call_id.isNullOrBlank() }
+            .associateBy { it.tool_call_id.orEmpty() }
+    }
     val visibleMessages = uiState.messages.filterNot { message ->
-        message.role == "assistant" &&
+        (message.role == "assistant" &&
             message.content.isNullOrBlank() &&
-            !message.tool_calls.isNullOrEmpty()
+            !message.tool_calls.isNullOrEmpty()) ||
+            (message.role == "tool" && !isVisibleToolPresentation(message))
+    }
+    val processInsertIndex = remember(visibleMessages, uiState.taskSteps) {
+        if (uiState.taskSteps.isEmpty()) {
+            -1
+        } else {
+            (visibleMessages.indexOfLast { it.role == "user" } + 1).coerceIn(0, visibleMessages.size)
+        }
     }
     val appliedAutomationDraftIds = remember(visibleMessages) {
         visibleMessages.mapNotNull { message ->
@@ -285,6 +1326,17 @@ fun ChatScreen(
         uiState.streamingContent.isNotEmpty() ||
         uiState.toolCallStatus != null ||
         uiState.pendingToolApproval != null
+    val isFreshEmptyChat = uiState.conversationId == null && !hasMessages
+    val showScrollToBottom by remember(hasMessages, listState) {
+        derivedStateOf {
+            shouldShowScrollToBottom(
+                hasMessages = hasMessages,
+                canScrollForward = listState.canScrollForward,
+                scrollInProgress = scrollToBottomInProgress,
+            )
+        }
+    }
+    val pageBackgroundColor = MaterialTheme.colorScheme.background
     val lastAssistantTimestamp = visibleMessages.lastOrNull { it.role == "assistant" }?.timestamp
 
     LaunchedEffect(notificationTaskCommand, uiState.taskRun?.id, uiState.isStreaming) {
@@ -308,15 +1360,29 @@ fun ChatScreen(
             NotificationTool.TASK_COMMAND_CANCEL -> viewModel.cancelCurrentTask()
         }
     }
-    val modeSwitchModels = remember(apiConfig.providerId, apiConfig.model) {
-        AiProviderCatalog.quickSwitchModels(apiConfig.providerId, apiConfig.model)
+    val configuredChatRef = remember(apiConfig) { apiConfig.configuredChatModelRef() }
+    val configuredChatConnection = remember(apiConfig, configuredChatRef) {
+        configuredChatRef?.let { apiConfig.connection(it.connectionId) }
     }
-    val currentProviderName = remember(apiConfig.providerId) {
-        AiProviderCatalog.getProvider(apiConfig.providerId)?.name.orEmpty()
+    val selectedLocalModelInstalled = remember(apiConfig) {
+        viewModel.isLocalModelInstalled(apiConfig.localModel)
     }
-    val apiWarning = remember(apiConfig) {
+    val canSendToModel = remember(apiConfig, selectedLocalModelInstalled) {
+        canStartModelTask(apiConfig, selectedLocalModelInstalled)
+    }
+    val modeSwitchModels = remember(configuredChatRef, configuredChatConnection) {
+        val reference = configuredChatRef ?: return@remember emptyList()
+        val connection = configuredChatConnection ?: return@remember emptyList()
+        AiProviderCatalog.quickSwitchModels(connection.providerId, reference.modelId)
+            .filter { connection.supportsModel(it.id) }
+    }
+    val currentProviderName = configuredChatConnection?.name.orEmpty()
+    val topModelSummary = remember(apiConfig) { chatModelMenuSummary(apiConfig) }
+    val apiWarning = remember(apiConfig, canSendToModel) {
         when {
-            apiConfig.localModelDirectEnabled -> null
+            !canSendToModel -> "启用功能需要配置模型"
+            apiConfig.localModelDirectEnabled ||
+                (apiConfig.dynamicLocalRoutingEnabled && configuredChatRef == null) -> null
             AiProviderCatalog.requiresApiKey(apiConfig) && apiConfig.apiKey.isBlank() -> {
                 if (AiProviderCatalog.isFreeModel(apiConfig.providerId, apiConfig.model)) {
                     "免费模型仍需平台 Key，用来识别账号和限额"
@@ -329,36 +1395,78 @@ fun ChatScreen(
             else -> null
         }
     }
-    val localModelStates = remember(apiConfig.localModel, showModelStatusSheet) {
-        viewModel.localModelStates()
-    }
-    val modelCapabilityHealth by viewModel.modelCapabilityHealth.collectAsState()
-    val hasCurrentModelHealth = remember(apiConfig, modelCapabilityHealth) {
-        viewModel.hasCurrentModelCapabilityHealth()
-    }
-    val modelStatuses = remember(apiConfig, localModelStates, modelCapabilityHealth, hasCurrentModelHealth) {
-        buildModelStatuses(
-            config = apiConfig,
-            localStates = localModelStates,
-            capabilityHealth = modelCapabilityHealth.capabilities.takeIf { hasCurrentModelHealth }.orEmpty(),
-            checkedAtMillis = modelCapabilityHealth.checkedAtMillis.takeIf { hasCurrentModelHealth } ?: 0L,
-        )
-    }
-    val modelSummary = remember(modelStatuses) { summarizeModelAvailability(modelStatuses) }
 
-    LaunchedEffect(uiState.messages.size, uiState.streamingContent, uiState.toolCallStatus) {
+    suspend fun scrollListToBottom(animate: Boolean) {
+        val lastIndex = listState.layoutInfo.totalItemsCount - 1
+        if (lastIndex < 0) return
+        if (animate) {
+            listState.animateScrollToItem(lastIndex)
+        } else {
+            listState.scrollToItem(lastIndex)
+        }
+        val layoutInfo = listState.layoutInfo
+        val lastItem = layoutInfo.visibleItemsInfo.lastOrNull { it.index == lastIndex } ?: return
+        val visibleBottom = layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding
+        val remainingDistance = lastItem.offset + lastItem.size - visibleBottom
+        if (remainingDistance > 0) {
+            if (animate) {
+                listState.animateScrollBy(remainingDistance.toFloat())
+            } else {
+                listState.scrollBy(remainingDistance.toFloat())
+            }
+        }
+    }
+
+    LaunchedEffect(
+        uiState.conversationId,
+        uiState.messages.size,
+        uiState.streamingContent,
+        uiState.toolCallStatus,
+    ) {
         viewModel.recheckPendingCapability()
         val lastIndex = listState.layoutInfo.totalItemsCount - 1
-        if (lastIndex >= 0) listState.animateScrollToItem(lastIndex)
+        if (lastIndex < 0) return@LaunchedEffect
+
+        val conversationId = uiState.conversationId
+        val needsInitialPosition = conversationId?.let { id ->
+            initiallyPositionedConversationId != id
+        } ?: !initiallyPositionedFreshConversation
+
+        if (needsInitialPosition) {
+            scrollListToBottom(animate = false)
+            if (conversationId == null) {
+                initiallyPositionedFreshConversation = true
+            } else {
+                initiallyPositionedConversationId = conversationId
+            }
+        } else if (followLatestMessages) {
+            scrollListToBottom(animate = true)
+        }
+    }
+
+    LaunchedEffect(listIsDragged) {
+        if (listIsDragged) {
+            followLatestMessages = false
+            composerExpanded = false
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+        } else if (!listState.canScrollForward) {
+            followLatestMessages = true
+        }
+    }
+
+    LaunchedEffect(listState.canScrollForward) {
+        if (!listState.canScrollForward) followLatestMessages = true
     }
 
     LaunchedEffect(Unit) {
         historyViewModel.toastEvent.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.displayText(message), Toast.LENGTH_SHORT).show()
         }
     }
 
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(activity) {
+        val lifecycleOwner = activity ?: return@DisposableEffect onDispose {}
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) viewModel.onAppBackgrounded()
         }
@@ -367,102 +1475,199 @@ fun ChatScreen(
     }
 
     fun closeThen(action: () -> Unit) {
+        drawerSessionActive = true
         scope.launch {
-            drawerState.close()
+            withTimeoutOrNull(600) { drawerState.close() }
+            drawerState.snapTo(DrawerValue.Closed)
+            drawerSessionActive = false
+            drawerContentResetGeneration += 1
+            delay(80)
             action()
         }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.30f),
-        drawerContent = {
-            MasonDrawer(
-                onNewChat = { closeThen { onNewChat?.invoke() } },
-                conversations = drawerConversations,
-                currentConversationId = uiState.conversationId,
-                onConversationSelected = { conversationId ->
-                    closeThen { onConversationSelected(conversationId) }
-                },
-                onOpenArtifacts = { closeThen(onOpenArtifacts) },
-                onOpenSkills = { closeThen(onOpenSkills) },
-                onOpenAutomations = { closeThen(onOpenAutomations) },
-                onSettings = { closeThen(onNavigateToSettings) },
-                onExportConversations = { ids -> historyViewModel.exportConversations(ids) },
-                onDeleteConversations = { ids -> pendingDrawerDeleteIds = ids },
-            )
-        },
-    ) {
-        Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
-            contentWindowInsets = WindowInsets(0, 0, 0, 0),
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                text = "Mason",
-                                color = MaterialTheme.colorScheme.onBackground,
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+    val interfaceEffects = LocalInterfaceEffects.current
+    val chatBackdropState = rememberChatBackdropState(
+        enabled = interfaceEffects.backdropBlurEnabled && LIVE_BACKDROP_BLUR_ENABLED,
+    )
+    val drawerBackdropBlurRadius = interfaceEffects.resolveBackdropBlurRadius(
+        nonGlassRadius = 32.dp,
+    )
+    val drawerBackdropEnabled =
+        interfaceEffects.requiresBackdropSample(drawerBackdropBlurRadius) &&
+            LIVE_BACKDROP_BLUR_ENABLED &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    DisposableEffect(drawerBackdropSnapshot) {
+        val currentSnapshot = drawerBackdropSnapshot
+        val retained = currentSnapshot?.retain() == true
+        onDispose {
+            if (retained) currentSnapshot?.release() else currentSnapshot?.recycleWhenIdle()
+        }
+    }
+    suspend fun refreshDrawerBackdrop() {
+        // PixelCopy includes the drawer itself once it is visible, producing blurred text ghosts.
+        if (
+            drawerState.currentValue != DrawerValue.Closed ||
+            drawerState.targetValue != DrawerValue.Closed
+        ) {
+            return
+        }
+        onDrawerBackdropSnapshotChange(if (drawerBackdropEnabled) {
+            captureWindowBackdropSnapshot(context)
+        } else {
+            null
+        })
+    }
+    LaunchedEffect(drawerState.currentValue, drawerState.targetValue) {
+        if (
+            drawerState.currentValue == DrawerValue.Closed &&
+            drawerState.targetValue == DrawerValue.Closed
+        ) {
+            delay(160)
+            if (
+                drawerState.currentValue == DrawerValue.Closed &&
+                drawerState.targetValue == DrawerValue.Closed
+            ) {
+                onDrawerBackdropSnapshotChange(null)
+            }
+        }
+    }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val usePermanentDrawer = maxWidth >= 840.dp
+        CompositionLocalProvider(LocalChatBackdropState provides chatBackdropState) {
+        AdaptiveChatLayout(
+            usePermanentDrawer = usePermanentDrawer,
+            drawerState = drawerState,
+            onBeforeDrawerOpen = ::refreshDrawerBackdrop,
+            drawerContent = {
+                MasonDrawer(
+                    permanent = usePermanentDrawer,
+                    backdropSnapshot = drawerBackdropSnapshot,
+                    resetGeneration = drawerContentResetGeneration,
+                    onNewChat = {
+                        closeThen {
+                            if (!isFreshEmptyChat) onNewChat?.invoke()
                         }
                     },
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(
-                                Icons.Outlined.Menu,
-                                contentDescription = "打开菜单",
-                                tint = MaterialTheme.colorScheme.onBackground,
-                            )
-                        }
+                    onDevicePairing = { closeThen(onDevicePairing) },
+                    remoteConversations = remoteConversations,
+                    onOpenRemoteConversations = {
+                        closeThen(onOpenRemoteConversations)
                     },
-                    actions = {
-                        uiState.lastUsage?.let { usage ->
-                            UsageQuotaText(usage = usage)
-                        }
-                        ModelStatusButton(
-                            availability = modelSummary,
-                            onClick = { showModelStatusSheet = true },
-                        )
+                    conversations = drawerConversations,
+                    currentConversationId = uiState.conversationId,
+                    onConversationSelected = { conversationId, isRunning ->
+                        historyViewModel.markConversationSeen(conversationId)
+                        closeThen { onConversationSelected(conversationId, isRunning) }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
-                    ),
-                    windowInsets = WindowInsets.safeDrawing.only(
-                        WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
-                    ),
+                    onOpenWorkbench = onOpenWorkbench,
+                    onSettings = onNavigateToSettings,
+                    onExportConversations = { ids -> historyViewModel.exportConversations(ids) },
+                    onDeleteConversations = { ids -> pendingDrawerDeleteIds = ids },
                 )
             },
-        ) { padding ->
-            Column(
+        ) {
+        Scaffold(
+            modifier = if (usePermanentDrawer) {
+                Modifier.widthIn(max = 920.dp).fillMaxHeight().align(Alignment.Center)
+            } else {
+                Modifier.fillMaxSize()
+            },
+            containerColor = pageBackgroundColor,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        ) {
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background)
-                    .padding(padding),
+                    .background(pageBackgroundColor),
             ) {
-                if (!hasMessages) {
-                    EmptyChatState(
+                val topSafePadding = with(density) {
+                    WindowInsets.safeDrawing.getTop(density).toDp()
+                }
+                val topContentPadding = topSafePadding + 64.dp
+                val topFadeHeight = topSafePadding + 30.dp
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clipToBounds(),
+                ) {
+                    Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                    )
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                        contentPadding = PaddingValues(top = 2.dp, bottom = 6.dp),
+                            .fillMaxSize()
+                            .captureChatBackdrop(chatBackdropState),
+                    ) {
+                        if (!hasMessages) {
+                            EmptyChatState(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(bottom = inputBarHeight),
+                            )
+                        } else {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            top = topContentPadding,
+                            bottom = inputBarHeight + 6.dp,
+                        ),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        items(
+                        itemsIndexed(
                             visibleMessages,
-                            key = { message -> "${message.role}-${message.timestamp}-${message.content.hashCode()}" },
-                        ) { message ->
-                            Box(modifier = Modifier.animateItem()) {
+                            key = { index, message -> "$index-${message.role}-${message.timestamp}-${message.content.hashCode()}" },
+                        ) { index, message ->
+                            val persistedTaskRun = remember(message.content) {
+                                extractTaskRunMarker(message.content.orEmpty())
+                            }
+                            val persistedModelParticipation = remember(message.content) {
+                                extractModelParticipation(message.content.orEmpty())
+                            }
+                            val isCurrentProcess = index == processInsertIndex &&
+                                persistedTaskRun?.id == uiState.taskRun?.id
+                            if (persistedTaskRun != null && !isCurrentProcess) {
+                                MasonProcessPanel(
+                                    steps = persistedTaskRun.steps,
+                                    isActive = false,
+                                    capabilityRequirement = null,
+                                    toolCallStatus = null,
+                                    hasDraft = false,
+                                    modelParticipation = persistedModelParticipation,
+                                    toolResultsByCallId = toolResultsByCallId,
+                                    onOpenToolDetail = { step, result ->
+                                        selectedToolExecution = ToolExecutionDetail(step, result)
+                                    },
+                                    onRetryStep = viewModel::retryTaskStep,
+                                    onPause = viewModel::pauseCurrentTask,
+                                    onCancel = viewModel::cancelCurrentTask,
+                                )
+                            }
+                            if (index == processInsertIndex) {
+                                MasonProcessPanel(
+                                    steps = uiState.taskSteps,
+                                    isActive = uiState.isStreaming,
+                                    capabilityRequirement = pendingCapabilityRequirement,
+                                    toolCallStatus = uiState.toolCallStatus,
+                                    hasDraft = uiState.streamingContent.isNotBlank(),
+                                    modelParticipation = persistedModelParticipation
+                                        ?: uiState.modelContributions.takeIf { it.isNotEmpty() || uiState.isStreaming }
+                                            ?.let(::ModelParticipation),
+                                    toolResultsByCallId = toolResultsByCallId,
+                                    onOpenToolDetail = { step, result ->
+                                        selectedToolExecution = ToolExecutionDetail(step, result)
+                                    },
+                                    onRetryStep = viewModel::retryTaskStep,
+                                    onPause = viewModel::pauseCurrentTask,
+                                    onCancel = viewModel::cancelCurrentTask,
+                                )
+                            }
+                            Box(
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = null,
+                                    fadeOutSpec = null,
+                                    placementSpec = null,
+                                ),
+                            ) {
                                 MessageBubble(
                                     message = message,
                                     processingMs = if (
@@ -474,23 +1679,33 @@ fun ChatScreen(
                                         null
                                     },
                                     onRetry = { viewModel.retryLastUserMessage() },
+                                    onResendUserMessage = viewModel::sendMessage,
                                     automationApplied = AutomationDraftService
                                         .extractAutomationDraftMarker(message.content.orEmpty())
                                         ?.draftId in appliedAutomationDraftIds,
                                     onApplyAutomationDraft = viewModel::applyAutomationDraft,
                                     onOpenAutomationPermissions = onNavigateToPermission,
                                     onOpenCapabilityConnections = onNavigateToIntegrations,
+                                    showModelFooter = persistedTaskRun == null,
                                 )
                             }
                         }
 
-                        if (uiState.taskSteps.isNotEmpty()) {
+                        if (processInsertIndex == visibleMessages.size) {
                             item {
                                 MasonProcessPanel(
                                     steps = uiState.taskSteps,
+                                    isActive = uiState.isStreaming,
                                     capabilityRequirement = pendingCapabilityRequirement,
                                     toolCallStatus = uiState.toolCallStatus,
                                     hasDraft = uiState.streamingContent.isNotBlank(),
+                                    modelParticipation = uiState.modelContributions
+                                        .takeIf { it.isNotEmpty() || uiState.isStreaming }
+                                        ?.let(::ModelParticipation),
+                                    toolResultsByCallId = toolResultsByCallId,
+                                    onOpenToolDetail = { step, result ->
+                                        selectedToolExecution = ToolExecutionDetail(step, result)
+                                    },
                                     onRetryStep = viewModel::retryTaskStep,
                                     onPause = viewModel::pauseCurrentTask,
                                     onCancel = viewModel::cancelCurrentTask,
@@ -507,45 +1722,249 @@ fun ChatScreen(
                                 )
                             }
                         }
+                        item(key = "chat-bottom-anchor") {
+                            Spacer(Modifier.height(1.dp))
+                        }
+                            }
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .height(topFadeHeight)
+                            .graphicsLayer {
+                                val progress = topFadeProgress.value
+                                alpha = progress
+                                translationY = -topFadeHeight.toPx() * (1f - progress)
+                            }
+                            .blurLayerOuterEdgeFeather(
+                                edge = ProgressiveBlurEdge.Bottom,
+                                featherHeight = 12.dp,
+                            )
+                            .progressiveEdgeBlur(
+                                state = chatBackdropState,
+                                edge = ProgressiveBlurEdge.Top,
+                                backgroundColor = pageBackgroundColor,
+                                blurRadius = 15.dp,
+                                smoothBoundary = true,
+                            )
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = if (interfaceEffects.glassMaterialEnabled) {
+                                        listOf(
+                                            pageBackgroundColor.copy(alpha = 0.10f),
+                                            pageBackgroundColor.copy(alpha = 0.04f),
+                                            Color.Transparent,
+                                        )
+                                    } else {
+                                        listOf(
+                                            pageBackgroundColor.copy(alpha = 0.98f),
+                                            pageBackgroundColor.copy(alpha = 0.72f),
+                                            Color.Transparent,
+                                        )
+                                    },
+                                ),
+                            ),
+                    )
+                    if (!usePermanentDrawer) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(
+                                    WindowInsets.safeDrawing
+                                        .only(WindowInsetsSides.Top + WindowInsetsSides.Start)
+                                        .asPaddingValues(),
+                                )
+                                .padding(start = 8.dp, top = 8.dp),
+                        ) {
+                            GlassIconButton(
+                                onClick = {
+                                    focusManager.clearFocus(force = true)
+                                    keyboardController?.hide()
+                                    drawerSessionActive = true
+                                    scope.launch {
+                                        refreshDrawerBackdrop()
+                                        drawerState.open()
+                                    }
+                                },
+                            ) {
+                                Box(modifier = Modifier.size(24.dp)) {
+                                    Icon(
+                                        Icons.Outlined.Menu,
+                                        contentDescription = LocalRemoteStrings.current.t("打开菜单"),
+                                        tint = MaterialTheme.colorScheme.onBackground,
+                                        modifier = Modifier
+                                            .size(23.dp)
+                                            .align(Alignment.Center),
+                                    )
+                                    if (drawerConversations.any { it.hasUnreadCompletion }) {
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .size(7.dp)
+                                                .clip(CircleShape)
+                                                .background(MaterialTheme.colorScheme.primary),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (topModelSummary.hasConfiguredModel) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(
+                                    WindowInsets.safeDrawing
+                                        .only(WindowInsetsSides.Top + WindowInsetsSides.End)
+                                        .asPaddingValues(),
+                                )
+                                .padding(end = 8.dp, top = 8.dp),
+                        ) {
+                            TopModelMenuButton(
+                                summary = topModelSummary,
+                                expanded = topModelMenuExpanded,
+                                onExpandedChange = { topModelMenuExpanded = it },
+                                onOpenSettings = {
+                                    topModelMenuExpanded = false
+                                    onNavigateToModelSettings()
+                                },
+                            )
+                        }
+                    }
+                    if (showScrollToBottom) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(end = 8.dp, bottom = inputBarHeight + 8.dp),
+                        ) {
+                            GlassIconButton(
+                                onClick = {
+                                    scrollToBottomInProgress = true
+                                    followLatestMessages = true
+                                    scope.launch {
+                                        try {
+                                            scrollListToBottom(animate = false)
+                                        } finally {
+                                            scrollToBottomInProgress = false
+                                        }
+                                    }
+                                },
+                            ) {
+                                Icon(
+                                    Icons.Outlined.KeyboardArrowDown,
+                                    contentDescription = LocalRemoteStrings.current.t("回到最新消息"),
+                                    tint = MaterialTheme.colorScheme.onBackground,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            }
+                        }
                     }
                 }
 
-                InputBar(
-                    text = inputText,
-                    onTextChange = { inputText = it },
-                    onSend = {
-                        val outgoing = buildOutgoingMessage(inputText, pendingAttachments, selectedSkill)
-                        viewModel.sendMessage(outgoing)
-                        inputText = ""
-                        pendingAttachments = emptyList()
-                        selectedSkill = null
-                        focusManager.clearFocus()
-                    },
-                    onStop = viewModel::stopGeneration,
-                    isGenerating = uiState.isStreaming,
-                    enabled = !uiState.isStreaming,
-                    attachments = pendingAttachments,
-                    selectedSkill = selectedSkill,
-                    onAddImage = { imagePicker.launch(arrayOf("image/*")) },
-                    onAddFile = { filePicker.launch(arrayOf("*/*")) },
-                    onUseSkill = {
-                        viewModel.refreshInstalledSkills()
-                        showSkillPicker = true
-                    },
-                    apiWarning = apiWarning,
-                    onOpenSettings = onNavigateToSettings,
-                    modelSwitchModels = modeSwitchModels,
-                    currentModelId = apiConfig.model,
-                    currentProviderName = currentProviderName,
-                    onSelectModel = viewModel::selectChatModel,
-                    onRemoveAttachment = { index ->
-                        pendingAttachments = pendingAttachments.filterIndexed { itemIndex, _ ->
-                            itemIndex != index
-                        }
-                    },
-                    onClearSkill = { selectedSkill = null },
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(inputBarHeight)
+                        .blurLayerOuterEdgeFeather(
+                            edge = ProgressiveBlurEdge.Top,
+                            featherHeight = 12.dp,
+                        )
+                        .progressiveEdgeBlur(
+                            state = chatBackdropState,
+                            edge = ProgressiveBlurEdge.Bottom,
+                            backgroundColor = pageBackgroundColor,
+                            blurRadius = 15.dp,
+                            smoothBoundary = true,
+                        )
+                        .background(
+                            Brush.verticalGradient(
+                                colors = if (interfaceEffects.glassMaterialEnabled) {
+                                    listOf(
+                                        Color.Transparent,
+                                        pageBackgroundColor.copy(alpha = 0.02f),
+                                        pageBackgroundColor.copy(alpha = 0.08f),
+                                    )
+                                } else {
+                                    listOf(
+                                        Color.Transparent,
+                                        pageBackgroundColor.copy(alpha = 0.08f),
+                                        pageBackgroundColor.copy(alpha = 0.28f),
+                                    )
+                                },
+                            ),
+                        ),
                 )
+                if (!interfaceEffects.glassMaterialEnabled) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(inputBarHeight)
+                            .background(
+                                Brush.verticalGradient(
+                                    0f to pageBackgroundColor.copy(alpha = 0.28f),
+                                    0.22f to pageBackgroundColor.copy(alpha = 0.88f),
+                                    1f to pageBackgroundColor,
+                                ),
+                            ),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .onSizeChanged { size -> inputBarHeightPx = size.height },
+                ) {
+                    InputBar(
+                        text = inputText,
+                        onTextChange = { inputText = it },
+                        onSend = {
+                            val outgoing = buildOutgoingMessage(inputText, pendingAttachments, selectedSkill)
+                            viewModel.sendMessage(outgoing)
+                            inputText = ""
+                            pendingAttachments = emptyList()
+                            selectedSkill = null
+                            composerExpanded = false
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
+                        },
+                        onStop = viewModel::stopGeneration,
+                        isGenerating = uiState.isStreaming,
+                        enabled = uiState.pendingToolApproval == null,
+                        expanded = composerExpanded,
+                        onExpandedChange = { composerExpanded = it },
+                        attachments = pendingAttachments,
+                        selectedSkill = selectedSkill,
+                        onAddImage = { imagePicker.launch(arrayOf("image/*")) },
+                        onAddFile = { filePicker.launch(arrayOf("*/*")) },
+                        onUseSkill = {
+                            viewModel.refreshInstalledSkills()
+                            showSkillPicker = true
+                        },
+                        apiWarning = apiWarning,
+                        pendingApproval = uiState.pendingToolApproval,
+                        onOpenApprovalDetails = { showApprovalDetails = true },
+                        onApproveOnce = { viewModel.approvePendingToolCall() },
+                        onOpenSettings = onNavigateToModelSettings,
+                        modelSwitchModels = modeSwitchModels,
+                        currentModelId = configuredChatRef?.modelId.orEmpty(),
+                        currentProviderName = currentProviderName,
+                        canSendToModel = canSendToModel,
+                        onSelectModel = viewModel::selectChatModel,
+                        onRemoveAttachment = { index ->
+                            pendingAttachments = pendingAttachments.filterIndexed { itemIndex, _ ->
+                                itemIndex != index
+                            }
+                        },
+                        onClearSkill = { selectedSkill = null },
+                    )
+                }
             }
+        }
+        }
         }
     }
 
@@ -583,28 +2002,37 @@ fun ChatScreen(
         )
     }
 
-    if (showModelStatusSheet) {
-        ModelStatusSheet(
-            statuses = modelStatuses,
-            summary = modelSummary,
-            localDirectEnabled = apiConfig.localModelDirectEnabled,
-            onDismiss = { showModelStatusSheet = false },
-            onModeChange = viewModel::selectLocalModelDirect,
-            onOpenSettings = {
-                showModelStatusSheet = false
-                onNavigateToSettings()
+    selectedToolExecution?.let { detail ->
+        ToolExecutionDetailSheet(
+            detail = detail,
+            onDismiss = { selectedToolExecution = null },
+            onRetry = {
+                selectedToolExecution = null
+                viewModel.retryTaskStep(detail.step.id)
             },
         )
     }
 
-    uiState.pendingToolApproval?.let { approval ->
-        ToolApprovalDialog(
+    if (showApprovalDetails) {
+        uiState.pendingToolApproval?.let { approval ->
+            ToolApprovalDetailSheet(
             approval = approval,
-            onApprove = { viewModel.approvePendingToolCall() },
-            onAlwaysApprove = { viewModel.approvePendingToolCall(alwaysAllow = true) },
-            onReject = viewModel::rejectPendingToolCall,
+            onDismiss = { showApprovalDetails = false },
+            onApprove = {
+                showApprovalDetails = false
+                viewModel.approvePendingToolCall()
+            },
+            onAlwaysApprove = {
+                showApprovalDetails = false
+                viewModel.approvePendingToolCall(alwaysAllow = true)
+            },
+            onReject = {
+                showApprovalDetails = false
+                viewModel.rejectPendingToolCall()
+            },
             onOpenConnections = onNavigateToIntegrations,
         )
+        }
     }
 
     if (pendingDrawerDeleteIds.isNotEmpty()) {
@@ -632,11 +2060,39 @@ fun ChatScreen(
             },
         )
     }
+
+    if (showExitConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showExitConfirmation = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            title = { Text("退出 MASON？") },
+            text = { Text("退出后将返回系统桌面，未完成的任务可以稍后继续。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showExitConfirmation = false
+                        activity?.moveTaskToBack(true)
+                    },
+                ) {
+                    Text("退出", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitConfirmation = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ToolApprovalDialog(
+private fun ToolApprovalDetailSheet(
     approval: ToolApprovalRequest,
+    onDismiss: () -> Unit,
     onApprove: () -> Unit,
     onAlwaysApprove: () -> Unit,
     onReject: () -> Unit,
@@ -647,73 +2103,89 @@ private fun ToolApprovalDialog(
         ToolRiskLevel.Medium -> "需要确认"
         ToolRiskLevel.High -> "高风险"
     }
-    AlertDialog(
-        onDismissRequest = onReject,
-        containerColor = MaterialTheme.colorScheme.surface,
-        titleContentColor = MaterialTheme.colorScheme.onSurface,
-        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        title = {
-            Text(
-                if (approval.integrationProtocol == "A2A") "允许应用协作？" else "Mason 准备执行",
+    WithRemoteMaterialResources {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .masonSheetSurface()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 2.dp,
+                bottomPadding = 0.dp,
             )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                if (approval.integrationProtocol == "A2A") "允许应用协作？" else "风险确认",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = displayApprovalAction(approval),
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (approval.actionSummary.isNotBlank()) {
+                Text(approval.actionSummary, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            approval.integrationProtocol?.let { protocol ->
                 Text(
-                    text = approval.displayName,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                if (approval.actionSummary.isNotBlank()) {
-                    Text(approval.actionSummary)
-                }
-                approval.integrationProtocol?.let { protocol ->
-                    Text(
-                        text = "协作方式：$protocol",
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 12.sp,
-                    )
-                }
-                Text("级别：$riskLabel")
-                Text("影响范围：${approval.reason}")
-                Text(
-                    text = when {
-                        approval.integrationProtocol == "A2A" ->
-                            "这次只允许当前任务。以后再次委派敏感操作时，Mason 仍会询问。"
-                        !approval.allowPersistentGrant ->
-                            "这次只允许当前任务。以后再次保存敏感信息时，Mason 仍会询问。"
-                        else ->
-                            "允许一次只继续本轮任务；总是允许会记住该工具，之后可在设置中撤销。"
-                    },
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = "协作方式：$protocol",
+                    color = MaterialTheme.colorScheme.primary,
                     fontSize = 12.sp,
-                    lineHeight = 17.sp,
                 )
-                Row {
-                    if (approval.integrationProtocol != null) {
-                        TextButton(onClick = onOpenConnections) {
-                            Text("查看连接")
-                        }
-                    }
-                    if (approval.allowPersistentGrant) {
-                        TextButton(onClick = onAlwaysApprove) {
-                            Text("总是允许")
-                        }
-                    }
+            }
+            Text("级别：$riskLabel", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("影响范围：${approval.reason}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                text = when {
+                    approval.integrationProtocol == "A2A" ->
+                        "这次只允许当前任务。以后再次委派敏感操作时，Mason 仍会询问。"
+                    !approval.allowPersistentGrant ->
+                        "这次只允许当前任务。以后再次保存敏感信息时，Mason 仍会询问。"
+                    else ->
+                        "允许一次只继续本轮任务；总是允许会记住该工具，之后可在设置中撤销。"
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+            )
+            if (approval.integrationProtocol != null) {
+                TextButton(onClick = onOpenConnections) {
+                    Text("查看连接")
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onApprove) {
-                Text("允许一次", color = MaterialTheme.colorScheme.primary)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onReject) { Text("拒绝") }
+                if (approval.allowPersistentGrant) {
+                    TextButton(onClick = onAlwaysApprove) {
+                        Text("总是允许")
+                    }
+                }
+                TextButton(onClick = onApprove) {
+                    Text("允许一次", color = MaterialTheme.colorScheme.primary)
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onReject) {
-                Text("拒绝")
-            }
-        },
-    )
+            Spacer(Modifier.height(18.dp))
+        }
+    }
+}
 }
 
 @Composable
@@ -760,55 +2232,115 @@ private fun SkillParameterDialog(
 }
 
 @Composable
-private fun UsageQuotaText(
-    usage: TokenUsage,
-) {
-    Text(
-        text = "消耗 ${formatTokenCount(usage.totalTokens)}",
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-    )
-}
-
-private fun formatTokenCount(tokens: Long): String {
-    return when {
-        tokens <= 0L -> "0"
-        tokens < 1_000L -> tokens.toString()
-        tokens < 1_000_000L -> {
-            val value = tokens / 1_000.0
-            if (tokens < 10_000L) "%.1fK".format(value) else "${(tokens / 1_000)}K"
-        }
-        else -> "%.1fM".format(tokens / 1_000_000.0)
-    }
-}
-
-@Composable
 private fun MasonDrawer(
+    permanent: Boolean = false,
+    backdropSnapshot: WindowBackdropSnapshot? = null,
+    resetGeneration: Int,
     onNewChat: () -> Unit,
+    onDevicePairing: () -> Unit,
+    remoteConversations: RemoteConversationListUiState,
+    onOpenRemoteConversations: () -> Unit,
     conversations: List<ConversationListItem>,
     currentConversationId: Long?,
-    onConversationSelected: (Long) -> Unit,
-    onOpenArtifacts: () -> Unit,
-    onOpenSkills: () -> Unit,
-    onOpenAutomations: () -> Unit,
+    onConversationSelected: (Long, Boolean) -> Unit,
+    onOpenWorkbench: () -> Unit,
     onSettings: () -> Unit,
     onExportConversations: (Set<Long>) -> Unit,
     onDeleteConversations: (Set<Long>) -> Unit,
 ) {
-    var selectionMode by remember { mutableStateOf(false) }
-    var selectedConversationIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
-    val visibleConversations = conversations.take(30)
+    var selectionMode by remember(resetGeneration) { mutableStateOf(false) }
+    var selectedConversationIds by remember(resetGeneration) {
+        mutableStateOf<Set<Long>>(emptySet())
+    }
+    var searchActive by remember(resetGeneration) { mutableStateOf(false) }
+    var searchQuery by remember(resetGeneration) { mutableStateOf("") }
+    val searchFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val filteredConversations = remember(conversations, searchQuery) {
+        val keyword = searchQuery.trim()
+        if (keyword.isBlank()) {
+            conversations
+        } else {
+            conversations.filter { item ->
+                item.conversation.title.contains(keyword, ignoreCase = true) ||
+                    item.searchableText.contains(keyword, ignoreCase = true)
+            }
+        }
+    }
+    val visibleConversations = filteredConversations.take(30)
     val allVisibleIds = remember(visibleConversations) {
         visibleConversations.map { it.conversation.id }.toSet()
     }
+    val drawerListState = rememberLazyListState()
+    val drawerTopFadeHeight = 44.dp
+    val drawerBottomFadeHeight = 44.dp
+    val drawerBlurOuterFeather = 6.dp
+    val drawerFadeRevealDistancePx = with(LocalDensity.current) { 24.dp.toPx() }
+    val drawerTopFadeProgress = remember(drawerListState, drawerFadeRevealDistancePx) {
+        derivedStateOf {
+            if (drawerListState.firstVisibleItemIndex > 0) {
+                1f
+            } else {
+                (drawerListState.firstVisibleItemScrollOffset / drawerFadeRevealDistancePx)
+                    .coerceIn(0f, 1f)
+            }
+        }
+    }
+    val drawerBottomFadeProgress by animateFloatAsState(
+        targetValue = if (drawerListState.canScrollForward) 1f else 0f,
+        animationSpec = tween(durationMillis = 180),
+        label = "drawer_bottom_fade",
+    )
+    val interfaceEffects = LocalInterfaceEffects.current
+    val drawerBackdropBlurRadius = interfaceEffects.resolveBackdropBlurRadius(
+        nonGlassRadius = 32.dp,
+    )
+    val drawerBackdropRequired = interfaceEffects.requiresBackdropSample(
+        blurRadius = drawerBackdropBlurRadius,
+    )
+    var drawerWindowPosition by remember { mutableStateOf(IntOffset.Zero) }
+    val drawerSurfaceAlpha by animateFloatAsState(
+        targetValue = if (
+            !permanent &&
+            drawerBackdropRequired &&
+            backdropSnapshot == null
+        ) {
+            1f
+        } else {
+            interfaceEffects.largeSurfaceAlpha
+        },
+        animationSpec = tween(durationMillis = 120),
+        label = "drawer_surface_alpha",
+    )
+    val drawerSurface = drawerGlassSurface(drawerSurfaceAlpha)
+    val drawerEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
 
     LaunchedEffect(allVisibleIds) {
         selectedConversationIds = selectedConversationIds.intersect(allVisibleIds)
-        if (selectionMode && selectedConversationIds.isEmpty()) {
+    }
+
+    LaunchedEffect(searchActive, selectionMode, conversations.isEmpty()) {
+        if (conversations.isEmpty()) {
+            searchQuery = ""
+            searchActive = false
+        }
+        if (searchActive && !selectionMode) {
+            withFrameNanos { }
+            searchFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
+    BackHandler(enabled = selectionMode || searchActive) {
+        if (selectionMode) {
+            selectedConversationIds = emptySet()
             selectionMode = false
+        } else {
+            searchQuery = ""
+            searchActive = false
         }
     }
 
@@ -819,134 +2351,251 @@ private fun MasonDrawer(
             selectedConversationIds + id
         }
         selectedConversationIds = nextIds
-        selectionMode = nextIds.isNotEmpty()
     }
 
-    ModalDrawerSheet(
-        modifier = Modifier.width(292.dp),
-        drawerContainerColor = drawerGlassSurface(),
-        windowInsets = WindowInsets.safeDrawing.only(
-            WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start,
-        ),
-    ) {
+    val content: @Composable () -> Unit = {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(drawerGlassSurface())
+                modifier = Modifier
+                    .fillMaxSize()
                 .padding(top = 14.dp, bottom = 10.dp),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 8.dp),
-            ) {
-                Text(
-                    "Mason",
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 21.sp,
-                    fontWeight = FontWeight.SemiBold,
+            if (!selectionMode) {
+                DrawerPrimaryAction(
+                    label = "新对话",
+                    selected = false,
+                    onClick = onNewChat,
+                    icon = Icons.Outlined.Add,
                 )
-                Text(
-                    "AI 对话与手机工具",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                )
+                if (remoteConversations.connector == null) {
+                    DrawerPrimaryAction(
+                        label = "设备扫码配对",
+                        selected = false,
+                        onClick = onDevicePairing,
+                        icon = ImageVector.vectorResource(R.drawable.ic_device_scan),
+                    )
+                } else {
+                    RemoteConversationDrawerGroup(
+                        state = remoteConversations,
+                        onOpen = onOpenRemoteConversations,
+                    )
+                }
             }
 
-            Spacer(Modifier.height(8.dp))
-
-            DrawerPrimaryAction(
-                label = "新对话",
-                selected = currentConversationId == null,
-                onClick = onNewChat,
-                icon = Icons.Outlined.Add,
-            )
-
-            Row(
+            if (conversations.isNotEmpty()) Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 20.dp, end = 16.dp, top = 14.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    if (selectionMode) "已选 ${selectedConversationIds.size}" else "最近对话",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                if (selectionMode && visibleConversations.isNotEmpty()) {
+                if (searchActive && !selectionMode) {
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        singleLine = true,
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 13.sp,
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(searchFocusRequester),
+                        decorationBox = { innerTextField ->
+                            Box(contentAlignment = Alignment.CenterStart) {
+                                if (searchQuery.isBlank()) {
+                                    Text(
+                                        "搜索对话和内容",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 13.sp,
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        },
+                    )
+                    IconButton(
+                        onClick = {
+                            searchQuery = ""
+                            searchActive = false
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
+                        },
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Close,
+                            contentDescription = LocalRemoteStrings.current.t("关闭搜索"),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                } else {
                     Text(
-                        if (selectedConversationIds.size == allVisibleIds.size) "取消全选" else "全选",
+                        if (selectionMode) "已选 ${selectedConversationIds.size}" else "最近对话",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (selectionMode) {
+                    Text(
+                        "取消",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable {
+                                selectedConversationIds = emptySet()
+                                selectionMode = false
+                            }
+                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                    )
+                    Text(
+                        "全选",
                         color = MaterialTheme.colorScheme.primary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier
                             .clip(RoundedCornerShape(999.dp))
                             .clickable {
-                                selectedConversationIds = if (selectedConversationIds.size == allVisibleIds.size) {
-                                    emptySet()
-                                } else {
-                                    allVisibleIds
-                                }
-                                selectionMode = selectedConversationIds.isNotEmpty()
+                                selectedConversationIds = allVisibleIds
                             }
                             .padding(horizontal = 7.dp, vertical = 3.dp),
+                    )
+                } else if (!searchActive) {
+                    IconButton(
+                        onClick = { searchActive = true },
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Search,
+                            contentDescription = LocalRemoteStrings.current.t("搜索对话"),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                LazyColumn(
+                    state = drawerListState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .drawerListEdgeFadeMask(
+                            topProgress = drawerTopFadeProgress.value,
+                            bottomProgress = drawerBottomFadeProgress,
+                            topFadeHeight = drawerTopFadeHeight,
+                            bottomFadeHeight = drawerBottomFadeHeight,
+                        )
+                        .captureProgressiveEdgeBlur(drawerEdgeBlurState),
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    if (visibleConversations.isEmpty() && conversations.isNotEmpty()) {
+                        item {
+                            Text(
+                                "没有匹配的对话",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                            )
+                        }
+                    } else {
+                        items(
+                            items = visibleConversations,
+                            key = { it.conversation.id },
+                        ) { item ->
+                            Box(modifier = Modifier.animateItem()) {
+                                DrawerConversationItem(
+                                    item = item,
+                                    selected = if (selectionMode) {
+                                        item.conversation.id in selectedConversationIds
+                                    } else {
+                                        item.conversation.id == currentConversationId
+                                    },
+                                    selectionMode = selectionMode,
+                                    onClick = {
+                                        if (selectionMode) {
+                                            toggleConversationSelection(item.conversation.id)
+                                        } else {
+                                            onConversationSelected(item.conversation.id, item.isRunning)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        selectionMode = true
+                                        selectedConversationIds = selectedConversationIds + item.conversation.id
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(drawerTopFadeHeight + drawerBlurOuterFeather)
+                        .graphicsLayer {
+                            val progress = drawerTopFadeProgress.value
+                            alpha = progress
+                            translationY = -drawerBlurOuterFeather.toPx()
+                        }
+                        .blurLayerOuterEdgeFeather(
+                            edge = ProgressiveBlurEdge.Top,
+                            featherHeight = drawerBlurOuterFeather,
+                        ),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .progressiveEdgeBlur(
+                                state = drawerEdgeBlurState,
+                                edge = ProgressiveBlurEdge.Top,
+                                backgroundColor = Color.Transparent,
+                                smoothBoundary = true,
+                                gradientStartY = drawerBlurOuterFeather,
+                                gradientEndY = drawerBlurOuterFeather + drawerTopFadeHeight,
+                            ),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(drawerBottomFadeHeight + drawerBlurOuterFeather)
+                        .graphicsLayer {
+                            alpha = drawerBottomFadeProgress
+                            translationY = drawerBlurOuterFeather.toPx()
+                        }
+                        .blurLayerOuterEdgeFeather(
+                            edge = ProgressiveBlurEdge.Bottom,
+                            featherHeight = drawerBlurOuterFeather,
+                        ),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .progressiveEdgeBlur(
+                                state = drawerEdgeBlurState,
+                                edge = ProgressiveBlurEdge.Bottom,
+                                backgroundColor = Color.Transparent,
+                                smoothBoundary = true,
+                                gradientStartY = 0.dp,
+                                gradientEndY = drawerBottomFadeHeight,
+                            ),
                     )
                 }
             }
 
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding = PaddingValues(bottom = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(1.dp),
-            ) {
-                if (conversations.isEmpty()) {
-                    item {
-                        Text(
-                            "还没有历史记录",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-                        )
-                    }
-                } else {
-                    items(
-                        items = visibleConversations,
-                        key = { it.conversation.id },
-                    ) { item ->
-                        Box(modifier = Modifier.animateItem()) {
-                            DrawerConversationItem(
-                                item = item,
-                                selected = if (selectionMode) {
-                                    item.conversation.id in selectedConversationIds
-                                } else {
-                                    item.conversation.id == currentConversationId
-                                },
-                                selectionMode = selectionMode,
-                                onClick = {
-                                    if (selectionMode) {
-                                        toggleConversationSelection(item.conversation.id)
-                                    } else {
-                                        onConversationSelected(item.conversation.id)
-                                    }
-                                },
-                                onLongClick = {
-                                    selectionMode = true
-                                    selectedConversationIds = selectedConversationIds + item.conversation.id
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
-            )
+            Spacer(modifier = Modifier.height(17.dp))
             if (selectionMode) {
                 Row(
                     modifier = Modifier
@@ -961,7 +2610,6 @@ private fun MasonDrawer(
                         onClick = {
                             onExportConversations(selectedConversationIds)
                             selectedConversationIds = emptySet()
-                            selectionMode = false
                         },
                         modifier = Modifier.weight(1f),
                     )
@@ -976,18 +2624,282 @@ private fun MasonDrawer(
                 }
             } else {
                 DrawerFooterDock(
-                    onOpenArtifacts = onOpenArtifacts,
-                    onOpenSkills = onOpenSkills,
-                    onOpenAutomations = onOpenAutomations,
+                    onOpenWorkbench = onOpenWorkbench,
                     onSettings = onSettings,
                 )
+            }
+        }
+    }
+    if (permanent) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(drawerSurface)
+                .padding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start).asPaddingValues()),
+        ) {
+            content()
+        }
+    } else {
+        ModalDrawerSheet(
+            modifier = Modifier
+                .width(292.dp)
+                .onGloballyPositioned { coordinates ->
+                    val position = coordinates.positionInWindow()
+                    drawerWindowPosition = IntOffset(
+                        x = position.x.roundToInt(),
+                        y = position.y.roundToInt(),
+                    )
+                }
+                .windowBackdrop(
+                    snapshot = backdropSnapshot,
+                    windowPosition = drawerWindowPosition,
+                    blurRadius = drawerBackdropBlurRadius,
+                    effectAlpha = interfaceEffects.backdropEffectAlpha,
+                    allowZeroPosition = true,
+                )
+                .background(drawerSurface),
+            drawerShape = RectangleShape,
+            drawerContainerColor = Color.Transparent,
+            windowInsets = WindowInsets.safeDrawing.only(
+                WindowInsetsSides.Top + WindowInsetsSides.Bottom + WindowInsetsSides.Start,
+            ),
+        ) {
+            content()
+        }
+    }
+}
+
+@Composable
+private fun AdaptiveChatLayout(
+    usePermanentDrawer: Boolean,
+    drawerState: DrawerState,
+    onBeforeDrawerOpen: suspend () -> Unit,
+    drawerContent: @Composable () -> Unit,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    if (usePermanentDrawer) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.width(292.dp).fillMaxHeight()) { drawerContent() }
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+            )
+            Box(
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                contentAlignment = Alignment.Center,
+            ) { content() }
+        }
+    } else {
+        val drawerGestureScope = rememberCoroutineScope()
+        val edgeWidthPx = with(LocalDensity.current) { 32.dp.toPx() }
+        val openGestureModifier = Modifier.pointerInput(drawerState, edgeWidthPx) {
+            awaitEachGesture {
+                // Keep the drawer recognizer on the system edge. A consumed down
+                // belongs to a horizontal content control (table, carousel, etc.).
+                val down = awaitFirstDown(requireUnconsumed = true)
+                val start = down.position
+                if (!isDrawerGestureStartWithinEdge(start.x, edgeWidthPx)) {
+                    return@awaitEachGesture
+                }
+
+                var change = down
+                while (change.pressed) {
+                    val event = awaitPointerEvent()
+                    change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (change.isConsumed) break
+                    val drag = change.position - start
+                    if (shouldOpenDrawerFromGesture(
+                            horizontalDrag = drag.x,
+                            verticalDrag = drag.y,
+                            touchSlop = viewConfiguration.touchSlop,
+                        )
+                    ) {
+                        change.consume()
+                        drawerGestureScope.launch {
+                            onBeforeDrawerOpen()
+                            drawerState.open()
+                        }
+                        break
+                    }
+                    if (drag.x < -viewConfiguration.touchSlop ||
+                        abs(drag.y) > viewConfiguration.touchSlop
+                    ) {
+                        break
+                    }
+                }
+            }
+        }
+        WithMaterialEnglishResources {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                gesturesEnabled = drawerState.currentValue == DrawerValue.Open,
+                scrimColor = Color.Transparent,
+                drawerContent = drawerContent,
+                content = {
+                    Box(modifier = Modifier.fillMaxSize().then(openGestureModifier)) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            content()
+                        }
+                        if (
+                            drawerState.currentValue == DrawerValue.Open ||
+                                drawerState.targetValue == DrawerValue.Open
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.12f))
+                                    .clickable {
+                                        drawerGestureScope.launch { drawerState.close() }
+                                    },
+                            )
+                        }
+                    }
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Material3 reads its built-in drawer semantics from the current resource
+ * configuration. The app has an in-app language preference, so provide a
+ * matching configuration context for that library-owned string.
+ */
+@Composable
+private fun WithMaterialEnglishResources(content: @Composable () -> Unit) {
+    val strings = LocalRemoteStrings.current
+    if (!strings.isEnglish) {
+        content()
+        return
+    }
+    val context = LocalContext.current
+    val englishContext = remember(context) {
+        val configuration = Configuration(context.resources.configuration)
+        configuration.setLocale(Locale.ENGLISH)
+        context.createConfigurationContext(configuration)
+    }
+    CompositionLocalProvider(
+        LocalContext provides englishContext,
+        LocalConfiguration provides englishContext.resources.configuration,
+        content = content,
+    )
+}
+
+internal fun shouldOpenDrawerFromGesture(
+    horizontalDrag: Float,
+    verticalDrag: Float,
+    touchSlop: Float,
+): Boolean = horizontalDrag > touchSlop && horizontalDrag > abs(verticalDrag)
+
+internal fun isDrawerGestureStartWithinEdge(
+    startX: Float,
+    edgeWidth: Float,
+): Boolean = startX >= 0f && edgeWidth > 0f && startX <= edgeWidth
+
+@Composable
+private fun TopModelMenuButton(
+    summary: ChatModelMenuSummary,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val strings = LocalRemoteStrings.current
+    Box {
+        GlassIconButton(
+            onClick = { onExpandedChange(!expanded) },
+        ) {
+            Icon(
+                imageVector = ImageVector.vectorResource(R.drawable.ic_model_switch),
+                contentDescription = strings.text(
+                    "当前模型：聊天 ${summary.chatModelName}，识图 ${summary.visionModelName}，图片生成 ${summary.imageModelName}",
+                    "Current model: Chat ${summary.chatModelName}, Vision ${summary.visionModelName}, Image generation ${summary.imageModelName}",
+                ),
+                tint = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.size(23.dp),
+            )
+        }
+        ChatGlassDropdown(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+            width = 180.dp,
+            cornerRadius = 12.dp,
+            alignEnd = true,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "当前模型",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier
+                            .offset(x = 8.dp)
+                            .size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Settings,
+                            contentDescription = LocalRemoteStrings.current.t("打开模型配置"),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+                HorizontalDivider(color = Color(0xFFDEE0E6).copy(alpha = 0.50f))
+                CurrentModelMenuRow(label = "聊天", modelName = summary.chatModelName)
+                CurrentModelMenuRow(label = "识图", modelName = summary.visionModelName)
+                CurrentModelMenuRow(label = "图片生成", modelName = summary.imageModelName)
             }
         }
     }
 }
 
 @Composable
-private fun drawerGlassSurface(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.99f)
+private fun CurrentModelMenuRow(
+    label: String,
+    modelName: String,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = modelName,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.End,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun drawerGlassSurface(alpha: Float): Color = MaterialTheme.colorScheme.surface.copy(
+    alpha = alpha,
+)
 
 @Composable
 private fun DrawerPrimaryAction(
@@ -995,7 +2907,9 @@ private fun DrawerPrimaryAction(
     selected: Boolean,
     onClick: () -> Unit,
     icon: ImageVector,
+    trailingIcon: ImageVector? = null,
 ) {
+    val glassMaterialEnabled = LocalInterfaceEffects.current.glassMaterialEnabled
     val tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
     Row(
         modifier = Modifier
@@ -1005,6 +2919,10 @@ private fun DrawerPrimaryAction(
             .background(
                 if (selected) {
                     MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                } else if (glassMaterialEnabled) {
+                    // The drawer is the single glass layer. Its rows stay
+                    // transparent so a second translucent panel is not formed.
+                    Color.Transparent
                 } else {
                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f)
                 },
@@ -1012,6 +2930,7 @@ private fun DrawerPrimaryAction(
             .border(
                 1.dp,
                 if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                else if (glassMaterialEnabled) Color.Transparent
                 else MaterialTheme.colorScheme.outline.copy(alpha = 0.06f),
                 RoundedCornerShape(12.dp),
             )
@@ -1033,8 +2952,37 @@ private fun DrawerPrimaryAction(
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
+        trailingIcon?.let {
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                it,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
+}
+
+@Composable
+private fun RemoteConversationDrawerGroup(
+    state: RemoteConversationListUiState,
+    onOpen: () -> Unit,
+) {
+    val connector = state.connector ?: return
+    DrawerPrimaryAction(
+        label = if (state.isReachable == false) {
+            "离线 · ${connector.displayName}"
+        } else {
+            "已连接 · ${connector.displayName}"
+        },
+        selected = false,
+        onClick = onOpen,
+        icon = Icons.Outlined.Computer,
+        trailingIcon = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+    )
 }
 
 @Composable
@@ -1069,9 +3017,7 @@ private fun DrawerSelectionAction(
 
 @Composable
 private fun DrawerFooterDock(
-    onOpenArtifacts: () -> Unit,
-    onOpenSkills: () -> Unit,
-    onOpenAutomations: () -> Unit,
+    onOpenWorkbench: () -> Unit,
     onSettings: () -> Unit,
 ) {
     Row(
@@ -1082,21 +3028,9 @@ private fun DrawerFooterDock(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         DrawerFooterAction(
-            label = "产出",
+            label = "工作台",
             icon = Icons.Outlined.Folder,
-            onClick = onOpenArtifacts,
-            modifier = Modifier.weight(1f),
-        )
-        DrawerFooterAction(
-            label = "技能",
-            icon = Icons.Outlined.Extension,
-            onClick = onOpenSkills,
-            modifier = Modifier.weight(1f),
-        )
-        DrawerFooterAction(
-            label = "自动",
-            icon = Icons.AutoMirrored.Outlined.EventNote,
-            onClick = onOpenAutomations,
+            onClick = onOpenWorkbench,
             modifier = Modifier.weight(1f),
         )
         DrawerFooterAction(
@@ -1136,44 +3070,6 @@ private fun DrawerFooterAction(
             fontSize = 10.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
-        )
-    }
-}
-
-@Composable
-private fun DrawerNavRow(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    icon: ImageVector,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 1.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(
-                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.13f)
-                else Color.Transparent,
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            label,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            fontSize = 14.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -1225,7 +3121,7 @@ private fun DrawerConversationItem(
             ) {
                 if (selected) {
                     Icon(
-                        Icons.Outlined.CheckCircle,
+                        Icons.Outlined.Check,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(13.dp),
@@ -1251,24 +3147,421 @@ private fun DrawerConversationItem(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        if (!selectionMode) {
+            when {
+                item.isRunning -> {
+                    Spacer(Modifier.width(8.dp))
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(15.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 1.5.dp,
+                    )
+                }
+                item.hasUnreadCompletion -> {
+                    Spacer(Modifier.width(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                }
+            }
+        }
     }
 }
 
 @Composable
 private fun EmptyChatState(modifier: Modifier = Modifier) {
-    Spacer(modifier = modifier)
-}
+    val strings = LocalRemoteStrings.current
+    var variantIndex by rememberSaveable { mutableIntStateOf(nextEmptyChatVariantIndex()) }
+    val variant = emptyChatVariants[variantIndex]
+    val primaryMotion = remember { Animatable(0f) }
+    val followMotion = remember { Animatable(0f) }
+    val bodyX = remember { Animatable(0f) }
+    val bodyY = remember { Animatable(0f) }
+    val bodyRotation = remember { Animatable(0f) }
+    val bodyScale = remember { Animatable(1f) }
+    val bodyOpacity = remember { Animatable(0f) }
+    var interacting by remember { mutableStateOf(false) }
+    val motionScope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val motionEaseOut = remember { CubicBezierEasing(0.23f, 1f, 0.32f, 1f) }
+    val motionEaseInOut = remember { CubicBezierEasing(0.77f, 0f, 0.175f, 1f) }
+    val backgroundColor = MaterialTheme.colorScheme.background
+    val isDark = backgroundColor.luminance() < 0.5f
 
-@Composable
-private fun TimestampLabel(timestamp: Long?) {
-    if (timestamp == null) return
-    val timeText = remember(timestamp) { TIME_FORMAT.format(Date(timestamp)) }
-    Text(
-        text = timeText,
-        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-        fontSize = 10.sp,
-        modifier = Modifier.padding(top = 2.dp),
-    )
+    suspend fun playExpressionMotion() {
+        primaryMotion.snapTo(0f)
+        followMotion.snapTo(0f)
+        coroutineScope {
+            launch {
+                primaryMotion.animateTo(-0.18f, tween(120, easing = motionEaseInOut))
+                primaryMotion.animateTo(1f, tween(260, easing = motionEaseOut))
+                primaryMotion.animateTo(-0.07f, tween(210, easing = motionEaseInOut))
+                primaryMotion.animateTo(0f, tween(220, easing = motionEaseOut))
+            }
+            launch {
+                delay(65)
+                followMotion.animateTo(0.78f, tween(250, easing = motionEaseOut))
+                followMotion.animateTo(-0.04f, tween(210, easing = motionEaseInOut))
+                followMotion.animateTo(0f, tween(220, easing = motionEaseOut))
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        bodyY.snapTo(with(density) { (-8).dp.toPx() })
+        bodyRotation.snapTo(-1.5f)
+        bodyScale.snapTo(0.97f)
+        coroutineScope {
+            launch { bodyOpacity.animateTo(1f, tween(260, easing = motionEaseOut)) }
+            launch { bodyY.animateTo(0f, spring(dampingRatio = 0.82f, stiffness = 180f)) }
+            launch { bodyRotation.animateTo(0f, spring(dampingRatio = 0.84f, stiffness = 150f)) }
+            launch {
+                bodyScale.animateTo(
+                    1f,
+                    spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMedium,
+                    ),
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(variantIndex, interacting) {
+        primaryMotion.stop()
+        followMotion.stop()
+        primaryMotion.snapTo(0f)
+        followMotion.snapTo(0f)
+        if (interacting) return@LaunchedEffect
+        delay(260)
+        var firstMotion = true
+        while (true) {
+            playExpressionMotion()
+            if (!firstMotion) {
+                val direction = if (variantIndex % 2 == 0) 1f else -1f
+                val idleShift = with(density) { 1.5.dp.toPx() }
+                coroutineScope {
+                    launch {
+                        bodyX.animateTo(direction * idleShift, tween(240, easing = motionEaseInOut))
+                        bodyX.animateTo(
+                            0f,
+                            spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessLow,
+                            ),
+                        )
+                    }
+                    launch {
+                        bodyRotation.animateTo(
+                            direction * 1.1f,
+                            tween(240, easing = motionEaseInOut),
+                        )
+                        bodyRotation.animateTo(0f, spring(dampingRatio = 0.9f, stiffness = 120f))
+                    }
+                }
+            }
+            firstMotion = false
+            delay(variant.idleDelayMs)
+        }
+    }
+
+    fun settleAfterDrag(velocityX: Float, velocityY: Float, width: Float) {
+        motionScope.launch {
+            coroutineScope {
+                launch {
+                    bodyX.animateTo(
+                        0f,
+                        spring(dampingRatio = 0.82f, stiffness = 160f),
+                        initialVelocity = velocityX.coerceIn(-1_800f, 1_800f),
+                    )
+                }
+                launch {
+                    bodyY.animateTo(
+                        0f,
+                        spring(dampingRatio = 0.9f, stiffness = 180f),
+                        initialVelocity = velocityY.coerceIn(-1_400f, 1_400f),
+                    )
+                }
+                launch {
+                    bodyRotation.animateTo(
+                        0f,
+                        spring(dampingRatio = 0.82f, stiffness = 150f),
+                        initialVelocity = (velocityX / width * 28f).coerceIn(-48f, 48f),
+                    )
+                }
+                launch {
+                    bodyScale.animateTo(
+                        1f,
+                        spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMedium,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun changeExpressionWithRock() {
+        val direction = if (variantIndex % 2 == 0) 1f else -1f
+        val rockDistance = with(density) { 5.dp.toPx() }
+        val counterDistance = with(density) { 1.5.dp.toPx() }
+        variantIndex = (variantIndex + 1) % emptyChatVariants.size
+        motionScope.launch {
+            coroutineScope {
+                launch {
+                    bodyX.animateTo(direction * rockDistance, tween(110, easing = motionEaseOut))
+                    bodyX.animateTo(
+                        -direction * counterDistance,
+                        tween(170, easing = motionEaseInOut),
+                    )
+                    bodyX.animateTo(0f, spring(dampingRatio = 0.84f, stiffness = 150f))
+                }
+                launch {
+                    bodyRotation.animateTo(direction * 4.2f, tween(110, easing = motionEaseOut))
+                    bodyRotation.animateTo(
+                        -direction * 1.2f,
+                        tween(170, easing = motionEaseInOut),
+                    )
+                    bodyRotation.animateTo(0f, spring(dampingRatio = 0.82f, stiffness = 150f))
+                }
+                launch {
+                    bodyY.animateTo(
+                        with(density) { (-2).dp.toPx() },
+                        tween(100, easing = motionEaseOut),
+                    )
+                    bodyY.animateTo(0f, spring(dampingRatio = 0.9f, stiffness = 180f))
+                }
+                launch {
+                    bodyScale.animateTo(
+                        1f,
+                        spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMedium,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    BoxWithConstraints(
+        modifier = modifier.background(backgroundColor),
+        contentAlignment = Alignment.Center,
+    ) {
+        val computerSize = (minOf(
+            maxWidth - 32.dp,
+            maxHeight * 0.72f,
+            400.dp,
+        ) * 0.5f).coerceAtLeast(96.dp)
+        val faceCenterX = if (isDark) 0.583f else 0.579f
+        val faceCenterY = if (isDark) 0.528f else 0.485f
+        val faceWidth = computerSize * 0.16f
+        val faceHeight = faceWidth / variant.faceAspectRatio
+        val shadowTilt = (abs(bodyRotation.value) / 6f).coerceIn(0f, 1f)
+        val shadowLateral = (
+            abs(bodyX.value) / with(density) { 72.dp.toPx() }
+        ).coerceIn(0f, 1f)
+        val shadowLift = (
+            -bodyY.value / with(density) { 48.dp.toPx() }
+        ).coerceIn(0f, 1f)
+        val shadowCompression = (
+            bodyY.value / with(density) { 48.dp.toPx() }
+        ).coerceIn(0f, 1f)
+        val shadowScaleX = 1f + shadowTilt * 0.10f + shadowLateral * 0.06f - shadowLift * 0.05f
+        val shadowScaleY = 1f + shadowCompression * 0.08f - shadowLift * 0.18f
+        val shadowAlpha = (
+            (if (isDark) 0.72f else 0.90f) *
+                (1f - shadowLift * 0.42f + shadowCompression * 0.10f) *
+                bodyOpacity.value
+        ).coerceIn(0f, 1f)
+
+        Column(
+            modifier = Modifier.widthIn(max = 440.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(computerSize)
+                    .aspectRatio(1f),
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.mason_empty_chat_shadow),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = shadowScaleX
+                            scaleY = shadowScaleY
+                            alpha = shadowAlpha
+                            transformOrigin = TransformOrigin(0.5f, 0.85f)
+                        },
+                    contentScale = ContentScale.Fit,
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            translationX = bodyX.value
+                            translationY = bodyY.value
+                            rotationZ = bodyRotation.value
+                            scaleX = bodyScale.value
+                            scaleY = bodyScale.value
+                            alpha = bodyOpacity.value
+                            transformOrigin = TransformOrigin(0.5f, 0.78f)
+                        }
+                        .pointerInput(variantIndex) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                val start = down.position
+                                val velocityTracker = VelocityTracker()
+                                velocityTracker.addPosition(down.uptimeMillis, down.position)
+                                interacting = true
+                                motionScope.launch {
+                                    bodyX.stop()
+                                    bodyY.stop()
+                                    bodyRotation.stop()
+                                    bodyScale.stop()
+                                    bodyScale.snapTo(0.985f)
+                                }
+
+                                var change = down
+                                var dragged = false
+                                while (change.pressed) {
+                                    val event = awaitPointerEvent()
+                                    change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    velocityTracker.addPosition(change.uptimeMillis, change.position)
+                                    val dragOffset = change.position - start
+                                    if (!dragged && dragOffset.getDistance() >= viewConfiguration.touchSlop) {
+                                        dragged = true
+                                    }
+                                    if (dragged) {
+                                        change.consume()
+                                        val targetX = emptyChatRubberBand(
+                                            dragOffset.x,
+                                            size.width * 0.32f,
+                                        )
+                                        val targetY = emptyChatRubberBand(
+                                            dragOffset.y,
+                                            size.height * 0.22f,
+                                        )
+                                        val targetRotation = (
+                                            dragOffset.x / size.width * 16f
+                                        ).coerceIn(-6f, 6f)
+                                        motionScope.launch {
+                                            bodyX.snapTo(targetX)
+                                            bodyY.snapTo(targetY)
+                                            bodyRotation.snapTo(targetRotation)
+                                            bodyScale.snapTo(0.99f)
+                                        }
+                                    }
+                                }
+
+                                interacting = false
+                                if (dragged) {
+                                    val velocity = velocityTracker.calculateVelocity()
+                                    settleAfterDrag(velocity.x, velocity.y, size.width.toFloat())
+                                } else {
+                                    changeExpressionWithRock()
+                                }
+                            }
+                        },
+                ) {
+                    Image(
+                        painter = painterResource(
+                            if (isDark) {
+                                R.drawable.mason_empty_chat_stone_dark
+                            } else {
+                                R.drawable.mason_empty_chat_computer
+                            },
+                        ),
+                        contentDescription = strings.displayText(
+                            "石头屏幕助手，${strings.displayText(variant.prompt)}",
+                        ),
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                    Box(
+                        modifier = Modifier
+                            .offset(
+                                x = computerSize * faceCenterX - faceWidth / 2,
+                                y = computerSize * faceCenterY - faceHeight / 2,
+                            )
+                            .width(faceWidth)
+                            .aspectRatio(variant.faceAspectRatio),
+                    ) {
+                        variant.layers.forEachIndexed { layerIndex, resourceId ->
+                            Image(
+                                painter = painterResource(resourceId),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        val primary = primaryMotion.value
+                                        val follow = followMotion.value
+                                        when (variant.expression) {
+                                            EmptyChatExpression.Tilted -> if (layerIndex == 2) {
+                                                translationX = primary * 2.8.dp.toPx()
+                                                translationY = follow * 0.4.dp.toPx()
+                                                rotationZ = primary * 1.4f
+                                            }
+                                            EmptyChatExpression.Surprised -> when (layerIndex) {
+                                                0 -> {
+                                                    translationY = -primary * 3.2.dp.toPx()
+                                                    rotationZ = -primary * 4f
+                                                }
+                                                1 -> {
+                                                    translationY = -follow * 3.dp.toPx()
+                                                    rotationZ = follow * 4f
+                                                }
+                                                2 -> {
+                                                    translationY = follow * 1.4.dp.toPx()
+                                                    scaleX = 1f + follow * 0.06f
+                                                    scaleY = scaleX
+                                                }
+                                            }
+                                            EmptyChatExpression.Smile -> if (layerIndex == 2) {
+                                                translationY = -primary * 2.3.dp.toPx()
+                                                scaleY = 1f + primary * 0.07f
+                                            } else {
+                                                translationY = -follow * 0.7.dp.toPx()
+                                            }
+                                            EmptyChatExpression.Frown -> if (layerIndex == 2) {
+                                                translationY = primary * 1.7.dp.toPx()
+                                                scaleX = 1f - primary * 0.04f
+                                            } else {
+                                                translationY = -follow * 0.6.dp.toPx()
+                                            }
+                                            EmptyChatExpression.Question -> if (layerIndex == 0) {
+                                                translationY = -primary * 2.8.dp.toPx()
+                                                rotationZ = primary * 2f
+                                            } else {
+                                                translationY = -follow * 0.6.dp.toPx()
+                                            }
+                                        }
+                                    },
+                                contentScale = ContentScale.Fit,
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = variant.prompt,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
+    }
 }
 
 @Composable
@@ -1298,7 +3591,7 @@ private fun ToolCallStatusCard(toolName: String) {
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                Icons.Outlined.Build,
+                toolIcon(toolName),
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
@@ -1328,153 +3621,257 @@ private fun ToolCallStatusCard(toolName: String) {
 @Composable
 private fun MasonProcessPanel(
     steps: List<TaskStep>,
+    isActive: Boolean,
     capabilityRequirement: CapabilityRequirement?,
     toolCallStatus: String?,
     hasDraft: Boolean,
+    modelParticipation: ModelParticipation?,
+    toolResultsByCallId: Map<String, ChatMessage>,
+    onOpenToolDetail: (TaskStep, ChatMessage?) -> Unit,
     onRetryStep: (String) -> Unit,
     onPause: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    if (steps.isNotEmpty()) {
-        val finished = steps.none {
-            it.status == TaskStepStatus.Running ||
-                it.status == TaskStepStatus.Pending ||
-                it.status == TaskStepStatus.WaitingForUser
-        }
-        var detailsExpanded by remember(steps.map { it.status }, capabilityRequirement?.id) {
-            mutableStateOf(!finished && capabilityRequirement == null)
-        }
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 4.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f))
-                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
-                .padding(horizontal = 11.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "任务过程",
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        capabilityRequirement?.let { "等待连接 ${it.displayName}" } ?: processSummaryText(steps),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 10.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (steps.any { it.status == TaskStepStatus.Running }) {
-                    IconButton(onClick = onPause, modifier = Modifier.size(30.dp)) {
-                        Icon(
-                            Icons.Outlined.Pause,
-                            contentDescription = "暂停任务",
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                }
-                if (steps.any { it.status == TaskStepStatus.Running || it.status == TaskStepStatus.WaitingForUser }) {
-                    IconButton(onClick = onCancel, modifier = Modifier.size(30.dp)) {
-                        Icon(
-                            Icons.Outlined.Close,
-                            contentDescription = "取消任务",
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                }
-                ProcessStatusPill(
-                    capabilityRequirement?.let { "待连接" } ?: processStatusText(steps),
-                    steps.any { it.status == TaskStepStatus.WaitingForUser },
-                )
-            }
-            if (!detailsExpanded) {
-                Text(
-                    "查看执行详情",
-                    color = MaterialTheme.colorScheme.primary,
-                    fontSize = 11.sp,
-                    modifier = Modifier
-                        .clickable { detailsExpanded = true }
-                        .padding(vertical = 2.dp),
-                )
-            } else {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
-                steps.forEach { step ->
-                    TaskProcessLine(
-                        step = step,
-                        allowWaitingResume = capabilityRequirement == null,
-                        onRetry = { onRetryStep(step.id) },
-                    )
-                }
-                if (finished || capabilityRequirement != null) {
-                    Text(
-                        "收起详情",
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 11.sp,
-                        modifier = Modifier
-                            .clickable { detailsExpanded = false }
-                            .padding(vertical = 2.dp),
-                    )
-                }
-            }
-        }
-        return
+    val boilerplateIds = setOf("plan", "prepare-inputs", "execute", "review", "summary")
+    val executionSteps = steps.filter { step ->
+        step.toolCall != null ||
+            step.kind == TaskStepKind.Tool ||
+            step.kind == TaskStepKind.Skill ||
+            step.id !in boilerplateIds ||
+            step.status == TaskStepStatus.Failed ||
+            step.status == TaskStepStatus.WaitingForUser
     }
+    if (steps.isEmpty() && !isActive && capabilityRequirement == null && toolCallStatus == null) return
 
-    val runningText = when {
-        toolCallStatus != null -> toolCallStatus
-        hasDraft -> "正在整理回答和最终总结"
-        else -> "正在理解请求并判断是否需要调用手机工具"
+    val toolRunning = executionSteps.any { it.status == TaskStepStatus.Running }
+    val thoughtRunning = isActive && !toolRunning && capabilityRequirement == null
+    val thoughtFailed = steps.any { it.toolCall == null && it.status == TaskStepStatus.Failed }
+    val thoughtCancelled = steps.any { it.toolCall == null && it.status == TaskStepStatus.Cancelled }
+    val thoughtTitle = when {
+        capabilityRequirement != null -> "等待连接 ${capabilityRequirement.displayName}"
+        thoughtFailed -> "思考遇到问题"
+        thoughtCancelled -> "思考已停止"
+        thoughtRunning && hasDraft -> "正在组织回答"
+        thoughtRunning -> "正在思考"
+        else -> "已思考"
     }
+    val thoughtDetail = when {
+        capabilityRequirement != null -> capabilityRequirement.detail
+        thoughtFailed -> steps.lastOrNull { it.toolCall == null && it.status == TaskStepStatus.Failed }
+            ?.let { it.error ?: it.detail }
+            .orEmpty()
+        else -> steps.lastOrNull { it.toolCall == null && it.detail.isNotBlank() }?.detail
+            ?: toolCallStatus
+            ?: "已完成目标识别和回答规划"
+    }
+    var thoughtExpanded by remember(steps.map { it.status }, capabilityRequirement?.id) { mutableStateOf(false) }
+    val thoughtCanExpand = thoughtDetail.isNotBlank() || isActive || modelParticipation != null
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 4.dp)
+            .padding(horizontal = 18.dp, vertical = 6.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 11.dp, vertical = 9.dp),
-        verticalArrangement = Arrangement.spacedBy(7.dp),
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f))
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
+                RoundedCornerShape(8.dp),
+            ),
     ) {
-        ProcessLine(
-            label = "思考",
-            text = "整理可见上下文和目标，不展示内部推理",
-            active = toolCallStatus == null && !hasDraft,
+        ActivitySummaryRow(
+            icon = Icons.Outlined.Lightbulb,
+            title = thoughtTitle,
+            status = if (thoughtRunning) "进行中" else if (thoughtFailed) "失败" else "",
+            active = thoughtRunning,
+            expanded = thoughtExpanded,
+            onClick = if (thoughtCanExpand) { { thoughtExpanded = !thoughtExpanded } } else null,
         )
-        ProcessLine(
-            label = "进行中",
-            text = runningText,
-            active = true,
+        if (thoughtExpanded && thoughtCanExpand) {
+            Column(
+                modifier = Modifier.padding(
+                    start = 42.dp,
+                    top = 6.dp,
+                    end = 12.dp,
+                    bottom = 10.dp,
+                ),
+            ) {
+                Text(
+                    thoughtDetail,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+                ModelParticipationDetails(modelParticipation)
+                if (isActive) {
+                    Row(modifier = Modifier.align(Alignment.End)) {
+                        TextButton(onClick = onPause) { Text("暂停") }
+                        TextButton(onClick = onCancel) { Text("停止") }
+                    }
+                }
+            }
+        }
+        executionSteps.forEach { step ->
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.09f))
+            val result = step.toolCall?.id?.let(toolResultsByCallId::get)
+            TaskProcessLine(
+                step = step,
+                result = result,
+                allowWaitingResume = capabilityRequirement == null,
+                onOpenDetail = { onOpenToolDetail(step, result) },
+                onRetry = { onRetryStep(step.id) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModelParticipationDetails(participation: ModelParticipation?) {
+    Text(
+        "参与模型",
+        color = MaterialTheme.colorScheme.onSurface,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+    )
+    Spacer(Modifier.height(3.dp))
+    if (participation == null) {
+        Text(
+            "该回答生成于模型记录功能启用前",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
         )
-        ProcessLine(
-            label = "引导",
-            text = "需要选择、授权或补充信息时，会在这里给出清晰选项",
-            active = false,
+        return
+    }
+    if (participation.contributions.isEmpty()) {
+        Text(
+            "未调用模型，本轮由 Mason 本地逻辑完成",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
         )
+        return
+    }
+    participation.contributions.forEach { contribution ->
+        Text(
+            "${modelContributionName(contribution)}：${contribution.parts.joinToString("、")}",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
+        )
+    }
+}
+
+@Composable
+private fun ModelParticipationFooter(contributions: List<ModelContribution>) {
+    Text(
+        text = modelParticipationSummary(contributions),
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.64f),
+        fontSize = 10.sp,
+        lineHeight = 14.sp,
+    )
+}
+
+internal fun modelParticipationSummary(contributions: List<ModelContribution>): String =
+    if (contributions.isEmpty()) {
+        "未调用模型，本回答由 Mason 本地逻辑完成"
+    } else {
+        "模型参与：" + contributions.joinToString("；") { contribution ->
+            "${modelContributionName(contribution)}（${contribution.parts.joinToString("、")}）"
+        }
+    }
+
+private fun modelContributionName(contribution: ModelContribution): String {
+    val modelName = LocalModelCatalog.get(contribution.modelId)?.name ?: contribution.modelId
+    val source = when (contribution.engineId) {
+        "llama-cpp", "litert-lm" -> "本地"
+        "openai-compatible" -> "远端"
+        else -> ""
+    }
+    return if (source.isBlank()) modelName else "$modelName · $source"
+}
+
+@Composable
+internal fun ActivitySummaryRow(
+    icon: ImageVector,
+    title: String,
+    status: String,
+    active: Boolean,
+    expanded: Boolean,
+    onClick: (() -> Unit)?,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .activityShimmer(active)
+            .clickable(enabled = onClick != null) { onClick?.invoke() },
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 46.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(21.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                title,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (status.isNotBlank()) {
+                Text(
+                    status,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp,
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            if (onClick != null) {
+                Icon(
+                    if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = LocalRemoteStrings.current.t(if (expanded) "收起" else "展开"),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun TaskProcessLine(
     step: TaskStep,
+    result: ChatMessage?,
     allowWaitingResume: Boolean,
+    onOpenDetail: () -> Unit,
     onRetry: () -> Unit,
 ) {
-    val active = step.status == TaskStepStatus.Running || step.status == TaskStepStatus.WaitingForUser
-    val dotColor = when (step.status) {
-        TaskStepStatus.Completed -> MaterialTheme.colorScheme.primary
-        TaskStepStatus.Running -> MaterialTheme.colorScheme.primary
-        TaskStepStatus.WaitingForUser -> MaterialTheme.colorScheme.error
-        TaskStepStatus.Failed -> MaterialTheme.colorScheme.error
-        TaskStepStatus.Cancelled -> MaterialTheme.colorScheme.onSurfaceVariant
-        TaskStepStatus.Pending -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.34f)
+    val active = step.status == TaskStepStatus.Running
+    val toolName = step.toolCall?.function?.name.orEmpty()
+    val taskIconSize = when {
+        step.kind == TaskStepKind.Understand -> 18.dp
+        toolName.contains("memory") -> 18.dp
+        toolName.startsWith("file_") || toolName in setOf("storage", "file_list") -> 17.dp
+        else -> 16.dp
     }
+    val canResume = step.status == TaskStepStatus.WaitingForUser && allowWaitingResume
+    val canRetry = step.status == TaskStepStatus.Failed && step.retryable
+    val isDocumentKnowledgeFailure = canRetry && isDocumentKnowledgeStep(step)
+    val canOpenDetail = step.toolCall != null
+    val canInteract = canOpenDetail || canResume || canRetry
+    var showRetryConfirmation by remember(step.id, step.status) { mutableStateOf(false) }
     val statusLabel = when (step.status) {
         TaskStepStatus.Pending -> "待处理"
         TaskStepStatus.Running -> "进行中"
@@ -1484,74 +3881,171 @@ private fun TaskProcessLine(
         TaskStepStatus.Cancelled -> "取消"
     }
 
-    Row(verticalAlignment = Alignment.Top) {
-        Box(
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .activityShimmer(active)
+            .clickable(enabled = canInteract) {
+                when {
+                    isDocumentKnowledgeFailure -> showRetryConfirmation = true
+                    canResume || (canRetry && !canOpenDetail) -> onRetry()
+                    canOpenDetail -> onOpenDetail()
+                }
+            },
+    ) {
+        Row(
             modifier = Modifier
-                .padding(top = 5.dp)
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(dotColor),
-        )
-        Spacer(Modifier.width(9.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    step.title,
-                    color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
+                .fillMaxWidth()
+                .heightIn(min = 46.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier.size(20.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    taskStepIcon(step),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(taskIconSize),
                 )
-                if ((step.status == TaskStepStatus.Failed && step.retryable) ||
-                    (step.status == TaskStepStatus.WaitingForUser && allowWaitingResume)
-                ) {
-                    IconButton(
-                        onClick = onRetry,
-                        modifier = Modifier.size(30.dp),
-                    ) {
-                        Icon(
-                            if (step.status == TaskStepStatus.WaitingForUser) Icons.Outlined.PlayArrow else Icons.Outlined.Refresh,
-                            contentDescription = if (step.status == TaskStepStatus.WaitingForUser) "继续任务" else "重试此步骤",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                    Spacer(Modifier.width(3.dp))
-                }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(dotColor.copy(alpha = 0.10f))
-                        .padding(horizontal = 7.dp, vertical = 3.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        statusLabel,
-                        color = dotColor,
-                        fontSize = 10.sp,
-                        lineHeight = 10.sp,
-                        fontWeight = FontWeight.Medium,
-                    )
-                }
             }
-            Spacer(Modifier.height(3.dp))
+            Spacer(Modifier.width(10.dp))
             Text(
-                step.detail,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 11.sp,
-                lineHeight = 16.sp,
+                displayTaskStepTitle(step),
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
-            taskStepMeta(step)?.let { meta ->
-                Spacer(Modifier.height(2.dp))
+            Box(
+                modifier = Modifier.width(52.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
                 Text(
-                    meta,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                    fontSize = 10.sp,
-                    lineHeight = 14.sp,
+                    statusLabel,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
                 )
+            }
+            if (canInteract) {
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = LocalRemoteStrings.current.t("查看执行详情"),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            } else {
+                Spacer(Modifier.width(24.dp))
             }
         }
     }
+
+    if (showRetryConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showRetryConfirmation = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            title = { Text("确认重试") },
+            text = { Text("文档知识处理失败，是否重新尝试？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRetryConfirmation = false
+                        onRetry()
+                    },
+                ) {
+                    Text("重试", color = MaterialTheme.colorScheme.primary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRetryConfirmation = false }) {
+                    Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+        )
+    }
+}
+
+private fun isDocumentKnowledgeStep(step: TaskStep): Boolean {
+    val searchable = buildString {
+        append(step.title)
+        append('\n')
+        append(step.detail)
+        append('\n')
+        append(step.error.orEmpty())
+        append('\n')
+        append(step.toolCall?.function?.name.orEmpty())
+        append('\n')
+        append(step.toolCall?.function?.arguments.orEmpty())
+    }.lowercase(Locale.ROOT)
+    return listOf("文档", "文本", "知识", "document", "text", "knowledge", "file_read")
+        .any(searchable::contains)
+}
+
+@Composable
+internal fun Modifier.activityShimmer(active: Boolean): Modifier {
+    if (!active) return this
+    val transition = rememberInfiniteTransition(label = "activity_shimmer")
+    val progress by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1_200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "activity_shimmer_progress",
+    )
+    val highlight = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.055f)
+    return drawWithContent {
+        drawContent()
+        val bandWidth = 64.dp.toPx()
+        val startX = -bandWidth + (size.width + bandWidth * 2f) * progress
+        drawRect(
+            brush = Brush.linearGradient(
+                colors = listOf(Color.Transparent, highlight, Color.Transparent),
+                start = Offset(startX, 0f),
+                end = Offset(startX + bandWidth, size.height),
+            ),
+        )
+    }
+}
+
+@Composable
+private fun taskStepIcon(step: TaskStep): ImageVector {
+    val toolName = step.toolCall?.function?.name.orEmpty()
+    if (toolName.isNotBlank()) return toolIcon(toolName)
+    return when (step.kind) {
+        TaskStepKind.Understand -> Icons.Outlined.Lightbulb
+        TaskStepKind.PrepareInputs -> Icons.Outlined.AttachFile
+        TaskStepKind.Model -> Icons.Outlined.Description
+        TaskStepKind.Skill -> Icons.Outlined.Extension
+        TaskStepKind.Tool -> Icons.Outlined.Terminal
+        TaskStepKind.Review -> Icons.Outlined.CheckCircle
+        TaskStepKind.Deliver -> ImageVector.vectorResource(R.drawable.ic_layers)
+    }
+}
+
+private fun toolIcon(toolName: String): ImageVector = when {
+    toolName == "run_shell" -> Icons.Outlined.Terminal
+    toolName in setOf("http_request", "dns_lookup", "network_info", "get_wifi_info", "geocoding") ->
+        Icons.Outlined.Language
+    toolName.startsWith("file_") -> Icons.Outlined.Description
+    toolName in setOf("camera", "screenshot", "audio_record") -> Icons.Outlined.ImageIcon
+    toolName.contains("memory") -> Icons.Outlined.Memory
+    toolName in setOf("calendar", "alarm") -> Icons.Outlined.Timer
+    toolName in setOf("contacts", "call_log", "sms", "notification") -> Icons.Outlined.Forum
+    toolName in setOf("storage", "file_list") -> Icons.Outlined.Folder
+    toolName in setOf("launch_app", "app_manager", "system_setting", "battery_opt") ->
+        Icons.Outlined.Settings
+    toolName in setOf("observe", "click_node", "tap", "swipe", "scroll", "set_text", "global_action") ->
+        Icons.Outlined.Visibility
+    else -> Icons.Outlined.Terminal
 }
 
 private fun taskStepMeta(step: TaskStep): String? {
@@ -1570,81 +4064,241 @@ private fun taskStepMeta(step: TaskStep): String? {
     return parts.joinToString(" · ").ifBlank { null }
 }
 
+private fun displayTaskStepTitle(step: TaskStep): String {
+    val toolName = step.toolCall?.function?.name ?: return step.title
+    return when (toolName) {
+        "get_battery_info" -> "读取电池信息"
+        "get_device_info" -> "读取设备信息"
+        "get_cpu_info" -> "读取处理器信息"
+        "get_gpu_info" -> "读取图形处理器信息"
+        "get_memory_info" -> "读取内存信息"
+        "get_wifi_info" -> "读取 Wi-Fi 信息"
+        "get_bluetooth_info" -> "读取蓝牙信息"
+        "get_sensor_info" -> "读取传感器信息"
+        "network_info" -> "读取网络信息"
+        "storage" -> "读取存储信息"
+        "file_list" -> "查看文件"
+        "file_read" -> "读取文件"
+        "file_write" -> "写入文件"
+        "file_delete" -> "删除文件"
+        "http_request" -> "访问网络"
+        "dns_lookup" -> "查询域名"
+        "launch_app" -> "打开应用"
+        "app_manager" -> "管理应用"
+        "system_setting" -> "修改系统设置"
+        "battery_opt" -> "调整电池优化"
+        "audio_record" -> "录制音频"
+        "call_log" -> "读取通话记录"
+        "calendar" -> "处理日历"
+        "alarm" -> "处理闹钟"
+        "clipboard" -> "读取剪贴板"
+        "camera" -> "使用相机"
+        "contacts" -> "读取联系人"
+        "location" -> "读取位置"
+        "geocoding" -> "查询地点"
+        "notification" -> "发送通知"
+        "sms" -> "处理短信"
+        "screenshot" -> "截取屏幕"
+        "run_shell" -> "执行命令"
+        "process" -> "查看进程"
+        "hotspot" -> "管理热点"
+        "skill__activate" -> "运行 Skill"
+        else -> step.title
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ProcessStatusPill(
-    text: String,
-    urgent: Boolean,
+private fun ToolExecutionDetailSheet(
+    detail: ToolExecutionDetail,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
 ) {
-    val color = if (urgent) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(color.copy(alpha = 0.10f))
-            .border(1.dp, color.copy(alpha = 0.16f), RoundedCornerShape(999.dp))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        contentAlignment = Alignment.Center,
+    val clipboard = LocalClipboardManager.current
+    val detailScrollState = rememberScrollState()
+    val detailEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
+    val requestText = remember(detail.step.toolCall) { formatToolRequest(detail.step) }
+    val responseText = remember(detail.result?.content, detail.step.error) {
+        redactSensitiveToolText(detail.result?.content ?: detail.step.error ?: "暂无返回内容")
+    }
+
+    WithRemoteMaterialResources {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
+        dragHandle = null,
     ) {
-        Text(
-            text,
-            color = color,
-            fontSize = 11.sp,
-            lineHeight = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.88f)
+                .masonSheetSurface()
+                .padding(horizontal = 18.dp, vertical = 8.dp),
+        ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 2.dp,
+                bottomPadding = 0.dp,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = displayTaskStepTitle(detail.step),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = listOfNotNull(toolStepStatusLabel(detail.step.status), taskStepMeta(detail.step))
+                            .joinToString(" · "),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .captureProgressiveEdgeBlur(detailEdgeBlurState)
+                        .verticalScroll(detailScrollState),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    ExecutionDetailSection(
+                        label = "请求",
+                        content = requestText,
+                        onCopy = { clipboard.setText(AnnotatedString(requestText)) },
+                    )
+                    ExecutionDetailSection(
+                        label = "响应",
+                        content = responseText,
+                        onCopy = { clipboard.setText(AnnotatedString(responseText)) },
+                    )
+                }
+                ChatSheetEdgeFades(
+                    scrollState = detailScrollState,
+                    blurState = detailEdgeBlurState,
+                    surfaceColor = MaterialTheme.colorScheme.surface,
+                )
+            }
+            if (detail.step.status == TaskStepStatus.Failed && detail.step.retryable) {
+                Spacer(Modifier.height(10.dp))
+                TextButton(onClick = onRetry, modifier = Modifier.align(Alignment.End)) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("重试")
+                }
+            }
+            Spacer(Modifier.height(28.dp))
+        }
     }
-}
-
-private fun processStatusText(steps: List<TaskStep>): String {
-    return when {
-        steps.any { it.status == TaskStepStatus.WaitingForUser } -> "待确认"
-        steps.any { it.status == TaskStepStatus.Failed } -> "失败"
-        steps.any { it.status == TaskStepStatus.Running } -> "进行中"
-        steps.all { it.status == TaskStepStatus.Completed } -> "完成"
-        steps.any { it.status == TaskStepStatus.Cancelled } -> "已停止"
-        else -> "排队中"
     }
-}
-
-private fun processSummaryText(steps: List<TaskStep>): String {
-    val active = steps.firstOrNull {
-        it.status == TaskStepStatus.Running || it.status == TaskStepStatus.WaitingForUser
-    }
-    return active?.let { "${it.title} · ${it.detail}" } ?: "本轮任务步骤已记录"
 }
 
 @Composable
-private fun ProcessLine(
+private fun ExecutionDetailSection(
     label: String,
-    text: String,
-    active: Boolean,
+    content: String,
+    onCopy: () -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.Top) {
-        Box(
-            modifier = Modifier
-                .padding(top = 5.dp)
-                .size(7.dp)
-                .clip(CircleShape)
-                .background(
-                    if (active) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.34f),
-                ),
-        )
-        Spacer(Modifier.width(9.dp))
-        Text(
-            label,
-            color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.width(48.dp),
-        )
-        Text(
-            text,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 12.sp,
-            lineHeight = 17.sp,
-            modifier = Modifier.weight(1f),
-        )
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onCopy, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Outlined.ContentCopy,
+                    contentDescription = LocalRemoteStrings.current.displayText("复制$label"),
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        ExecutionDetailContent(content)
     }
+}
+
+@Composable
+private fun ExecutionDetailContent(content: String) {
+    Text(
+        text = content,
+        color = MaterialTheme.colorScheme.onSurface,
+        fontSize = 12.sp,
+        lineHeight = 18.sp,
+        fontFamily = FontFamily.Monospace,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.34f))
+            .padding(14.dp),
+    )
+}
+
+private fun toolStepStatusLabel(status: TaskStepStatus): String = when (status) {
+    TaskStepStatus.Pending -> "待处理"
+    TaskStepStatus.Running -> "进行中"
+    TaskStepStatus.WaitingForUser -> "待确认"
+    TaskStepStatus.Completed -> "已完成"
+    TaskStepStatus.Failed -> "执行失败"
+    TaskStepStatus.Cancelled -> "已停止"
+}
+
+private fun formatToolRequest(step: TaskStep): String {
+    val call = step.toolCall ?: return step.detail
+    val arguments = call.function.arguments.ifBlank { return "${call.function.name}\n无参数" }
+    val formattedArguments = runCatching {
+        val parsed = TOOL_DETAIL_JSON.parseToJsonElement(arguments)
+        TOOL_DETAIL_JSON.encodeToString(JsonElement.serializer(), redactSensitiveToolJson(parsed))
+    }.getOrElse { redactSensitiveToolText(arguments) }
+    return "${call.function.name}\n\n$formattedArguments"
+}
+
+private fun redactSensitiveToolJson(element: JsonElement): JsonElement = when (element) {
+    is JsonObject -> JsonObject(
+        element.mapValues { (key, value) ->
+            if (isSensitiveToolKey(key)) JsonPrimitive("••••••••") else redactSensitiveToolJson(value)
+        },
+    )
+    is JsonArray -> JsonArray(element.map(::redactSensitiveToolJson))
+    else -> element
+}
+
+private fun isSensitiveToolKey(key: String): Boolean {
+    val normalized = key.lowercase(Locale.US).replace("-", "_")
+    return normalized.contains("password") ||
+        normalized.contains("secret") ||
+        normalized.contains("token") ||
+        normalized.contains("api_key") ||
+        normalized.contains("apikey") ||
+        normalized.contains("authorization")
+}
+
+private fun redactSensitiveToolText(text: String): String {
+    val keyedSecret = Regex(
+        pattern = "(?i)(api[_-]?key|token|password|secret|authorization)(\\s*[:=]\\s*)([^\\s,;]+)",
+    )
+    val bearerSecret = Regex("(?i)bearer\\s+[A-Za-z0-9._~+/-]+")
+    return text
+        .replace(keyedSecret) { match -> "${match.groupValues[1]}${match.groupValues[2]}••••••••" }
+        .replace(bearerSecret, "Bearer ••••••••")
 }
 
 @Composable
@@ -1652,33 +4306,15 @@ private fun ExpandableMessageContent(
     content: String,
     isStreaming: Boolean,
     contentColor: Color,
-    actionColor: Color,
 ) {
-    val isLong = content.length > MAX_COLLAPSED_LENGTH
-    var expanded by remember(content) { mutableStateOf(false) }
-    val displayText = if (isLong && !expanded) content.take(MAX_COLLAPSED_LENGTH) + "..." else content
-    val richText = displayText + if (isStreaming) "\n|" else ""
-
-    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        FormattedMessageText(
-            content = richText,
-            contentColor = contentColor,
-            actionColor = actionColor,
-        )
-
-        if (isLong) {
-            Text(
-                text = if (expanded) "收起" else "展开全文",
-                color = actionColor,
-                fontSize = 12.sp,
-                modifier = Modifier
-                    .clickable { expanded = !expanded }
-                    .padding(top = 4.dp),
-            )
-        }
-    }
+    FormattedMessageText(
+        content = content + if (isStreaming) "\n|" else "",
+        contentColor = contentColor,
+        actionColor = MaterialTheme.colorScheme.primary,
+    )
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun AssistantAnswerCard(
     message: ChatMessage,
@@ -1686,73 +4322,76 @@ private fun AssistantAnswerCard(
     processingMs: Long? = null,
     onRetry: () -> Unit = {},
     onOpenCapabilityConnections: () -> Unit = {},
+    showModelFooter: Boolean = true,
 ) {
     val rawContent = message.content.orEmpty()
     val artifacts = remember(rawContent) { extractArtifactMetadata(rawContent) }
     val capabilityRequirement = remember(rawContent) { extractCapabilityRequirementMarker(rawContent) }
+    val modelParticipation = remember(rawContent) { extractModelParticipation(rawContent) }
     val content = remember(rawContent) {
-        stripTaskRunMarkers(stripArtifactMarkers(stripCapabilityRequirementMarkers(rawContent)))
+        stripTaskRunMarkers(
+            stripArtifactMarkers(
+                stripCapabilityRequirementMarkers(stripModelParticipationMarkers(rawContent)),
+            ),
+        )
+            .let { visible -> visible.substringAfter("</think>", visible).trim() }
     }
     val isStopped = remember(content) { content.contains("已停止生成") }
     val sections = remember(content, isStreaming) { parseAnswerSections(content, isStreaming) }
     val references = remember(content) { extractReferenceUrls(content) }
     val outputs = remember(content) { extractOutputMentions(content) }
+    var showActions by remember(message.timestamp, content) { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 5.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 11.dp),
+            .combinedClickable(
+                onClick = {},
+                onLongClick = { if (!isStreaming && content.isNotBlank()) showActions = true },
+            )
+            .padding(horizontal = 18.dp, vertical = 10.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "M",
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
+        if (isStreaming) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.78f)),
                 )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    "Mason",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    when {
+                        isStopped -> "已停止"
+                        capabilityRequirement != null -> "待连接"
+                        else -> "进行中"
+                    },
+                    color = if (isStopped) {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+                    } else {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.86f)
+                    },
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                if (processingMs != null) {
+                    Spacer(Modifier.width(8.dp))
+                    ProcessingTimePill(processingMs)
+                }
             }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "Mason",
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                when {
-                    isStreaming -> "进行中"
-                    isStopped -> "已停止"
-                    capabilityRequirement != null -> "待连接"
-                    else -> "完成"
-                },
-                color = if (isStopped) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-            if (!isStreaming && processingMs != null) {
-                Spacer(Modifier.width(8.dp))
-                ProcessingTimePill(processingMs)
-            }
+            Spacer(Modifier.height(8.dp))
         }
 
-        Spacer(Modifier.height(10.dp))
-
         sections.forEachIndexed { index, section ->
-            if (index > 0) Spacer(Modifier.height(10.dp))
+            if (index > 0) Spacer(Modifier.height(12.dp))
             AnswerSectionBlock(
-                label = section.label,
                 text = section.text,
                 isStreaming = isStreaming && index == sections.lastIndex,
             )
@@ -1778,43 +4417,32 @@ private fun AssistantAnswerCard(
             CapabilityRequirementBlock(requirement, onOpenCapabilityConnections)
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TimestampLabel(message.timestamp)
-            Spacer(Modifier.weight(1f))
-            if (!isStreaming && content.isNotBlank()) {
-                AssistantActionRow(
-                    content = content,
-                    onRetry = onRetry,
-                )
-            }
+        if (showModelFooter && modelParticipation != null) {
+            Spacer(Modifier.height(8.dp))
+            ModelParticipationFooter(modelParticipation.contributions)
         }
+
+    }
+
+    if (showActions) {
+        AssistantActionSheet(
+            content = content,
+            onRetry = onRetry,
+            onDismiss = { showActions = false },
+        )
     }
 }
 
 @Composable
 private fun AnswerSectionBlock(
-    label: String,
     text: String,
     isStreaming: Boolean,
 ) {
-    Column {
-        Text(
-            label,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Spacer(Modifier.height(4.dp))
-        ExpandableMessageContent(
-            content = text,
-            isStreaming = isStreaming,
-            contentColor = MaterialTheme.colorScheme.onSurface,
-            actionColor = MaterialTheme.colorScheme.primary,
-        )
-    }
+    ExpandableMessageContent(
+        content = text,
+        isStreaming = isStreaming,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+    )
 }
 
 @Composable
@@ -1832,20 +4460,12 @@ private fun CapabilityRequirementBlock(
     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f))
     Spacer(Modifier.height(10.dp))
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Outlined.Extension,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp),
-            )
-        }
+        Icon(
+            Icons.Outlined.Extension,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(19.dp),
+        )
         Column(
             modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -1875,32 +4495,21 @@ private fun ToolResultWorkCard(message: ChatMessage) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 5.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 18.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
-                    .size(24.dp)
+                    .size(5.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)),
-                contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    Icons.Outlined.Build,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(15.dp),
-                )
             }
             Spacer(Modifier.width(8.dp))
             Text(
                 message.name?.let { "工具结果 · $it" } ?: "工具结果",
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.width(8.dp))
@@ -1914,17 +4523,9 @@ private fun ToolResultWorkCard(message: ChatMessage) {
 
         Spacer(Modifier.height(8.dp))
         AnswerSectionBlock(
-            label = "进行中",
             text = message.content.orEmpty().ifBlank { "工具没有返回可展示内容" },
             isStreaming = false,
         )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            TimestampLabel(message.timestamp)
-        }
     }
 }
 
@@ -1980,11 +4581,7 @@ private fun AutomationDraftCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 5.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 18.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -2122,11 +4719,7 @@ private fun AutomationApplyResultCard(result: AutomationApplyResult) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 5.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 18.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -2155,45 +4748,17 @@ private fun parseAnswerSections(content: String, isStreaming: Boolean): List<Ans
     if (content.isBlank()) {
         return listOf(
             AnswerSection(
-                label = if (isStreaming) "进行中" else "最终总结",
+                label = "回复",
                 text = if (isStreaming) "正在组织回复..." else "暂无内容",
             ),
         )
     }
 
-    val labels = setOf("思考", "进行中", "引导", "最终总结")
-    val sections = mutableListOf<AnswerSection>()
-    var currentLabel: String? = null
-    val currentText = StringBuilder()
-
-    fun flush() {
-        val label = currentLabel
-        val text = currentText.toString().trim()
-        if (label != null && text.isNotBlank()) {
-            sections.add(AnswerSection(label, text))
-        }
-        currentText.clear()
-    }
-
-    content.lines().forEach { rawLine ->
-        val line = rawLine.trim()
-        val detected = detectAnswerLabel(line, labels)
-        if (detected != null) {
-            flush()
-            currentLabel = detected.first
-            if (detected.second.isNotBlank()) {
-                currentText.appendLine(detected.second)
-            }
-        } else {
-            if (currentLabel == null) currentLabel = if (isStreaming) "进行中" else "最终总结"
-            currentText.appendLine(rawLine)
-        }
-    }
-    flush()
-
-    return sections.ifEmpty {
-        listOf(AnswerSection(if (isStreaming) "进行中" else "最终总结", content.trim()))
-    }
+    val labels = setOf("思考", "进行中", "引导", "最终总结", "最后总结")
+    val visibleText = content.lines().joinToString("\n") { rawLine ->
+        detectAnswerLabel(rawLine.trim(), labels)?.second ?: rawLine
+    }.trim()
+    return listOf(AnswerSection("回复", visibleText.ifBlank { if (isStreaming) "正在组织回复..." else "暂无内容" }))
 }
 
 private fun detectAnswerLabel(line: String, labels: Set<String>): Pair<String, String>? {
@@ -2203,27 +4768,37 @@ private fun detectAnswerLabel(line: String, labels: Set<String>): Pair<String, S
         .removePrefix("#")
         .trim()
         .removePrefix("[")
+        .removePrefix("**")
 
     labels.forEach { label ->
         val candidates = listOf("$label]", "$label：", "$label:", "$label -", "$label ")
         candidates.firstOrNull { normalized.startsWith(it) }?.let { prefix ->
-            return label to normalized.removePrefix(prefix).trim()
+            return label to normalized.removePrefix(prefix).trim().removePrefix("**").trim()
         }
         if (normalized == label) return label to ""
     }
     return null
 }
 
+private fun isVisibleToolPresentation(message: ChatMessage): Boolean {
+    val content = message.content.orEmpty()
+    return AutomationDraftService.extractAutomationDraftMarker(content) != null ||
+        AutomationDraftService.extractAutomationApplyMarker(content) != null
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(
     message: ChatMessage,
     isStreaming: Boolean = false,
     processingMs: Long? = null,
     onRetry: () -> Unit = {},
+    onResendUserMessage: (String) -> Unit = {},
     automationApplied: Boolean = false,
     onApplyAutomationDraft: (AutomationDraft, Boolean) -> Unit = { _, _ -> },
     onOpenAutomationPermissions: () -> Unit = {},
     onOpenCapabilityConnections: () -> Unit = {},
+    showModelFooter: Boolean = true,
 ) {
     val isUser = message.role == "user"
     val isTool = message.role == "tool"
@@ -2251,20 +4826,22 @@ private fun MessageBubble(
             processingMs = processingMs,
             onRetry = onRetry,
             onOpenCapabilityConnections = onOpenCapabilityConnections,
+            showModelFooter = showModelFooter,
         )
         return
     }
     val presentation = remember(message.content) {
         parseUserMessagePresentation(message.content.orEmpty())
     }
+    var showUserActions by remember(message.timestamp, message.content) { mutableStateOf(false) }
 
     val bubbleColor = when {
-        isUser -> MaterialTheme.colorScheme.primary
+        isUser -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
         isTool -> MaterialTheme.colorScheme.surfaceVariant
         else -> MaterialTheme.colorScheme.surface
     }
     val contentColor = if (isUser) {
-        MaterialTheme.colorScheme.onPrimary
+        MaterialTheme.colorScheme.onSurface
     } else {
         MaterialTheme.colorScheme.onSurface
     }
@@ -2286,12 +4863,16 @@ private fun MessageBubble(
 
             Box(
                 modifier = Modifier
-                    .then(if (isUser) Modifier.widthIn(max = 292.dp) else Modifier.fillMaxWidth(0.86f))
+                    .then(if (isUser) Modifier.widthIn(max = 320.dp) else Modifier.fillMaxWidth(0.86f))
                     .background(
                         color = bubbleColor,
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(16.dp),
                     )
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = { showUserActions = true },
+                    )
+                    .padding(horizontal = 13.dp, vertical = 10.dp),
             ) {
                 Column {
                     if (isTool) {
@@ -2317,22 +4898,14 @@ private fun MessageBubble(
                 }
             }
 
-            if (isUser) {
-                Spacer(modifier = Modifier.width(8.dp))
-                Avatar(label = "U", isTool = false, isUser = true)
-            }
         }
-
-        Row(
-            modifier = Modifier
-                .padding(horizontal = 12.dp)
-                .then(
-                    if (isUser) Modifier.padding(end = 40.dp) else Modifier.padding(start = 40.dp),
-                ),
-            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
-        ) {
-            TimestampLabel(message.timestamp)
-        }
+    }
+    if (showUserActions) {
+        UserMessageActionSheet(
+            copyContent = presentation.body.ifBlank { message.content.orEmpty() },
+            onResend = { onResendUserMessage(message.content.orEmpty()) },
+            onDismiss = { showUserActions = false },
+        )
     }
 }
 
@@ -2369,6 +4942,7 @@ private fun UserMessageContent(
     presentation: UserMessagePresentation,
     contentColor: Color,
 ) {
+    val hasContext = presentation.skill != null || presentation.attachments.isNotEmpty()
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
         if (presentation.body.isNotBlank()) {
             Text(
@@ -2378,15 +4952,18 @@ private fun UserMessageContent(
                 lineHeight = 20.sp,
             )
         }
+        if (presentation.body.isNotBlank() && hasContext) {
+            HorizontalDivider(color = contentColor.copy(alpha = 0.10f))
+        }
         presentation.skill?.let { skill ->
-            UserContextPill(
+            UserContextRow(
                 icon = Icons.Outlined.Extension,
                 label = "Skill · ${skill.name}",
                 contentColor = contentColor,
             )
         }
         presentation.attachments.forEach { attachment ->
-            UserContextPill(
+            UserContextRow(
                 icon = if (attachment.kind == AttachmentKind.Image) Icons.Outlined.ImageIcon else Icons.Outlined.Description,
                 label = "${attachment.kind.label} · ${attachment.name}",
                 contentColor = contentColor,
@@ -2396,28 +4973,27 @@ private fun UserMessageContent(
 }
 
 @Composable
-private fun UserContextPill(
+private fun UserContextRow(
     icon: ImageVector,
     label: String,
     contentColor: Color,
 ) {
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(contentColor.copy(alpha = 0.13f))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             icon,
             contentDescription = null,
-            tint = contentColor,
+            tint = contentColor.copy(alpha = 0.66f),
             modifier = Modifier.size(14.dp),
         )
         Spacer(Modifier.width(6.dp))
         Text(
             label,
-            color = contentColor,
+            color = contentColor.copy(alpha = 0.72f),
             fontSize = 12.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -2450,31 +5026,150 @@ private fun ProcessingTimePill(processingMs: Long) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AssistantActionRow(
-    content: String,
-    onRetry: () -> Unit,
+private fun UserMessageActionSheet(
+    copyContent: String,
+    onResend: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        MessageActionButton(
-            icon = Icons.Outlined.ContentCopy,
-            contentDescription = "复制",
-            onClick = {
-                clipboard.setText(AnnotatedString(content))
-                Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
-            },
+    val strings = LocalRemoteStrings.current
+    WithRemoteMaterialResources {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .masonSheetSurface()
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+        ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 4.dp,
+                bottomPadding = 2.dp,
+            )
+            AssistantActionSheetRow(
+                icon = Icons.Outlined.ContentCopy,
+                label = "复制消息",
+                onClick = {
+                    clipboard.setText(AnnotatedString(copyContent))
+                    Toast.makeText(context, strings.t("已复制"), Toast.LENGTH_SHORT).show()
+                    onDismiss()
+                },
+            )
+            AssistantActionSheetRow(
+                icon = Icons.Outlined.Refresh,
+                label = "重发",
+                onClick = {
+                    onDismiss()
+                    onResend()
+                },
+            )
+            Spacer(Modifier.height(18.dp))
+        }
+    }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AssistantActionSheet(
+    content: String,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
+    WithRemoteMaterialResources {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .masonSheetSurface()
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+        ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 4.dp,
+                bottomPadding = 2.dp,
+            )
+            AssistantActionSheetRow(
+                icon = Icons.Outlined.ContentCopy,
+                label = "复制回答",
+                onClick = {
+                    clipboard.setText(AnnotatedString(content))
+                    Toast.makeText(context, strings.t("已复制"), Toast.LENGTH_SHORT).show()
+                    onDismiss()
+                },
+            )
+            AssistantActionSheetRow(
+                icon = Icons.Outlined.Refresh,
+                label = "重新生成",
+                onClick = {
+                    onDismiss()
+                    onRetry()
+                },
+            )
+            AssistantActionSheetRow(
+                icon = Icons.Outlined.Share,
+                label = "分享回答",
+                onClick = {
+                    onDismiss()
+                    shareText(context, content, strings)
+                },
+            )
+            Spacer(Modifier.height(18.dp))
+        }
+    }
+    }
+}
+
+@Composable
+private fun AssistantActionSheetRow(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
         )
-        MessageActionButton(
-            icon = Icons.Outlined.Refresh,
-            contentDescription = "重新生成",
-            onClick = onRetry,
-        )
-        MessageActionButton(
-            icon = Icons.Outlined.Share,
-            contentDescription = "分享",
-            onClick = { shareText(context, content) },
+        Spacer(Modifier.width(14.dp))
+        Text(
+            text = label,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
         )
     }
 }
@@ -2499,7 +5194,7 @@ private fun MessageActionButton(
 }
 
 @Composable
-private fun FormattedMessageText(
+internal fun FormattedMessageText(
     content: String,
     contentColor: Color,
     actionColor: Color,
@@ -2508,14 +5203,14 @@ private fun FormattedMessageText(
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
         blocks.forEach { block ->
             when (block.kind) {
-                MessageBlockKind.Heading -> Text(
+                MessageBlockKind.Heading -> InlineMarkdownText(
                     text = block.text,
                     color = contentColor,
                     fontSize = 15.sp,
                     lineHeight = 21.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
-                MessageBlockKind.Paragraph -> Text(
+                MessageBlockKind.Paragraph -> InlineMarkdownText(
                     text = block.text,
                     color = contentColor,
                     fontSize = 14.sp,
@@ -2544,9 +5239,240 @@ private fun FormattedMessageText(
                 MessageBlockKind.Divider -> HorizontalDivider(
                     color = contentColor.copy(alpha = 0.16f),
                 )
+                MessageBlockKind.Table -> block.table?.let { table ->
+                    MarkdownTableBlock(
+                        table = table,
+                        contentColor = contentColor,
+                        actionColor = actionColor,
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+private fun MarkdownTableBlock(
+    table: MessageTable,
+    contentColor: Color,
+    actionColor: Color,
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val strings = LocalRemoteStrings.current
+    var showFullScreen by remember(table) { mutableStateOf(false) }
+    val copyTable = {
+        clipboard.setText(AnnotatedString(messageTableToTsv(table)))
+        Toast.makeText(context, strings.t("表格已复制"), Toast.LENGTH_SHORT).show()
+    }
+    val downloadTable = {
+        val savedName = saveMessageTableCsv(context, table)
+        Toast.makeText(
+            context,
+            savedName?.let { strings.displayText("已下载 $it") }
+                ?: strings.t("表格下载失败"),
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(contentColor.copy(alpha = 0.045f))
+            .border(1.dp, contentColor.copy(alpha = 0.11f), RoundedCornerShape(8.dp)),
+    ) {
+        TableToolbar(
+            actionColor = actionColor,
+            onExpand = { showFullScreen = true },
+            onCopy = copyTable,
+            onDownload = downloadTable,
+        )
+        HorizontalDivider(color = contentColor.copy(alpha = 0.10f))
+        MessageTableGrid(table = table, contentColor = contentColor)
+    }
+
+    if (showFullScreen) {
+        Dialog(
+            onDismissRequest = { showFullScreen = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    .padding(top = 12.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = { showFullScreen = false }) {
+                        Icon(Icons.Outlined.Close, contentDescription = LocalRemoteStrings.current.t("关闭表格"))
+                    }
+                    Text(
+                        "表格",
+                        color = MaterialTheme.colorScheme.onBackground,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = copyTable) {
+                        Icon(Icons.Outlined.ContentCopy, contentDescription = LocalRemoteStrings.current.t("复制表格"))
+                    }
+                    IconButton(onClick = downloadTable) {
+                        Icon(Icons.Outlined.FileDownload, contentDescription = LocalRemoteStrings.current.t("下载表格"))
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(12.dp),
+                ) {
+                    MessageTableGrid(
+                        table = table,
+                        contentColor = MaterialTheme.colorScheme.onBackground,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TableToolbar(
+    actionColor: Color,
+    onExpand: () -> Unit,
+    onCopy: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(38.dp)
+            .padding(start = 10.dp, end = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Outlined.TableChart,
+            contentDescription = null,
+            tint = actionColor,
+            modifier = Modifier.size(15.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            "表格",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onExpand, modifier = Modifier.size(34.dp)) {
+            Icon(Icons.Outlined.OpenInFull, contentDescription = LocalRemoteStrings.current.t("全屏查看"), tint = actionColor, modifier = Modifier.size(15.dp))
+        }
+        IconButton(onClick = onCopy, modifier = Modifier.size(34.dp)) {
+            Icon(Icons.Outlined.ContentCopy, contentDescription = LocalRemoteStrings.current.t("复制表格"), tint = actionColor, modifier = Modifier.size(15.dp))
+        }
+        IconButton(onClick = onDownload, modifier = Modifier.size(34.dp)) {
+            Icon(Icons.Outlined.FileDownload, contentDescription = LocalRemoteStrings.current.t("下载表格"), tint = actionColor, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun MessageTableGrid(
+    table: MessageTable,
+    contentColor: Color,
+) {
+    val columnWidths = remember(table) {
+        table.headers.indices.map { column ->
+            val longest = (listOf(table.headers[column]) + table.rows.map { it.getOrNull(column).orEmpty() })
+                .maxOfOrNull(String::length)
+                ?: 0
+            (longest.coerceIn(8, 24) * 7 + 24).dp
+        }
+    }
+    Column(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+        MessageTableRow(
+            cells = table.headers,
+            columnWidths = columnWidths,
+            contentColor = contentColor,
+            header = true,
+        )
+        table.rows.forEach { row ->
+            HorizontalDivider(color = contentColor.copy(alpha = 0.08f))
+            MessageTableRow(
+                cells = row,
+                columnWidths = columnWidths,
+                contentColor = contentColor,
+                header = false,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageTableRow(
+    cells: List<String>,
+    columnWidths: List<androidx.compose.ui.unit.Dp>,
+    contentColor: Color,
+    header: Boolean,
+) {
+    Row(
+        modifier = Modifier.background(
+            if (header) contentColor.copy(alpha = 0.055f) else Color.Transparent,
+        ),
+        verticalAlignment = Alignment.Top,
+    ) {
+        columnWidths.forEachIndexed { index, width ->
+            if (index > 0) {
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .heightIn(min = 42.dp)
+                        .background(contentColor.copy(alpha = 0.08f)),
+                )
+            }
+            InlineMarkdownText(
+                text = cells.getOrNull(index).orEmpty(),
+                color = contentColor,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                fontWeight = if (header) FontWeight.SemiBold else null,
+                modifier = Modifier
+                    .width(width)
+                    .padding(horizontal = 10.dp, vertical = 10.dp),
+            )
+        }
+    }
+}
+
+private fun saveMessageTableCsv(context: Context, table: MessageTable): String? {
+    val displayName = "mason_table_${System.currentTimeMillis()}.csv"
+    val csv = "\uFEFF" + messageTableToCsv(table)
+    return runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "text/csv")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Mason")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("无法创建下载文件")
+            context.contentResolver.openOutputStream(uri)?.use { output ->
+                output.write(csv.toByteArray(Charsets.UTF_8))
+            } ?: error("无法写入下载文件")
+        } else {
+            val directory = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Mason")
+            if (!directory.exists() && !directory.mkdirs()) error("无法创建下载目录")
+            File(directory, displayName).writeText(csv, Charsets.UTF_8)
+        }
+        displayName
+    }.getOrNull()
 }
 
 @Composable
@@ -2563,8 +5489,8 @@ private fun LabeledTextLine(
             lineHeight = 21.sp,
             modifier = Modifier.width(24.dp),
         )
-        Text(
-            text,
+        InlineMarkdownText(
+            text = text,
             color = contentColor,
             fontSize = 14.sp,
             lineHeight = 21.sp,
@@ -2582,6 +5508,7 @@ private fun CodeBlock(
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2605,13 +5532,13 @@ private fun CodeBlock(
             IconButton(
                 onClick = {
                     clipboard.setText(AnnotatedString(code))
-                    Toast.makeText(context, "代码已复制", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, strings.t("代码已复制"), Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.size(30.dp),
             ) {
                 Icon(
                     Icons.Outlined.ContentCopy,
-                    contentDescription = "复制代码",
+                    contentDescription = LocalRemoteStrings.current.t("复制代码"),
                     tint = actionColor,
                     modifier = Modifier.size(15.dp),
                 )
@@ -2642,13 +5569,68 @@ private fun QuoteBlock(
                 .background(contentColor.copy(alpha = 0.28f)),
         )
         Spacer(Modifier.width(9.dp))
-        Text(
-            text,
+        InlineMarkdownText(
+            text = text,
             color = contentColor.copy(alpha = 0.82f),
             fontSize = 13.sp,
             lineHeight = 19.sp,
             modifier = Modifier.weight(1f),
         )
+    }
+}
+
+@Composable
+private fun InlineMarkdownText(
+    text: String,
+    color: Color,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    lineHeight: androidx.compose.ui.unit.TextUnit,
+    modifier: Modifier = Modifier,
+    fontWeight: FontWeight? = null,
+) {
+    val annotated = remember(text, color) { formatInlineMarkdown(text, color) }
+    Text(
+        text = annotated,
+        color = color,
+        fontSize = fontSize,
+        lineHeight = lineHeight,
+        fontWeight = fontWeight,
+        modifier = modifier,
+    )
+}
+
+private fun formatInlineMarkdown(text: String, contentColor: Color): AnnotatedString = buildAnnotatedString {
+    var cursor = 0
+    while (cursor < text.length) {
+        val markers = listOf("**", "__", "`")
+            .mapNotNull { marker ->
+                text.indexOf(marker, cursor).takeIf { it >= 0 }?.let { it to marker }
+            }
+        val next = markers.minByOrNull { it.first }
+        if (next == null) {
+            append(text.substring(cursor))
+            break
+        }
+
+        val (start, marker) = next
+        if (start > cursor) append(text.substring(cursor, start))
+        val end = text.indexOf(marker, start + marker.length)
+        if (end < 0 || end == start + marker.length) {
+            append(text.substring(start))
+            break
+        }
+
+        val value = text.substring(start + marker.length, end)
+        val style = if (marker == "`") {
+            SpanStyle(
+                fontFamily = FontFamily.Monospace,
+                background = contentColor.copy(alpha = 0.08f),
+            )
+        } else {
+            SpanStyle(fontWeight = FontWeight.Bold)
+        }
+        withStyle(style) { append(value) }
+        cursor = end + marker.length
     }
 }
 
@@ -2666,155 +5648,283 @@ private fun OutputMentionStrip(outputs: List<String>) {
 }
 
 @Composable
-private fun ArtifactMentionStrip(artifacts: List<ArtifactMetadata>) {
+internal fun ArtifactMentionStrip(artifacts: List<ArtifactMetadata>) {
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     var previewArtifact by remember { mutableStateOf<ArtifactMetadata?>(null) }
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(artifacts, key = { it.path }) { artifact ->
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f))
-                    .padding(horizontal = 9.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Outlined.Description,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(15.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Column(modifier = Modifier.widthIn(max = 150.dp)) {
-                    Text(
-                        artifact.name,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+    Column {
+        artifacts.forEachIndexed { index, artifact ->
+            if (index > 0) {
+                if (
+                    isPreviewableImageArtifact(
+                        artifact,
+                        platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+                    ) ||
+                    isPreviewableImageArtifact(
+                        artifacts[index - 1],
+                        platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
                     )
-                    Text(
-                        formatArtifactSize(artifact.bytes),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 10.sp,
-                    )
+                ) {
+                    Spacer(Modifier.height(12.dp))
+                } else {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
                 }
-                Spacer(Modifier.width(6.dp))
-                MessageActionButton(
-                    icon = Icons.Outlined.Visibility,
-                    contentDescription = "预览产出",
+            }
+            if (
+                isPreviewableImageArtifact(
+                    artifact,
+                    platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+                )
+            ) {
+                ArtifactImageThumbnail(
+                    artifact = artifact,
                     onClick = { previewArtifact = artifact },
                 )
-                MessageActionButton(
-                    icon = Icons.Outlined.FileDownload,
-                    contentDescription = "打开产出",
-                    onClick = { openArtifact(context, artifact, edit = false) },
-                )
-                MessageActionButton(
-                    icon = Icons.Outlined.Edit,
-                    contentDescription = "编辑产出",
-                    onClick = { openArtifact(context, artifact, edit = true) },
-                )
-                MessageActionButton(
-                    icon = Icons.Outlined.Share,
-                    contentDescription = "分享产出",
-                    onClick = { shareArtifact(context, artifact) },
-                )
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Outlined.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            artifact.name,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "产出 · ${formatArtifactSize(artifact.bytes)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 10.sp,
+                        )
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    MessageActionButton(
+                        icon = Icons.Outlined.Visibility,
+                        contentDescription = LocalRemoteStrings.current.t("预览产出"),
+                        onClick = { previewArtifact = artifact },
+                    )
+                    MessageActionButton(
+                        icon = Icons.Outlined.FileDownload,
+                        contentDescription = LocalRemoteStrings.current.t("打开产出"),
+                        onClick = { openArtifact(context, artifact, edit = false, strings = strings) },
+                    )
+                    MessageActionButton(
+                        icon = Icons.Outlined.Edit,
+                        contentDescription = LocalRemoteStrings.current.t("编辑产出"),
+                        onClick = { openArtifact(context, artifact, edit = true, strings = strings) },
+                    )
+                    MessageActionButton(
+                        icon = Icons.Outlined.Share,
+                        contentDescription = LocalRemoteStrings.current.t("分享产出"),
+                        onClick = { shareArtifact(context, artifact, strings = strings) },
+                    )
+                }
             }
         }
     }
 
     previewArtifact?.let { artifact ->
-        ArtifactPreviewDialog(
-            artifact = artifact,
-            onDismiss = { previewArtifact = null },
-            onOpen = { openArtifact(context, artifact, edit = false) },
-            onEdit = { openArtifact(context, artifact, edit = true) },
-            onShare = { shareArtifact(context, artifact) },
-        )
+        if (
+            isPreviewableImageArtifact(
+                artifact,
+                platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+            )
+        ) {
+            ArtifactImagePreviewDialog(
+                artifact = artifact,
+                onDismiss = { previewArtifact = null },
+                onShare = { shareArtifact(context, artifact, strings = strings) },
+            )
+        } else {
+            ArtifactPreviewDialog(
+                artifact = artifact,
+                onDismiss = { previewArtifact = null },
+                onOpen = { openArtifact(context, artifact, edit = false, strings = strings) },
+                onEdit = { openArtifact(context, artifact, edit = true, strings = strings) },
+                onShare = { shareArtifact(context, artifact, strings = strings) },
+            )
+        }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ArtifactPreviewDialog(
+internal fun ArtifactPreviewDialog(
     artifact: ArtifactMetadata,
     onDismiss: () -> Unit,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
     onShare: () -> Unit,
 ) {
+    val strings = LocalRemoteStrings.current
     val previewText = remember(artifact.path, artifact.bytes) {
         buildArtifactPreviewText(artifact)
     }
+    val previewScrollState = rememberScrollState()
+    val previewEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
 
-    AlertDialog(
+    WithRemoteMaterialResources {
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
-        title = {
-            Column {
-                Text(
-                    artifact.name,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .masonSheetSurface()
+                .padding(horizontal = 18.dp, vertical = 8.dp),
+        ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 2.dp,
+                bottomPadding = 0.dp,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.Description,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "${artifact.mimeType} · ${formatArtifactSize(artifact.bytes)}",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        artifact.name,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        "${artifact.mimeType} · ${formatArtifactSize(artifact.bytes)}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                    )
+                }
+                IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = LocalRemoteStrings.current.t("关闭预览"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
-        },
-        text = {
+            Spacer(Modifier.height(14.dp))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(220.dp)
+                    .height(190.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.54f))
-                    .padding(10.dp),
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.54f)),
             ) {
-                Text(
-                    previewText,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp,
-                    overflow = TextOverflow.Ellipsis,
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .captureProgressiveEdgeBlur(previewEdgeBlurState)
+                        .verticalScroll(previewScrollState)
+                        .padding(12.dp),
+                ) {
+                    Text(
+                        previewText,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                    )
+                }
+                ChatSheetEdgeFades(
+                    scrollState = previewScrollState,
+                    blurState = previewEdgeBlurState,
+                    surfaceColor = MaterialTheme.colorScheme.surfaceVariant,
                 )
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onOpen) {
-                Text("打开")
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                ArtifactSheetAction(
+                    icon = Icons.Outlined.FileDownload,
+                    label = "打开",
+                    onClick = onOpen,
+                    modifier = Modifier.weight(1f),
+                )
+                ArtifactSheetAction(
+                    icon = Icons.Outlined.Edit,
+                    label = "编辑",
+                    onClick = onEdit,
+                    modifier = Modifier.weight(1f),
+                )
+                ArtifactSheetAction(
+                    icon = Icons.Outlined.Share,
+                    label = "分享",
+                    onClick = onShare,
+                    modifier = Modifier.weight(1f),
+                )
             }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = onEdit) {
-                    Text("编辑")
-                }
-                TextButton(onClick = onShare) {
-                    Text("分享")
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("关闭")
-                }
-            }
-        },
-    )
+            Spacer(Modifier.height(22.dp))
+        }
+    }
+    }
+}
+
+@Composable
+private fun ArtifactSheetAction(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            label,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+        )
+    }
 }
 
 @Composable
 private fun ReferenceStrip(references: List<String>) {
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         itemsIndexed(references) { index, reference ->
             Box(
-                modifier = Modifier.clickable { openUrl(context, reference) },
+                modifier = Modifier.clickable { openUrl(context, reference, strings) },
             ) {
                 InfoChip(
                     icon = Icons.Outlined.CheckCircle,
@@ -2835,7 +5945,7 @@ private fun InfoChip(
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
             .padding(horizontal = 9.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -2867,28 +5977,63 @@ private fun InfoChip(
 }
 
 @Composable
-private fun InputContextStrip(
+internal fun InputContextStrip(
     attachments: List<PendingAttachment>,
     selectedSkill: SkillOption?,
     onRemoveAttachment: (Int) -> Unit,
     onClearSkill: () -> Unit,
 ) {
-    LazyRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        contentPadding = PaddingValues(horizontal = 2.dp),
+    val listState = rememberLazyListState()
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(28.dp),
     ) {
-        selectedSkill?.let { skill ->
-            item {
-                SkillContextChip(
-                    skill = skill,
-                    onClear = onClearSkill,
+        LazyRow(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(start = 2.dp, end = 22.dp),
+        ) {
+            selectedSkill?.let { skill ->
+                item {
+                    SkillContextChip(
+                        skill = skill,
+                        onClear = onClearSkill,
+                    )
+                }
+            }
+            itemsIndexed(attachments) { index, attachment ->
+                AttachmentContextChip(
+                    attachment = attachment,
+                    onRemove = { onRemoveAttachment(index) },
                 )
             }
         }
-        itemsIndexed(attachments) { index, attachment ->
-            AttachmentContextChip(
-                attachment = attachment,
-                onRemove = { onRemoveAttachment(index) },
+        if (listState.canScrollBackward) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .width(26.dp)
+                    .height(28.dp)
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(MaterialTheme.colorScheme.surface, Color.Transparent),
+                        ),
+                    ),
+            )
+        }
+        if (listState.canScrollForward) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(26.dp)
+                    .height(28.dp)
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(Color.Transparent, MaterialTheme.colorScheme.surface),
+                        ),
+                    ),
             )
         }
     }
@@ -2935,7 +6080,7 @@ private fun SkillContextChip(
         ) {
             Icon(
                 Icons.Outlined.Close,
-                contentDescription = "移除 Skill",
+                contentDescription = LocalRemoteStrings.current.t("移除 Skill"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(12.dp),
             )
@@ -2953,12 +6098,17 @@ private fun AttachmentContextChip(
         modifier = Modifier
             .height(28.dp)
             .clip(chipShape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.50f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f), chipShape)
-            .padding(start = 4.dp, end = 3.dp),
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.09f))
+            .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), chipShape)
+            .padding(start = 8.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AttachmentPreview(attachment)
+        Icon(
+            if (attachment.kind == AttachmentKind.Image) Icons.Outlined.ImageIcon else Icons.Outlined.Description,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(13.dp),
+        )
         Spacer(Modifier.width(4.dp))
         Text(
             attachment.name,
@@ -2979,43 +6129,8 @@ private fun AttachmentContextChip(
         ) {
             Icon(
                 Icons.Outlined.Close,
-                contentDescription = "移除附件",
+                contentDescription = LocalRemoteStrings.current.t("移除附件"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(12.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun AttachmentPreview(attachment: PendingAttachment) {
-    val context = LocalContext.current
-    val bitmap = remember(attachment.uri) {
-        if (attachment.kind == AttachmentKind.Image) {
-            loadAttachmentBitmap(context, Uri.parse(attachment.uri))
-        } else {
-            null
-        }
-    }
-    Box(
-        modifier = Modifier
-            .size(20.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.11f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-            Icon(
-                if (attachment.kind == AttachmentKind.Image) Icons.Outlined.ImageIcon else Icons.Outlined.Description,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(12.dp),
             )
         }
@@ -3030,43 +6145,68 @@ private fun InputBar(
     onStop: () -> Unit,
     isGenerating: Boolean,
     enabled: Boolean,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
     attachments: List<PendingAttachment>,
     selectedSkill: SkillOption?,
     onAddImage: () -> Unit,
     onAddFile: () -> Unit,
     onUseSkill: () -> Unit,
     apiWarning: String?,
+    pendingApproval: ToolApprovalRequest?,
+    onOpenApprovalDetails: () -> Unit,
+    onApproveOnce: () -> Unit,
     onOpenSettings: () -> Unit,
     modelSwitchModels: List<AiModelPreset>,
     currentModelId: String,
     currentProviderName: String,
+    canSendToModel: Boolean,
     onSelectModel: (String) -> Unit,
     onRemoveAttachment: (Int) -> Unit,
     onClearSkill: () -> Unit,
 ) {
     val panelShape = RoundedCornerShape(18.dp)
-    val active = enabled && (
+    val active = enabled && canSendToModel && (
         text.isNotBlank() ||
             attachments.isNotEmpty() ||
             selectedSkill != null
-        )
-    val borderColor = if (active) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
-    } else {
-        MaterialTheme.colorScheme.outline.copy(alpha = 0.11f)
-    }
-    val panelSurface = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)
+    )
     var addMenuExpanded by remember { mutableStateOf(false) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
+    var restoreFocusAfterExpansion by remember { mutableStateOf(false) }
+    var inputWasFocused by remember { mutableStateOf(false) }
+    val inputFocusRequester = remember { FocusRequester() }
+    val inputKeyboardController = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(expanded, restoreFocusAfterExpansion) {
+        if (expanded && restoreFocusAfterExpansion) {
+            withFrameNanos { }
+            inputFocusRequester.requestFocus()
+            inputKeyboardController?.show()
+            restoreFocusAfterExpansion = false
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.92f))
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) awaitPointerEvent()
+                }
+            }
             .navigationBarsPadding()
             .imePadding()
             .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
+        if (pendingApproval != null) {
+            RiskApprovalPill(
+                approval = pendingApproval,
+                onOpenDetails = onOpenApprovalDetails,
+                onApproveOnce = onApproveOnce,
+            )
+            Spacer(Modifier.height(7.dp))
+        }
         if (apiWarning != null) {
             ApiAttentionPill(
                 message = apiWarning,
@@ -3075,15 +6215,26 @@ private fun InputBar(
             Spacer(Modifier.height(7.dp))
         }
 
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .masonGlassShadow(cornerRadius = 18.dp)
                 .clip(panelShape)
-                .background(panelSurface)
-                .border(1.dp, borderColor, panelShape)
-                .padding(horizontal = 7.dp, vertical = 5.dp),
+                .animateContentSize(animationSpec = tween(durationMillis = 180)),
         ) {
-            if (attachments.isNotEmpty() || selectedSkill != null) {
+            ChatGlassMaterial(
+                shape = panelShape,
+                cornerRadius = 18.dp,
+                role = ChatSurfaceRole.Large,
+                blur = ChatBackdropBlur.Soft,
+                refraction = true,
+                blurredAlpha = 0.80f,
+                fallbackAlpha = 0.99f,
+            )
+            Column(
+                modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+            ) {
+            if (expanded && (attachments.isNotEmpty() || selectedSkill != null)) {
                 InputContextStrip(
                     attachments = attachments,
                     selectedSkill = selectedSkill,
@@ -3093,70 +6244,31 @@ private fun InputBar(
                 Spacer(Modifier.height(7.dp))
             }
 
-            BasicTextField(
-                value = text,
-                onValueChange = onTextChange,
-                enabled = enabled,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 31.dp, max = 118.dp)
-                    .padding(horizontal = 5.dp),
-                textStyle = MaterialTheme.typography.bodyMedium.copy(
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 15.sp,
-                    lineHeight = 21.sp,
-                ),
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                maxLines = 6,
-                decorationBox = { innerTextField ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp, bottom = 4.dp),
-                        contentAlignment = Alignment.CenterStart,
-                    ) {
-                        if (text.isBlank()) {
-                            Text(
-                                "询问 Mason，或添加材料...",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.76f),
-                                fontSize = 14.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        innerTextField()
-                    }
-                },
-            )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+            @Composable
+            fun AddButton() {
                 Box {
                     ComposerIconButton(
                         icon = Icons.Outlined.Add,
-                        contentDescription = "添加",
+                        contentDescription = LocalRemoteStrings.current.t("添加"),
                         enabled = enabled,
                         selected = addMenuExpanded,
-                        onClick = { addMenuExpanded = true },
+                        onClick = {
+                            if (addMenuExpanded) {
+                                addMenuExpanded = false
+                            } else {
+                                onExpandedChange(true)
+                                addMenuExpanded = true
+                            }
+                        },
                     )
-                    DropdownMenu(
+                    ChatGlassDropdown(
                         expanded = addMenuExpanded,
                         onDismissRequest = { addMenuExpanded = false },
-                        shape = RoundedCornerShape(14.dp),
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.99f),
-                        tonalElevation = 2.dp,
-                        shadowElevation = 6.dp,
-                        border = androidx.compose.foundation.BorderStroke(
-                            1.dp,
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-                        ),
+                        width = 180.dp,
+                        cornerRadius = 14.dp,
+                        alignEnd = false,
                     ) {
                         AttachmentMenuRow(
-                            icon = Icons.Outlined.ImageIcon,
                             label = "添加图片",
                             onClick = {
                                 addMenuExpanded = false
@@ -3164,7 +6276,6 @@ private fun InputBar(
                             },
                         )
                         AttachmentMenuRow(
-                            icon = Icons.Outlined.AttachFile,
                             label = "添加文件",
                             onClick = {
                                 addMenuExpanded = false
@@ -3172,7 +6283,6 @@ private fun InputBar(
                             },
                         )
                         AttachmentMenuRow(
-                            icon = Icons.Outlined.Extension,
                             label = "使用 Skill",
                             onClick = {
                                 addMenuExpanded = false
@@ -3181,33 +6291,221 @@ private fun InputBar(
                         )
                     }
                 }
+            }
 
-                Spacer(Modifier.weight(1f))
-
-                if (modelSwitchModels.size > 1) {
-                    ModelModeSwitcher(
-                        models = modelSwitchModels,
-                        currentModelId = currentModelId,
-                        providerName = currentProviderName,
-                        expanded = modelMenuExpanded,
-                        onExpandedChange = { modelMenuExpanded = it },
-                        onSelect = { modelId ->
-                            modelMenuExpanded = false
-                            onSelectModel(modelId)
+            @Composable
+            fun TextInput(modifier: Modifier, isExpanded: Boolean) {
+                val textIsBlank = text.isBlank()
+                BasicTextField(
+                    value = text,
+                    onValueChange = onTextChange,
+                    enabled = enabled,
+                    modifier = modifier
+                        .heightIn(min = if (isExpanded) 52.dp else 31.dp)
+                        .then(
+                            if (isExpanded && textIsBlank) {
+                                Modifier.heightIn(max = 76.dp)
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .padding(horizontal = 5.dp)
+                        .focusRequester(inputFocusRequester)
+                        .onFocusChanged { focusState ->
+                            if (focusState.isFocused) {
+                                inputWasFocused = true
+                                if (!isExpanded) {
+                                    restoreFocusAfterExpansion = true
+                                    onExpandedChange(true)
+                                }
+                            } else if (inputWasFocused) {
+                                inputWasFocused = false
+                                if (isExpanded && !restoreFocusAfterExpansion) {
+                                    onExpandedChange(false)
+                                }
+                            }
                         },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 15.sp,
+                        lineHeight = 21.sp,
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    singleLine = !isExpanded,
+                    maxLines = if (!isExpanded) 1 else if (textIsBlank) 3 else Int.MAX_VALUE,
+                    decorationBox = { innerTextField ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp, bottom = 4.dp),
+                            contentAlignment = Alignment.TopStart,
+                        ) {
+                            if (text.isBlank()) {
+                                Text(
+                                    "跟MASON聊聊",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.76f),
+                                    fontSize = 14.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            innerTextField()
+                        }
+                    },
+                )
+            }
+
+            if (expanded) {
+                TextInput(
+                    modifier = Modifier.fillMaxWidth(),
+                    isExpanded = true,
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AddButton()
+
+                    Spacer(Modifier.weight(1f))
+
+                    if (modelSwitchModels.size > 1) {
+                        ModelModeSwitcher(
+                            models = modelSwitchModels,
+                            currentModelId = currentModelId,
+                            providerName = currentProviderName,
+                            expanded = modelMenuExpanded,
+                            onExpandedChange = { modelMenuExpanded = it },
+                            onSelect = { modelId ->
+                                modelMenuExpanded = false
+                                onSelectModel(modelId)
+                            },
+                        )
+                        Spacer(Modifier.width(7.dp))
+                    }
+
+                    ComposerSendButton(
+                        action = composerPrimaryAction(
+                            isGenerating = isGenerating,
+                            hasSendableInput = active,
+                        ),
+                        onSend = onSend,
+                        onStop = onStop,
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AddButton()
+                    Spacer(Modifier.width(4.dp))
+                    TextInput(
+                        modifier = Modifier.weight(1f),
+                        isExpanded = false,
                     )
                     Spacer(Modifier.width(7.dp))
-                }
 
-                ComposerSendButton(
-                    active = active,
-                    isGenerating = isGenerating,
-                    onSend = onSend,
-                    onStop = onStop,
+                    ComposerSendButton(
+                        action = composerPrimaryAction(
+                            isGenerating = isGenerating,
+                            hasSendableInput = active,
+                        ),
+                        onSend = onSend,
+                        onStop = onStop,
+                    )
+                }
+            }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RiskApprovalPill(
+    approval: ToolApprovalRequest,
+    onOpenDetails: () -> Unit,
+    onApproveOnce: () -> Unit,
+) {
+    val shape = RoundedCornerShape(12.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .clickable(onClick = onOpenDetails),
+    ) {
+        ChatGlassMaterial(
+            shape = shape,
+            cornerRadius = 12.dp,
+            role = ChatSurfaceRole.Large,
+            refraction = true,
+            blurredAlpha = 0.88f,
+            fallbackAlpha = 0.97f,
+            borderWidth = 1.dp,
+            borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 13.dp, end = 7.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                val underlineColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f)
+                Text(
+                    text = "风险确认：${displayApprovalAction(approval)}",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.drawBehind {
+                        drawLine(
+                            color = underlineColor,
+                            start = Offset(0f, size.height - 1.dp.toPx()),
+                            end = Offset(size.width, size.height - 1.dp.toPx()),
+                            strokeWidth = 1.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(
+                                intervals = floatArrayOf(3.dp.toPx(), 2.dp.toPx()),
+                            ),
+                        )
+                    },
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary)
+                    .clickable(onClick = onApproveOnce),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.Check,
+                    contentDescription = LocalRemoteStrings.current.t("允许一次"),
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(17.dp),
                 )
             }
         }
     }
+}
+
+private fun displayApprovalAction(approval: ToolApprovalRequest): String = when (approval.toolName) {
+    "run_shell" -> "执行命令"
+    "file_write" -> "写入文件"
+    "file_delete" -> "删除文件"
+    "system_setting" -> "修改系统设置"
+    "app_launcher", "launch_app" -> "打开应用"
+    "app_manager" -> "管理应用"
+    "sms" -> "处理短信"
+    "calendar" -> "处理日历"
+    "notification" -> "发送通知"
+    "screenshot" -> "截取屏幕"
+    else -> approval.displayName
 }
 
 @Composable
@@ -3216,44 +6514,54 @@ private fun ApiAttentionPill(
     onClick: () -> Unit,
 ) {
     val accent = MaterialTheme.colorScheme.primary
-    Row(
+    val shape = RoundedCornerShape(10.dp)
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.74f))
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-                RoundedCornerShape(10.dp),
-            )
-            .clickable(onClick = onClick)
-            .padding(start = 9.dp, end = 8.dp, top = 5.dp, bottom = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clip(shape)
+            .clickable(onClick = onClick),
     ) {
-        Icon(
-            Icons.Outlined.Warning,
-            contentDescription = null,
-            tint = accent.copy(alpha = 0.82f),
-            modifier = Modifier.size(14.dp),
+        ChatGlassMaterial(
+            shape = shape,
+            cornerRadius = 10.dp,
+            role = ChatSurfaceRole.Large,
+            refraction = true,
+            blurredAlpha = 0.94f,
+            fallbackAlpha = 0.96f,
+            borderWidth = 1.dp,
+            borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
         )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            message,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "配置",
-            color = accent,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 9.dp, end = 8.dp, top = 5.dp, bottom = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Warning,
+                contentDescription = null,
+                tint = accent.copy(alpha = 0.82f),
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                message,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "前往",
+                color = accent,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -3267,6 +6575,18 @@ private fun ModelModeSwitcher(
     onSelect: (String) -> Unit,
 ) {
     val current = models.firstOrNull { it.id == currentModelId } ?: models.first()
+    val arrowRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(
+            durationMillis = if (expanded) {
+                DROPDOWN_ENTER_DURATION_MILLIS
+            } else {
+                DROPDOWN_EXIT_DURATION_MILLIS
+            },
+            easing = if (expanded) DropdownEnterEasing else DropdownExitEasing,
+        ),
+        label = "model_mode_dropdown_arrow",
+    )
 
     Box {
         Row(
@@ -3279,7 +6599,7 @@ private fun ModelModeSwitcher(
                     MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
                     RoundedCornerShape(999.dp),
                 )
-                .clickable { onExpandedChange(true) }
+                .clickable { onExpandedChange(!expanded) }
                 .padding(start = 10.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -3295,23 +6615,20 @@ private fun ModelModeSwitcher(
             Spacer(Modifier.width(2.dp))
             Icon(
                 Icons.Outlined.KeyboardArrowDown,
-                contentDescription = "切换模型模式",
+                contentDescription = LocalRemoteStrings.current.t("切换模型模式"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(17.dp),
+                modifier = Modifier
+                    .size(17.dp)
+                    .graphicsLayer { rotationZ = arrowRotation },
             )
         }
 
-        DropdownMenu(
+        ChatGlassDropdown(
             expanded = expanded,
             onDismissRequest = { onExpandedChange(false) },
-            shape = RoundedCornerShape(16.dp),
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-            tonalElevation = 2.dp,
-            shadowElevation = 8.dp,
-            border = androidx.compose.foundation.BorderStroke(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
-            ),
+            width = 184.dp,
+            cornerRadius = 16.dp,
+            alignEnd = true,
         ) {
             Text(
                 "模式 · $providerName",
@@ -3367,7 +6684,7 @@ private fun ModelModeMenuRow(
         if (selected) {
             Icon(
                 Icons.Outlined.CheckCircle,
-                contentDescription = "已选择",
+                contentDescription = LocalRemoteStrings.current.t("已选择"),
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(17.dp),
             )
@@ -3376,7 +6693,7 @@ private fun ModelModeMenuRow(
 }
 
 @Composable
-private fun ComposerIconButton(
+internal fun ComposerIconButton(
     icon: ImageVector,
     contentDescription: String,
     enabled: Boolean,
@@ -3420,18 +6737,18 @@ private fun ComposerIconButton(
 }
 
 @Composable
-private fun ComposerSendButton(
-    active: Boolean,
-    isGenerating: Boolean,
+internal fun ComposerSendButton(
+    action: ComposerPrimaryAction,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
+    val enabled = action != ComposerPrimaryAction.Disabled
     Box(
         modifier = Modifier
             .size(34.dp)
             .clip(CircleShape)
             .background(
-                if (active || isGenerating) {
+                if (enabled) {
                     MaterialTheme.colorScheme.primary
                 } else {
                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
@@ -3439,32 +6756,44 @@ private fun ComposerSendButton(
             )
             .border(
                 1.dp,
-                if (active || isGenerating) MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
+                if (enabled) MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
                 else MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
                 CircleShape,
             )
             .clickable(
-                enabled = active || isGenerating,
-                onClick = if (isGenerating) onStop else onSend,
+                enabled = enabled,
+                onClick = when (action) {
+                    ComposerPrimaryAction.Send -> onSend
+                    ComposerPrimaryAction.Stop -> onStop
+                    ComposerPrimaryAction.Disabled -> ({})
+                },
             ),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            imageVector = if (isGenerating) Icons.Outlined.Stop else Icons.Outlined.ArrowUpward,
-            contentDescription = if (isGenerating) "停止生成" else "发送",
-            tint = if (active || isGenerating) {
-                MaterialTheme.colorScheme.onPrimary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f)
-            },
-            modifier = Modifier.size(18.dp),
-        )
+        when (action) {
+            ComposerPrimaryAction.Stop -> Icon(
+                imageVector = Icons.Filled.Stop,
+                contentDescription = LocalRemoteStrings.current.t("停止生成"),
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(17.dp),
+            )
+            ComposerPrimaryAction.Send,
+            ComposerPrimaryAction.Disabled -> Icon(
+                imageVector = Icons.Outlined.ArrowUpward,
+                contentDescription = LocalRemoteStrings.current.t("发送"),
+                tint = if (enabled) {
+                    MaterialTheme.colorScheme.onPrimary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f)
+                },
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
 }
 
 @Composable
-private fun AttachmentMenuRow(
-    icon: ImageVector,
+internal fun AttachmentMenuRow(
     label: String,
     onClick: () -> Unit,
 ) {
@@ -3475,21 +6804,6 @@ private fun AttachmentMenuRow(
             .padding(horizontal = 11.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                .size(28.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.09f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(16.dp),
-            )
-        }
-        Spacer(Modifier.width(10.dp))
         Text(
             label,
             color = MaterialTheme.colorScheme.onSurface,
@@ -3501,368 +6815,52 @@ private fun AttachmentMenuRow(
     }
 }
 
-private fun buildModelStatuses(
-    config: ApiConfig,
-    localStates: List<LocalModelFileState>,
-    capabilityHealth: Map<String, ModelCapabilityHealth> = emptyMap(),
-    checkedAtMillis: Long = 0L,
-): List<ModelStatusItem> {
-    val provider = AiProviderCatalog.getProvider(config.providerId)
-    val remoteAvailability = when {
-        AiProviderCatalog.requiresApiKey(config) && config.apiKey.isBlank() -> ModelAvailability.Unavailable
-        !AiProviderCatalog.isVerified(config) -> ModelAvailability.Warning
-        else -> ModelAvailability.Available
-    }
-    val remoteStatus = when (remoteAvailability) {
-        ModelAvailability.Available -> "可用"
-        ModelAvailability.Warning -> "尚未验证"
-        ModelAvailability.Unavailable -> "缺少 API Key"
-    }
-    val chatModelName = AiProviderCatalog.getModel(config.providerId, config.model)?.name
-        ?: config.model.ifBlank { "未配置" }
-    val checkedAt = checkedAtMillis.takeIf { it > 0L }?.let {
-        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it))
-    }
-
-    fun healthStatus(label: String): Pair<ModelAvailability, String>? = capabilityHealth[label]?.let { health ->
-        val status = when {
-            health.available -> "已检测可用"
-            !health.detail.isNullOrBlank() -> "不可用：${health.detail.take(70)}"
-            else -> "检测不可用"
-        }
-        (if (health.available) ModelAvailability.Available else ModelAvailability.Unavailable) to
-            listOfNotNull(status, checkedAt?.let { "检测于 $it" }).joinToString(" · ")
-    }
-
-    fun remoteCapability(
-        label: String,
-        modelId: String,
-        icon: ImageVector,
-        fallbackStatus: String? = null,
-        healthLabel: String,
-    ): ModelStatusItem {
-        if (modelId.isBlank()) {
-            return ModelStatusItem(
-                label = label,
-                modelName = "未配置",
-                status = "未配置",
-                availability = ModelAvailability.Unavailable,
-                icon = icon,
-            )
-        }
-        val name = AiProviderCatalog.getModel(config.providerId, modelId)?.name ?: modelId
-        val (availability, status) = healthStatus(healthLabel) ?: (remoteAvailability to remoteStatus)
-        return ModelStatusItem(
-            label = label,
-            modelName = "${provider?.name ?: config.providerId} · $name",
-            status = listOfNotNull(fallbackStatus, status).joinToString(" · "),
-            availability = availability,
-            icon = icon,
-        )
-    }
-
-    val selectedLocalId = config.localModel.ifBlank {
-        LocalModelCatalog.gemmaModels.firstOrNull()?.id.orEmpty()
-    }
-    val localModel = LocalModelCatalog.get(selectedLocalId)
-    val localState = localStates.firstOrNull { it.modelId == selectedLocalId }
-    val localAvailability = when (localState?.state) {
-        LocalModelInstallState.Installed -> ModelAvailability.Available
-        LocalModelInstallState.DeviceMayBeUnsupported -> ModelAvailability.Warning
-        LocalModelInstallState.FileMissing,
-        LocalModelInstallState.NotInstalled,
-        null -> ModelAvailability.Unavailable
-    }
-    val localStatus = when (localState?.state) {
-        LocalModelInstallState.Installed -> when {
-            config.localModelDirectEnabled -> "当前使用 · 可用"
-            config.offlineFallbackEnabled -> "可用 · 兜底已开启"
-            else -> "可用 · 兜底未开启"
-        }
-        LocalModelInstallState.DeviceMayBeUnsupported -> if (config.localModelDirectEnabled) {
-            "当前使用 · 内存偏低"
-        } else {
-            "可用 · 设备内存偏低"
-        }
-        LocalModelInstallState.FileMissing -> "模型文件异常"
-        LocalModelInstallState.NotInstalled, null -> "未安装"
-    }
-
-    return listOf(
-        run {
-            val (availability, status) = healthStatus("聊天") ?: (remoteAvailability to remoteStatus)
-            ModelStatusItem(
-                label = "聊天模型",
-                modelName = "${provider?.name ?: config.providerId} · $chatModelName",
-                status = status,
-                availability = availability,
-                icon = Icons.Outlined.Forum,
-            )
-        },
-        remoteCapability(
-            label = "识图模型",
-            modelId = resolveVisionModel(config),
-            icon = Icons.Outlined.Visibility,
-            fallbackStatus = "复用聊天模型".takeIf {
-                config.visionModel.isBlank() && resolveVisionModel(config).isNotBlank()
-            },
-            healthLabel = "识图",
-        ),
-        remoteCapability(
-            label = "生图模型",
-            modelId = config.imageModel,
-            icon = Icons.Outlined.ImageIcon,
-            healthLabel = "生图",
-        ),
-        ModelStatusItem(
-            label = "本地模型",
-            modelName = localModel?.name ?: selectedLocalId.ifBlank { "未配置" },
-            status = localStatus,
-            availability = localAvailability,
-            icon = Icons.Outlined.Memory,
-        ),
-    )
-}
-
-private fun summarizeModelAvailability(statuses: List<ModelStatusItem>): ModelAvailability {
-    val remoteChat = statuses.firstOrNull { it.label == "聊天模型" }
-    return when {
-        remoteChat?.availability == ModelAvailability.Available -> ModelAvailability.Available
-        statuses.any { it.availability != ModelAvailability.Unavailable } -> ModelAvailability.Warning
-        else -> ModelAvailability.Unavailable
-    }
-}
-
-@Composable
-private fun ModelStatusButton(
-    availability: ModelAvailability,
-    onClick: () -> Unit,
-) {
-    val statusColor = modelAvailabilityColor(availability)
-    Box(modifier = Modifier.size(48.dp)) {
-        IconButton(onClick = onClick) {
-            Icon(
-                Icons.Outlined.DataUsage,
-                contentDescription = "模型状态：${modelAvailabilityLabel(availability)}",
-                tint = MaterialTheme.colorScheme.onBackground,
-            )
-        }
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 9.dp, end = 8.dp)
-                .size(9.dp)
-                .clip(CircleShape)
-                .background(statusColor)
-                .border(1.dp, MaterialTheme.colorScheme.background, CircleShape),
-        )
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ModelStatusSheet(
-    statuses: List<ModelStatusItem>,
-    summary: ModelAvailability,
-    localDirectEnabled: Boolean,
-    onDismiss: () -> Unit,
-    onModeChange: (Boolean) -> Unit,
-    onOpenSettings: () -> Unit,
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = 28.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "模型状态",
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        modelSummaryText(summary),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
-                }
-                TextButton(onClick = onOpenSettings) { Text("设置") }
-            }
-            Spacer(Modifier.height(10.dp))
-            ModelModeSelector(
-                localSelected = localDirectEnabled,
-                localEnabled = statuses.lastOrNull()?.availability != ModelAvailability.Unavailable,
-                onModeChange = onModeChange,
-            )
-            Spacer(Modifier.height(8.dp))
-            statuses.forEachIndexed { index, item ->
-                ModelStatusRow(item)
-                if (index != statuses.lastIndex) {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ModelModeSelector(
-    localSelected: Boolean,
-    localEnabled: Boolean,
-    onModeChange: (Boolean) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-            .padding(3.dp),
-    ) {
-        ModelModeOption(
-            label = "远程模型",
-            selected = !localSelected,
-            enabled = true,
-            modifier = Modifier.weight(1f),
-            onClick = { onModeChange(false) },
-        )
-        ModelModeOption(
-            label = "本地 Gemma",
-            selected = localSelected,
-            enabled = localEnabled,
-            modifier = Modifier.weight(1f),
-            onClick = { onModeChange(true) },
-        )
-    }
-}
-
-@Composable
-private fun ModelModeOption(
-    label: String,
-    selected: Boolean,
-    enabled: Boolean,
-    modifier: Modifier,
-    onClick: () -> Unit,
-) {
-    Box(
-        modifier = modifier
-            .height(38.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            color = when {
-                !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.40f)
-                selected -> MaterialTheme.colorScheme.onSurface
-                else -> MaterialTheme.colorScheme.onSurfaceVariant
-            },
-            fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-        )
-    }
-}
-
-@Composable
-private fun ModelStatusRow(item: ModelStatusItem) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            item.icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(21.dp),
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(item.label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-            Text(
-                item.modelName,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(modelAvailabilityColor(item.availability)),
-        )
-        Spacer(Modifier.width(7.dp))
-        Text(
-            item.status,
-            color = modelAvailabilityColor(item.availability),
-            fontSize = 11.sp,
-            maxLines = 2,
-        )
-    }
-}
-
-@Composable
-private fun modelAvailabilityColor(availability: ModelAvailability): Color = when (availability) {
-    ModelAvailability.Available -> Color(0xFF2E7D32)
-    ModelAvailability.Warning -> Color(0xFFF9A825)
-    ModelAvailability.Unavailable -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
-}
-
-private fun modelAvailabilityLabel(availability: ModelAvailability): String = when (availability) {
-    ModelAvailability.Available -> "远程模型可用"
-    ModelAvailability.Warning -> "仅本地可用或远程待验证"
-    ModelAvailability.Unavailable -> "没有可用模型"
-}
-
-private fun modelSummaryText(availability: ModelAvailability): String = when (availability) {
-    ModelAvailability.Available -> "远程聊天模型可用"
-    ModelAvailability.Warning -> "仅本地模型可用，或远程模型尚未验证"
-    ModelAvailability.Unavailable -> "当前没有可用模型"
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SkillPickerSheet(
+internal fun SkillPickerSheet(
     skills: List<SkillOption>,
     onDismiss: () -> Unit,
     onSelect: (SkillOption) -> Unit,
+    title: String = "使用 Skill",
+    description: String = "选择后会作为本轮对话的执行偏好发送给 Mason。",
+    emptyText: String = "暂无已安装技能",
 ) {
+    val skillListState = rememberLazyListState()
+    val skillEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
+    WithRemoteMaterialResources {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
+        shape = MasonSheetShape,
+        containerColor = masonSheetContainerColor(),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = MASON_OVERLAY_SCRIM_ALPHA),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        contentWindowInsets = { masonOverlayWindowInsets() },
+        dragHandle = null,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .masonSheetSurface()
                 .padding(horizontal = 16.dp, vertical = 5.dp)
                 .padding(bottom = 28.dp),
         ) {
+            ChatSheetDragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                topPadding = 5.dp,
+                bottomPadding = 3.dp,
+            )
             Text(
-                "使用 Skill",
+                title,
                 color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 19.sp,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "选择后会作为本轮对话的执行偏好发送给 Mason。",
+                description,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 lineHeight = 17.sp,
@@ -3871,24 +6869,39 @@ private fun SkillPickerSheet(
 
             when {
                 skills.isEmpty() -> Text(
-                    "暂无已安装技能",
+                    emptyText,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp,
                     modifier = Modifier.padding(vertical = 22.dp),
                 )
-                else -> LazyColumn(
-                    modifier = Modifier.heightIn(max = 420.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                else -> Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp),
                 ) {
-                    items(skills, key = { it.path }) { skill ->
-                        SkillPickerRow(
-                            skill = skill,
-                            onClick = { onSelect(skill) },
-                        )
+                    LazyColumn(
+                        state = skillListState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .captureProgressiveEdgeBlur(skillEdgeBlurState),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(skills, key = { it.path }) { skill ->
+                            SkillPickerRow(
+                                skill = skill,
+                                onClick = { onSelect(skill) },
+                            )
+                        }
                     }
+                    ChatSheetEdgeFades(
+                        listState = skillListState,
+                        blurState = skillEdgeBlurState,
+                        surfaceColor = MaterialTheme.colorScheme.surface,
+                    )
                 }
             }
         }
+    }
     }
 }
 
@@ -4056,108 +7069,21 @@ private fun parseUserMessagePresentation(content: String): UserMessagePresentati
     )
 }
 
-private fun parseMessageBlocks(content: String): List<MessageTextBlock> {
-    val blocks = mutableListOf<MessageTextBlock>()
-    val paragraph = StringBuilder()
-    var inCode = false
-    var codeLanguage: String? = null
-    val code = StringBuilder()
-
-    fun flushParagraph() {
-        val text = paragraph.toString().trim()
-        if (text.isNotBlank()) blocks.add(MessageTextBlock(MessageBlockKind.Paragraph, text))
-        paragraph.clear()
-    }
-
-    content.lines().forEach { rawLine ->
-        val line = rawLine.trim()
-        if (line.startsWith("```")) {
-            if (inCode) {
-                blocks.add(MessageTextBlock(MessageBlockKind.Code, code.toString().trimEnd(), codeLanguage))
-                code.clear()
-                codeLanguage = null
-                inCode = false
-            } else {
-                flushParagraph()
-                codeLanguage = line.removePrefix("```").trim().ifBlank { null }
-                inCode = true
-            }
-            return@forEach
-        }
-
-        if (inCode) {
-            code.appendLine(rawLine)
-            return@forEach
-        }
-
-        when {
-            line.isBlank() -> flushParagraph()
-            line == "---" || line == "***" -> {
-                flushParagraph()
-                blocks.add(MessageTextBlock(MessageBlockKind.Divider, ""))
-            }
-            line.startsWith("#") -> {
-                flushParagraph()
-                blocks.add(
-                    MessageTextBlock(
-                        MessageBlockKind.Heading,
-                        line.trimStart('#').trim(),
-                    ),
-                )
-            }
-            line.startsWith(">") -> {
-                flushParagraph()
-                blocks.add(
-                    MessageTextBlock(
-                        MessageBlockKind.Quote,
-                        line.removePrefix(">").trim(),
-                    ),
-                )
-            }
-            line.startsWith("- ") || line.startsWith("* ") || line.startsWith("• ") -> {
-                flushParagraph()
-                blocks.add(MessageTextBlock(MessageBlockKind.Bullet, line.drop(2).trim()))
-            }
-            line.matches(Regex("""\d+[.)]\s+.*""")) -> {
-                flushParagraph()
-                val label = line.substringBefore(' ').trim()
-                blocks.add(
-                    MessageTextBlock(
-                        MessageBlockKind.Numbered,
-                        line.substringAfter(' ').trim(),
-                        label,
-                    ),
-                )
-            }
-            else -> {
-                if (paragraph.isNotEmpty()) paragraph.append('\n')
-                paragraph.append(rawLine)
-            }
-        }
-    }
-
-    if (inCode) {
-        blocks.add(MessageTextBlock(MessageBlockKind.Code, code.toString().trimEnd(), codeLanguage))
-    } else {
-        flushParagraph()
-    }
-
-    return blocks.ifEmpty {
-        listOf(MessageTextBlock(MessageBlockKind.Paragraph, content))
-    }
-}
-
 private fun extractReferenceUrls(content: String): List<String> =
     Regex("""https?://[^\s)）\]】]+""")
-        .findAll(content)
+        .findAll(stripDiagnosticErrorLines(content))
         .map { it.value.trimEnd('.', ',', '，', '。') }
+        .filterNot { url ->
+            url.startsWith("http://www.w3.org/2000/svg") ||
+                url.startsWith("http://www.w3.org/1999/xlink")
+        }
         .distinct()
         .take(4)
         .toList()
 
 private fun extractOutputMentions(content: String): List<String> =
     Regex(
-        """(?i)([A-Za-z]:\\[^\n]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|pdf|csv)|/[^\s]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|pdf|csv)|[\w./-]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|pdf|csv))""",
+        """(?i)([A-Za-z]:\\[^\n]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|gif|svg|bmp|heif|heic|avif|ico|pdf|csv)|/[^\s]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|gif|svg|bmp|heif|heic|avif|ico|pdf|csv)|[\w./-]+?\.(?:md|txt|json|html|htm|png|jpg|jpeg|webp|gif|svg|bmp|heif|heic|avif|ico|pdf|csv))""",
     )
         .findAll(content)
         .map { it.value.trimEnd('.', ',', '，', '。') }
@@ -4185,19 +7111,6 @@ private fun persistAttachmentReadPermission(context: Context, uri: Uri) {
     }
 }
 
-private fun loadAttachmentBitmap(context: Context, uri: Uri): Bitmap? =
-    runCatching {
-        val source = ImageDecoder.createSource(context.contentResolver, uri)
-        ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-            val maxSide = maxOf(info.size.width, info.size.height).coerceAtLeast(1)
-            val scale = minOf(1f, 240f / maxSide)
-            decoder.setTargetSize(
-                (info.size.width * scale).toInt().coerceAtLeast(1),
-                (info.size.height * scale).toInt().coerceAtLeast(1),
-            )
-        }
-    }.getOrNull()
-
 private fun formatDuration(processingMs: Long): String =
     if (processingMs < 1000L) {
         "${processingMs.coerceAtLeast(1L)} ms"
@@ -4205,22 +7118,31 @@ private fun formatDuration(processingMs: Long): String =
         String.format(Locale.getDefault(), "%.1f 秒", processingMs / 1000f)
     }
 
-private fun shareText(context: Context, text: String) {
+private fun shareText(context: Context, text: String, strings: RemoteStrings) {
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_TEXT, text)
     }
     runCatching {
-        context.startActivity(Intent.createChooser(intent, "分享 Mason 回复"))
+        context.startActivity(Intent.createChooser(intent, strings.t("分享 Mason 回复")))
     }.onFailure { error ->
-        Toast.makeText(context, "分享失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            strings.displayText("分享失败：${error.message ?: error.javaClass.simpleName}"),
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 }
 
-private fun openArtifact(context: Context, artifact: ArtifactMetadata, edit: Boolean) {
+internal fun openArtifact(
+    context: Context,
+    artifact: ArtifactMetadata,
+    edit: Boolean,
+    strings: RemoteStrings,
+) {
     val file = File(artifact.path)
     if (!file.exists() || file.isDirectory) {
-        Toast.makeText(context, "文件不存在或无法打开", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("文件不存在或无法打开"), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -4231,34 +7153,70 @@ private fun openArtifact(context: Context, artifact: ArtifactMetadata, edit: Boo
     }
 
     runCatching {
-        context.startActivity(Intent.createChooser(intent, if (edit) "选择编辑应用" else "选择打开应用"))
+        context.startActivity(
+            Intent.createChooser(
+                intent,
+                strings.t(if (edit) "选择编辑应用" else "选择打开应用"),
+            ),
+        )
     }.onFailure { error ->
         if (error is ActivityNotFoundException) {
-            Toast.makeText(context, "没有找到可用应用", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.t("没有找到可用应用"), Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(context, "打开失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                strings.displayText("打开失败：${error.message ?: error.javaClass.simpleName}"),
+                Toast.LENGTH_SHORT,
+            ).show()
         }
     }
 }
 
-private fun shareArtifact(context: Context, artifact: ArtifactMetadata) {
-    val file = File(artifact.path)
+internal fun shareArtifact(
+    context: Context,
+    artifact: ArtifactMetadata,
+    strings: RemoteStrings,
+) {
+    val validatedImage = if (
+        isPreviewableImageArtifact(
+            artifact,
+            platformSupportsAvif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+        )
+    ) {
+        validateImageArtifact(context, artifact).getOrElse { error ->
+            Toast.makeText(
+                context,
+                strings.displayText("图片无法分享：${error.message ?: "文件校验失败"}"),
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+    } else {
+        null
+    }
+    val file = validatedImage?.file ?: File(artifact.path)
     if (!file.exists() || file.isDirectory) {
-        Toast.makeText(context, "文件不存在或无法分享", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("文件不存在或无法分享"), Toast.LENGTH_SHORT).show()
         return
     }
 
+    val uri = file.toArtifactUri(context)
     val intent = Intent(Intent.ACTION_SEND).apply {
-        type = artifact.mimeType.ifBlank { file.artifactMimeType() }
-        putExtra(Intent.EXTRA_STREAM, file.toArtifactUri(context))
+        type = validatedImage?.mimeType ?: artifact.mimeType.ifBlank { file.artifactMimeType() }
+        putExtra(Intent.EXTRA_STREAM, uri)
         putExtra(Intent.EXTRA_SUBJECT, artifact.name)
+        clipData = ClipData.newUri(context.contentResolver, artifact.name, uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
     runCatching {
-        context.startActivity(Intent.createChooser(intent, "分享 ${artifact.name}"))
+        context.startActivity(Intent.createChooser(intent, strings.displayText("分享 ${artifact.name}")))
     }.onFailure { error ->
-        Toast.makeText(context, "分享失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            strings.displayText("分享失败：${error.message ?: error.javaClass.simpleName}"),
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 }
 
@@ -4277,6 +7235,12 @@ private fun File.artifactMimeType(): String {
         "jpg", "jpeg" -> "image/jpeg"
         "webp" -> "image/webp"
         "gif" -> "image/gif"
+        "svg" -> "image/svg+xml"
+        "bmp" -> "image/bmp"
+        "heif" -> "image/heif"
+        "heic" -> "image/heic"
+        "avif" -> "image/avif"
+        "ico" -> "image/x-icon"
         "pdf" -> "application/pdf"
         else -> "*/*"
     }
@@ -4318,10 +7282,16 @@ private fun formatArtifactSize(bytes: Long): String {
     return "%.1f %s".format(Locale.US, value, units[unitIndex])
 }
 
-private fun openUrl(context: Context, url: String) {
+private fun openUrl(context: Context, url: String, strings: RemoteStrings) {
     runCatching {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     }.onFailure {
-        Toast.makeText(context, "无法打开链接", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("无法打开链接"), Toast.LENGTH_SHORT).show()
     }
+}
+
+private tailrec fun Context.findActivity(): ComponentActivity? = when (this) {
+    is ComponentActivity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

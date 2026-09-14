@@ -45,7 +45,7 @@ class RemoteIntegrationProtocolTest {
                 ).addHeader("Content-Type", "application/json").addHeader("Mcp-Session-Id", "test-session")
                 "notifications/initialized" -> MockResponse().setResponseCode(202)
                 "tools/list" -> MockResponse().setResponseCode(200).setBody(
-                    """{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","title":"Echo","description":"Returns input","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}]}}""",
+                    """{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","title":"Echo","description":"Returns input","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}]}}""",
                 ).addHeader("Content-Type", "application/json")
                 "tools/call" -> MockResponse().setResponseCode(200).setBody(
                     "data: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"pong\"}],\"isError\":false}}\n\n",
@@ -62,6 +62,10 @@ class RemoteIntegrationProtocolTest {
 
         assertEquals("Loopback MCP", discovery.serverName)
         assertEquals(listOf("echo"), discovery.tools.map(McpToolDescriptor::remoteName))
+        assertTrue(discovery.tools.single().readOnlyHint == true)
+        assertTrue(discovery.tools.single().destructiveHint == false)
+        assertTrue(discovery.tools.single().idempotentHint == true)
+        assertTrue(discovery.tools.single().openWorldHint == false)
         assertTrue(result.success)
         assertEquals("pong", result.data["content"])
     }
@@ -175,7 +179,7 @@ class RemoteIntegrationProtocolTest {
             (existingRef ?: "ref-${saved.size + 1}").also { saved[it] = secret }
         }
 
-        assertEquals(2, migrated.schemaVersion)
+        assertEquals(3, migrated.schemaVersion)
         assertEquals(McpAuthType.BEARER_TOKEN, migrated.mcpServers.single().authType)
         assertEquals("", migrated.mcpServers.single().bearerToken)
         assertEquals("", migrated.a2aAgents.single().bearerToken)

@@ -12,6 +12,7 @@ import com.denggl2.mason.tool.CallLogTool
 import com.denggl2.mason.tool.CameraTool
 import com.denggl2.mason.tool.ClipboardTool
 import com.denggl2.mason.tool.ContactsTool
+import com.denggl2.mason.tool.ConversationDispatchTool
 import com.denggl2.mason.tool.CpuTool
 import com.denggl2.mason.tool.DeviceInfoTool
 import com.denggl2.mason.tool.DnsLookupTool
@@ -38,6 +39,14 @@ import com.denggl2.mason.tool.StorageTool
 import com.denggl2.mason.tool.SystemSettingTool
 import com.denggl2.mason.tool.ToolRegistry
 import com.denggl2.mason.tool.WifiTool
+import com.denggl2.mason.phoneagent.PhoneClickNodeTool
+import com.denggl2.mason.phoneagent.PhoneGlobalActionTool
+import com.denggl2.mason.phoneagent.PhoneObserveTool
+import com.denggl2.mason.phoneagent.PhoneScreenshotTool
+import com.denggl2.mason.phoneagent.PhoneScrollTool
+import com.denggl2.mason.phoneagent.PhoneSetTextTool
+import com.denggl2.mason.phoneagent.PhoneSwipeTool
+import com.denggl2.mason.phoneagent.PhoneTapTool
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -82,12 +91,21 @@ object ToolModule {
         calendarTool: CalendarTool,
         alarmTool: AlarmTool,
         contactsTool: ContactsTool,
+        conversationDispatchTool: ConversationDispatchTool,
         smsTool: SmsTool,
         callLogTool: CallLogTool,
         appManagerTool: AppManagerTool,
         storageTool: StorageTool,
         processTool: ProcessTool,
         batteryOptimizationTool: BatteryOptimizationTool,
+        phoneObserveTool: PhoneObserveTool,
+        phoneScreenshotTool: PhoneScreenshotTool,
+        phoneClickNodeTool: PhoneClickNodeTool,
+        phoneTapTool: PhoneTapTool,
+        phoneSwipeTool: PhoneSwipeTool,
+        phoneScrollTool: PhoneScrollTool,
+        phoneSetTextTool: PhoneSetTextTool,
+        phoneGlobalActionTool: PhoneGlobalActionTool,
     ): ToolRegistry {
         return ToolRegistry().apply {
             registerAll(setOf(
@@ -122,12 +140,21 @@ object ToolModule {
                 calendarTool,
                 alarmTool,
                 contactsTool,
+                conversationDispatchTool,
                 smsTool,
                 callLogTool,
                 appManagerTool,
                 storageTool,
                 processTool,
                 batteryOptimizationTool,
+                phoneObserveTool,
+                phoneScreenshotTool,
+                phoneClickNodeTool,
+                phoneTapTool,
+                phoneSwipeTool,
+                phoneScrollTool,
+                phoneSetTextTool,
+                phoneGlobalActionTool,
             ))
         }
     }

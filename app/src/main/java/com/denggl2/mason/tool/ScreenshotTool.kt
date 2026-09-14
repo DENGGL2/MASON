@@ -60,7 +60,10 @@ class ScreenshotTool @Inject constructor(
                     lastError = "用户拒绝了截图授权"
                     return@callback
                 }
-                val mp = mpManager.getMediaProjection(resultCode, data)
+                val mp = mpManager.getMediaProjection(resultCode, data) ?: run {
+                    lastError = "授权失败：无法创建屏幕捕获会话"
+                    return@callback
+                }
                 activeProjection = mp
                 // 注册 onStop 回调
                 mp.registerCallback(object : MediaProjection.Callback() {
@@ -111,7 +114,10 @@ class ScreenshotTool @Inject constructor(
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.surface,
                 null, null,
-            )
+            ) ?: run {
+                imageReader.close()
+                return ToolResult(success = false, error = "截图失败：无法创建虚拟显示")
+            }
 
             // 等待一帧
             val image = imageReader.acquireLatestImage()

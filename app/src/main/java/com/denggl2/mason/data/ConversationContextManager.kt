@@ -51,7 +51,12 @@ class ConversationContextManager @Inject constructor(
                 },
             )
         }
-        val compacted = compactPersisted(messages, scopeId)
+        val messagesWithoutUiMetadata = messages.map { message ->
+            message.copy(
+                content = message.content?.let(::stripModelParticipationMarkers)?.let(::stripTaskRunMarkers),
+            )
+        }
+        val compacted = compactPersisted(messagesWithoutUiMetadata, scopeId)
         return listOfNotNull(projectMessage, memoryMessage) + compacted
     }
 
@@ -162,7 +167,9 @@ private fun summaryLines(messages: List<ChatMessage>): String = messages.asSeque
     .map { message ->
         val content = stripTaskRunMarkers(
             stripArtifactMarkers(
-                stripCapabilityRequirementMarkers(message.content.orEmpty()),
+                stripCapabilityRequirementMarkers(
+                    stripModelParticipationMarkers(message.content.orEmpty()),
+                ),
             ),
         ).trim().take(SUMMARY_MESSAGE_CHARS)
         "${message.role}: $content"

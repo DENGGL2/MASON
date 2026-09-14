@@ -1,5 +1,6 @@
 package com.denggl2.mason.navigation
 
+import android.net.Uri
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -7,37 +8,76 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Modifier
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.denggl2.mason.data.IslandVendorMode
-import com.denggl2.mason.data.NotificationDeliveryMode
+import com.denggl2.mason.data.InterfaceStyle
+import com.denggl2.mason.data.FontSizePreference
+import com.denggl2.mason.data.LanguagePreference
+import com.denggl2.mason.data.MessageSendMode
 import com.denggl2.mason.data.ThemeMode
 import com.denggl2.mason.data.UiPreferences
 import com.denggl2.mason.ui.chat.ChatScreen
+import com.denggl2.masonremote.MasonRemoteRoot
+import com.denggl2.masonremote.RemoteHostSettings
+import com.denggl2.masonremote.ui.settings.RemoteInterfaceStyle
+import com.denggl2.masonremote.ui.settings.RemoteLanguagePreference
+import com.denggl2.masonremote.ui.settings.RemoteMessageSendMode
+import com.denggl2.masonremote.ui.settings.RemoteThemeMode
+import com.denggl2.masonremote.ui.settings.TaskNotificationMode
 import com.denggl2.mason.ui.collection.CollectionKind
 import com.denggl2.mason.ui.collection.CollectionListScreen
-import com.denggl2.mason.ui.conversation.ConversationListScreen
 import com.denggl2.mason.ui.integration.IntegrationsScreen
 import com.denggl2.mason.ui.settings.PermissionScreen
 import com.denggl2.mason.ui.settings.SettingsScreen
+import com.denggl2.mason.ui.phoneagent.PhoneAgentLogScreen
+import com.denggl2.mason.ui.phoneagent.PhoneAgentScreen
+import com.denggl2.mason.ui.theme.WindowBackdropSnapshot
+import java.util.UUID
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 object Routes {
-    const val CHAT_NEW = "chat_new"
-    const val CONVERSATION_LIST = "conversation_list"
+    const val CHAT_NEW = "chat_new/{fresh}/{sessionId}"
     const val CHAT = "chat/{conversationId}"
     const val SETTINGS = "settings"
+    const val SETTINGS_AI = "settings/ai"
     const val PERMISSION = "permission"
     const val INTEGRATIONS = "integrations"
+    const val DEVICE_PAIRING = "device_pairing"
+    const val PHONE_AGENT = "phone_agent"
+    const val PHONE_AGENT_LOGS = "phone_agent/logs"
+    const val REMOTE_CONVERSATIONS = "remote_conversations"
     const val COLLECTION = "collection/{kind}"
 
     fun chat(conversationId: Long) = "chat/$conversationId"
+    fun newChat(fresh: Boolean = false, sessionId: String) = "chat_new/$fresh/$sessionId"
     fun collection(kind: CollectionKind) = "collection/${kind.routeName}"
 }
+
+private const val FRESH_CONVERSATION_APPLIED_KEY = "freshConversationApplied"
+
+internal fun shouldApplyFreshConversation(
+    freshRequested: Boolean,
+    freshApplied: Boolean,
+): Boolean = freshRequested && !freshApplied
 
 @Composable
 fun MasonNavGraph(
@@ -45,108 +85,232 @@ fun MasonNavGraph(
     openConversationId: Long? = null,
     notificationTaskCommand: String? = null,
     notificationArtifactPath: String? = null,
+    notificationRemoteThreadId: String? = null,
+    onRemoteNotificationConsumed: () -> Unit = {},
     onThemeModeChange: (ThemeMode) -> Unit,
+    onInterfaceStyleChange: (InterfaceStyle) -> Unit,
+    onGlassRefractionChange: (Boolean) -> Unit,
+    onGlassTransparencyPreview: (Float) -> Unit,
+    onGlassTransparencyCommit: (Float) -> Unit,
+    onGlassFrostPreview: (Float) -> Unit,
+    onGlassFrostCommit: (Float) -> Unit,
     onAccentColorChange: (Long) -> Unit,
-    onNotificationIslandEnabledChange: (Boolean) -> Unit,
-    onNotificationDeliveryModeChange: (NotificationDeliveryMode) -> Unit,
-    onNotifyOnTaskCompleteChange: (Boolean) -> Unit,
-    onNotifyOnPaymentSuccessChange: (Boolean) -> Unit,
-    onIslandVendorModeChange: (IslandVendorMode) -> Unit,
+    onRegularNotificationsChange: (Boolean) -> Unit,
+    onIslandNotificationsChange: (Boolean) -> Unit,
+    onFontSizeChange: (FontSizePreference) -> Unit,
+    onLanguageChange: (LanguagePreference) -> Unit,
+    onMessageSendModeChange: (MessageSendMode) -> Unit,
 ) {
     val navController = rememberNavController()
+    val startSessionId = remember { UUID.randomUUID().toString() }
+    val startRoute = remember(startSessionId) {
+        // A cold start must be allowed to restore an unfinished task.
+        Routes.newChat(fresh = false, sessionId = startSessionId)
+    }
+    val conversationRoutes = remember { mutableStateMapOf<Long, String>() }
+    val transitionScope = rememberCoroutineScope()
+    var conversationSwitchInProgress by remember { mutableStateOf(false) }
+    var conversationSwitchResetJob by remember { mutableStateOf<Job?>(null) }
+    var drawerResetGeneration by remember { mutableIntStateOf(0) }
+    var drawerBackdropSnapshot by remember { mutableStateOf<WindowBackdropSnapshot?>(null) }
+    DisposableEffect(drawerBackdropSnapshot) {
+        val currentSnapshot = drawerBackdropSnapshot
+        val retained = currentSnapshot?.retain() == true
+        onDispose {
+            if (retained) currentSnapshot?.release() else currentSnapshot?.recycleWhenIdle()
+        }
+    }
+
+    fun beginConversationSwitch() {
+        conversationSwitchInProgress = true
+        conversationSwitchResetJob?.cancel()
+        conversationSwitchResetJob = transitionScope.launch {
+            delay(320)
+            conversationSwitchInProgress = false
+        }
+    }
+
+    fun navigateToConversation(conversationId: Long, isRunning: Boolean) {
+        if (navController.currentBackStackEntry?.savedStateHandle?.get<Long>("boundConversationId") == conversationId) {
+            return
+        }
+        drawerResetGeneration += 1
+        beginConversationSwitch()
+        val route = conversationRoutes[conversationId]
+            ?.takeIf { candidate ->
+                isRunning && runCatching {
+                    navController.getBackStackEntry(candidate)
+                        .savedStateHandle
+                        .get<Long>("boundConversationId") == conversationId
+                }.getOrDefault(false)
+            }
+            ?: Routes.chat(conversationId)
+        if (!navController.popBackStack(route, inclusive = false)) {
+            // Every conversation needs its own SavedStateHandle-backed ChatViewModel.
+            // launchSingleTop would reuse the current chat destination and its first ID.
+            navController.navigate(Routes.chat(conversationId))
+        }
+    }
+
+    fun navigateToNewChat() {
+        drawerResetGeneration += 1
+        navController.navigate(
+            Routes.newChat(
+                fresh = true,
+                sessionId = UUID.randomUUID().toString(),
+            ),
+        )
+    }
 
     LaunchedEffect(openConversationId, notificationArtifactPath) {
         if (notificationArtifactPath != null) {
             navController.navigate(Routes.collection(CollectionKind.ARTIFACTS)) {
-                popUpTo(Routes.CHAT_NEW) { inclusive = false }
+                popUpTo(startRoute) { inclusive = false }
                 launchSingleTop = true
             }
         } else {
             openConversationId?.let { conversationId ->
             navController.navigate(Routes.chat(conversationId)) {
-                popUpTo(Routes.CHAT_NEW) { inclusive = false }
+                popUpTo(startRoute) { inclusive = false }
                 launchSingleTop = true
             }
             }
         }
     }
 
+    LaunchedEffect(notificationRemoteThreadId) {
+        if (notificationRemoteThreadId != null &&
+            navController.currentDestination?.route != Routes.REMOTE_CONVERSATIONS
+        ) {
+            navController.navigate(Routes.REMOTE_CONVERSATIONS) {
+                launchSingleTop = true
+            }
+        }
+    }
+
     NavHost(
         navController = navController,
-        startDestination = Routes.CHAT_NEW,
+        startDestination = startRoute,
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
         enterTransition = {
-            slideIntoContainer(
-                AnimatedContentTransitionScope.SlideDirection.Left,
-                animationSpec = tween(360, easing = FastOutSlowInEasing),
-            ) + fadeIn(tween(220)) + scaleIn(
-                initialScale = 0.985f,
-                animationSpec = tween(360, easing = FastOutSlowInEasing),
-            )
+            if (conversationSwitchInProgress) {
+                slideIntoContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Left,
+                    animationSpec = tween(260, easing = FastOutSlowInEasing),
+                )
+            } else {
+                slideIntoContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Left,
+                    animationSpec = tween(360, easing = FastOutSlowInEasing),
+                ) + fadeIn(tween(220)) + scaleIn(
+                    initialScale = 0.985f,
+                    animationSpec = tween(360, easing = FastOutSlowInEasing),
+                )
+            }
         },
         exitTransition = {
-            slideOutOfContainer(
-                AnimatedContentTransitionScope.SlideDirection.Left,
-                animationSpec = tween(320, easing = FastOutSlowInEasing),
-            ) + fadeOut(tween(180)) + scaleOut(
-                targetScale = 0.985f,
-                animationSpec = tween(320, easing = FastOutSlowInEasing),
-            )
+            if (conversationSwitchInProgress) {
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Left,
+                    animationSpec = tween(260, easing = FastOutSlowInEasing),
+                )
+            } else {
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Left,
+                    animationSpec = tween(320, easing = FastOutSlowInEasing),
+                ) + fadeOut(tween(180)) + scaleOut(
+                    targetScale = 0.985f,
+                    animationSpec = tween(320, easing = FastOutSlowInEasing),
+                )
+            }
         },
         popEnterTransition = {
-            slideIntoContainer(
-                AnimatedContentTransitionScope.SlideDirection.Right,
-                animationSpec = tween(340, easing = FastOutSlowInEasing),
-            ) + fadeIn(tween(200)) + scaleIn(
-                initialScale = 0.99f,
-                animationSpec = tween(340, easing = FastOutSlowInEasing),
-            )
+            if (conversationSwitchInProgress) {
+                slideIntoContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Left,
+                    animationSpec = tween(260, easing = FastOutSlowInEasing),
+                )
+            } else {
+                slideIntoContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Right,
+                    animationSpec = tween(340, easing = FastOutSlowInEasing),
+                ) + fadeIn(tween(200)) + scaleIn(
+                    initialScale = 0.99f,
+                    animationSpec = tween(340, easing = FastOutSlowInEasing),
+                )
+            }
         },
         popExitTransition = {
-            slideOutOfContainer(
-                AnimatedContentTransitionScope.SlideDirection.Right,
-                animationSpec = tween(300, easing = FastOutSlowInEasing),
-            ) + fadeOut(tween(160)) + scaleOut(
-                targetScale = 0.99f,
-                animationSpec = tween(300, easing = FastOutSlowInEasing),
-            )
+            if (conversationSwitchInProgress) {
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Left,
+                    animationSpec = tween(260, easing = FastOutSlowInEasing),
+                )
+            } else {
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Right,
+                    animationSpec = tween(300, easing = FastOutSlowInEasing),
+                ) + fadeOut(tween(160)) + scaleOut(
+                    targetScale = 0.99f,
+                    animationSpec = tween(300, easing = FastOutSlowInEasing),
+                )
+            }
         },
     ) {
-        composable(Routes.CHAT_NEW) {
+        composable(
+            route = Routes.CHAT_NEW,
+            arguments = listOf(
+                navArgument("fresh") { type = NavType.BoolType },
+                navArgument("sessionId") { type = NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val fresh = backStackEntry.arguments?.getBoolean("fresh") == true
+            val sessionId = backStackEntry.arguments?.getString("sessionId").orEmpty()
+            val route = Routes.newChat(fresh = fresh, sessionId = sessionId)
+            var shouldStartFresh by remember(backStackEntry) {
+                mutableStateOf(
+                    shouldApplyFreshConversation(
+                        freshRequested = fresh,
+                        freshApplied = backStackEntry.savedStateHandle
+                            .get<Boolean>(FRESH_CONVERSATION_APPLIED_KEY) == true,
+                    ),
+                )
+            }
             ChatScreen(
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToModelSettings = { navController.navigate(Routes.SETTINGS_AI) },
                 onNavigateToIntegrations = { navController.navigate(Routes.INTEGRATIONS) },
                 onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
-                onConversationSelected = { id ->
-                    navController.navigate(Routes.chat(id)) {
-                        launchSingleTop = true
+                onConversationSelected = ::navigateToConversation,
+                onNewChat = ::navigateToNewChat,
+                onDevicePairing = { navController.navigate(Routes.REMOTE_CONVERSATIONS) },
+                onOpenRemoteConversations = {
+                    navController.navigate(Routes.REMOTE_CONVERSATIONS)
+                },
+                drawerResetGeneration = drawerResetGeneration,
+                drawerBackdropSnapshot = drawerBackdropSnapshot,
+                onDrawerBackdropSnapshotChange = { drawerBackdropSnapshot = it },
+                onConversationBound = { id ->
+                    val previousId = backStackEntry.savedStateHandle.get<Long>("boundConversationId")
+                    if (previousId != null && conversationRoutes[previousId] == route) {
+                        conversationRoutes.remove(previousId)
+                    }
+                    if (id == null) {
+                        backStackEntry.savedStateHandle.remove<Long>("boundConversationId")
+                    } else {
+                        backStackEntry.savedStateHandle["boundConversationId"] = id
+                        conversationRoutes[id] = route
                     }
                 },
-                onNewChat = {
-                    navController.navigate(Routes.CHAT_NEW) {
-                        launchSingleTop = true
-                    }
+                startFresh = shouldStartFresh,
+                onStartFreshConsumed = {
+                    backStackEntry.savedStateHandle[FRESH_CONVERSATION_APPLIED_KEY] = true
+                    shouldStartFresh = false
                 },
-                onOpenArtifacts = { navController.navigate(Routes.collection(CollectionKind.ARTIFACTS)) },
-                onOpenSkills = { navController.navigate(Routes.collection(CollectionKind.SKILLS)) },
-                onOpenAutomations = { navController.navigate(Routes.collection(CollectionKind.AUTOMATIONS)) },
+                onOpenWorkbench = { navController.navigate(Routes.collection(CollectionKind.ARTIFACTS)) },
                 notificationTaskCommand = notificationTaskCommand,
-            )
-        }
-
-        composable(Routes.CONVERSATION_LIST) {
-            ConversationListScreen(
-                onConversationClick = { id ->
-                    navController.navigate(Routes.chat(id))
-                },
-                onNavigateToSettings = {
-                    navController.navigate(Routes.SETTINGS)
-                },
-                onBack = { navController.popBackStack() },
-                onNewChat = {
-                    navController.navigate(Routes.CHAT_NEW) {
-                        launchSingleTop = true
-                    }
-                },
             )
         }
 
@@ -158,25 +322,36 @@ fun MasonNavGraph(
                     defaultValue = -1L
                 },
             ),
-        ) {
+        ) { backStackEntry ->
             ChatScreen(
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToModelSettings = { navController.navigate(Routes.SETTINGS_AI) },
                 onNavigateToIntegrations = { navController.navigate(Routes.INTEGRATIONS) },
                 onNavigateToPermission = { navController.navigate(Routes.PERMISSION) },
-                onConversationSelected = { id ->
-                    navController.navigate(Routes.chat(id)) {
-                        launchSingleTop = true
+                onConversationSelected = ::navigateToConversation,
+                onNewChat = ::navigateToNewChat,
+                onDevicePairing = { navController.navigate(Routes.REMOTE_CONVERSATIONS) },
+                onOpenRemoteConversations = {
+                    navController.navigate(Routes.REMOTE_CONVERSATIONS)
+                },
+                drawerResetGeneration = drawerResetGeneration,
+                drawerBackdropSnapshot = drawerBackdropSnapshot,
+                onDrawerBackdropSnapshotChange = { drawerBackdropSnapshot = it },
+                onConversationBound = { id ->
+                    val currentRoute = id?.let(Routes::chat)
+                    val previousId = backStackEntry.savedStateHandle.get<Long>("boundConversationId")
+                    if (previousId != null && conversationRoutes[previousId] == Routes.chat(previousId)) {
+                        conversationRoutes.remove(previousId)
+                    }
+                    if (id == null || currentRoute == null) {
+                        backStackEntry.savedStateHandle.remove<Long>("boundConversationId")
+                    } else {
+                        backStackEntry.savedStateHandle["boundConversationId"] = id
+                        conversationRoutes[id] = currentRoute
                     }
                 },
-                onNewChat = {
-                    navController.navigate(Routes.CHAT_NEW) {
-                        launchSingleTop = true
-                    }
-                },
-                onBack = { navController.popBackStack() },
-                onOpenArtifacts = { navController.navigate(Routes.collection(CollectionKind.ARTIFACTS)) },
-                onOpenSkills = { navController.navigate(Routes.collection(CollectionKind.SKILLS)) },
-                onOpenAutomations = { navController.navigate(Routes.collection(CollectionKind.AUTOMATIONS)) },
+                startFresh = false,
+                onOpenWorkbench = { navController.navigate(Routes.collection(CollectionKind.ARTIFACTS)) },
                 notificationTaskCommand = notificationTaskCommand,
             )
         }
@@ -190,14 +365,59 @@ fun MasonNavGraph(
                 onNavigateToIntegrations = {
                     navController.navigate(Routes.INTEGRATIONS)
                 },
+                onNavigateToDevicePairing = {
+                    navController.navigate(Routes.REMOTE_CONVERSATIONS)
+                },
+                onNavigateToPhoneAgent = {
+                    navController.navigate(Routes.PHONE_AGENT)
+                },
                 uiPreferences = uiPreferences,
                 onThemeModeChange = onThemeModeChange,
+                onInterfaceStyleChange = onInterfaceStyleChange,
+                onGlassRefractionChange = onGlassRefractionChange,
+                onGlassTransparencyPreview = onGlassTransparencyPreview,
+                onGlassTransparencyCommit = onGlassTransparencyCommit,
+                onGlassFrostPreview = onGlassFrostPreview,
+                onGlassFrostCommit = onGlassFrostCommit,
                 onAccentColorChange = onAccentColorChange,
-                onNotificationIslandEnabledChange = onNotificationIslandEnabledChange,
-                onNotificationDeliveryModeChange = onNotificationDeliveryModeChange,
-                onNotifyOnTaskCompleteChange = onNotifyOnTaskCompleteChange,
-                onNotifyOnPaymentSuccessChange = onNotifyOnPaymentSuccessChange,
-                onIslandVendorModeChange = onIslandVendorModeChange,
+                onRegularNotificationsChange = onRegularNotificationsChange,
+                onIslandNotificationsChange = onIslandNotificationsChange,
+                onFontSizeChange = onFontSizeChange,
+                onLanguageChange = onLanguageChange,
+                onMessageSendModeChange = onMessageSendModeChange,
+            )
+        }
+
+        composable(Routes.SETTINGS_AI) {
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                openModelSettingsInitially = true,
+                onNavigateToPermission = {
+                    navController.navigate(Routes.PERMISSION)
+                },
+                onNavigateToIntegrations = {
+                    navController.navigate(Routes.INTEGRATIONS)
+                },
+                onNavigateToDevicePairing = {
+                    navController.navigate(Routes.REMOTE_CONVERSATIONS)
+                },
+                onNavigateToPhoneAgent = {
+                    navController.navigate(Routes.PHONE_AGENT)
+                },
+                uiPreferences = uiPreferences,
+                onThemeModeChange = onThemeModeChange,
+                onInterfaceStyleChange = onInterfaceStyleChange,
+                onGlassRefractionChange = onGlassRefractionChange,
+                onGlassTransparencyPreview = onGlassTransparencyPreview,
+                onGlassTransparencyCommit = onGlassTransparencyCommit,
+                onGlassFrostPreview = onGlassFrostPreview,
+                onGlassFrostCommit = onGlassFrostCommit,
+                onAccentColorChange = onAccentColorChange,
+                onRegularNotificationsChange = onRegularNotificationsChange,
+                onIslandNotificationsChange = onIslandNotificationsChange,
+                onFontSizeChange = onFontSizeChange,
+                onLanguageChange = onLanguageChange,
+                onMessageSendModeChange = onMessageSendModeChange,
             )
         }
 
@@ -209,6 +429,41 @@ fun MasonNavGraph(
 
         composable(Routes.INTEGRATIONS) {
             IntegrationsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.DEVICE_PAIRING) {
+            // Keep the legacy route resolvable for restored navigation state,
+            // but always render the embedded Remote experience and its
+            // PairingStore. The old MASON pairing screen must not create a
+            // second record format.
+            MasonRemoteRoot(
+                settings = uiPreferences.toRemoteHostSettings(),
+                onBack = { navController.popBackStack() },
+                notificationActivityClass = com.denggl2.mason.MainActivity::class.java,
+                notificationThreadId = notificationRemoteThreadId,
+                onNotificationThreadConsumed = onRemoteNotificationConsumed,
+            )
+        }
+
+        composable(Routes.PHONE_AGENT) {
+            PhoneAgentScreen(
+                onBack = { navController.popBackStack() },
+                onOpenLogs = { navController.navigate(Routes.PHONE_AGENT_LOGS) },
+            )
+        }
+
+        composable(Routes.PHONE_AGENT_LOGS) {
+            PhoneAgentLogScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.REMOTE_CONVERSATIONS) {
+            MasonRemoteRoot(
+                settings = uiPreferences.toRemoteHostSettings(),
+                onBack = { navController.popBackStack() },
+                notificationActivityClass = com.denggl2.mason.MainActivity::class.java,
+                notificationThreadId = notificationRemoteThreadId,
+                onNotificationThreadConsumed = onRemoteNotificationConsumed,
+            )
         }
 
         composable(
@@ -230,3 +485,38 @@ fun MasonNavGraph(
         }
     }
 }
+
+private fun UiPreferences.toRemoteHostSettings(): RemoteHostSettings = RemoteHostSettings(
+    themeMode = when (themeMode) {
+        ThemeMode.SYSTEM -> RemoteThemeMode.SYSTEM
+        ThemeMode.LIGHT -> RemoteThemeMode.LIGHT
+        ThemeMode.DARK -> RemoteThemeMode.DARK
+    },
+    interfaceStyle = when (interfaceStyle) {
+        InterfaceStyle.GLASS -> RemoteInterfaceStyle.GLASS
+        else -> RemoteInterfaceStyle.NATIVE
+    },
+    fontSize = when (fontSize) {
+        FontSizePreference.SMALL -> com.denggl2.masonremote.ui.settings.RemoteFontSizePreference.SMALL
+        FontSizePreference.MEDIUM -> com.denggl2.masonremote.ui.settings.RemoteFontSizePreference.MEDIUM
+        FontSizePreference.LARGE -> com.denggl2.masonremote.ui.settings.RemoteFontSizePreference.LARGE
+        FontSizePreference.EXTRA_LARGE -> com.denggl2.masonremote.ui.settings.RemoteFontSizePreference.EXTRA_LARGE
+    },
+    language = when (language) {
+        LanguagePreference.SYSTEM -> RemoteLanguagePreference.SYSTEM
+        LanguagePreference.CHINESE -> RemoteLanguagePreference.CHINESE
+        LanguagePreference.ENGLISH -> RemoteLanguagePreference.ENGLISH
+    },
+    glassRefractionEnabled = glassRefractionEnabled,
+    glassTransparency = glassTransparency,
+    glassFrost = glassFrost,
+    notificationMode = when {
+        islandNotificationsEnabled -> TaskNotificationMode.ISLAND
+        regularNotificationsEnabled -> TaskNotificationMode.REGULAR
+        else -> TaskNotificationMode.DISABLED
+    },
+    messageSendMode = when (messageSendMode) {
+        MessageSendMode.STEER -> RemoteMessageSendMode.STEER
+        MessageSendMode.QUEUE -> RemoteMessageSendMode.QUEUE
+    },
+)

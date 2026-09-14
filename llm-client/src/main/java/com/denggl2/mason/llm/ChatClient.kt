@@ -34,6 +34,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 sealed class ChatResponse {
+    data class ModelExecutionStarted(
+        val engineId: String,
+        val modelId: String,
+        val contribution: String,
+    ) : ChatResponse()
     data class TextChunk(val text: String) : ChatResponse()
     data class UsageReceived(val usage: TokenUsage) : ChatResponse()
     data class ToolCallsRequested(
@@ -112,17 +117,27 @@ class ChatClient @Inject constructor(
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
+    // Capability checks must not inherit the long chat response timeout. A provider can
+    // accept a probe and never finish an unsupported vision/image request.
+    private val testClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        .build()
+
     fun chat(
         messages: List<ChatMessage>,
         toolsEnabled: Boolean? = null,
         modelOverride: String? = null,
+        connectionIdOverride: String? = null,
         attachments: List<ModelAttachment> = emptyList(),
     ): Flow<ChatResponse> = flow {
-        val apiUrl = configProvider.getApiUrl()
-        val apiKey = configProvider.getApiKey()
-        val model = modelOverride?.takeIf(String::isNotBlank) ?: configProvider.getModel()
-        val resolvedToolsEnabled = toolsEnabled ?: configProvider.getToolsEnabled()
-        val requiresApiKey = configProvider.requiresApiKey()
+        val connection = configProvider.resolve(connectionIdOverride)
+        val apiUrl = connection.apiUrl
+        val apiKey = connection.apiKey
+        val model = modelOverride?.takeIf(String::isNotBlank) ?: connection.model
+        val resolvedToolsEnabled = toolsEnabled ?: connection.toolsEnabled
+        val requiresApiKey = connection.requiresApiKey
 
         if (apiKey.isBlank() && requiresApiKey) {
             emit(ChatResponse.Error("请先在设置中配置 API Key"))
@@ -131,21 +146,124 @@ class ChatClient @Inject constructor(
 
         val toolDefinitions = if (resolvedToolsEnabled) toolRegistry.getDefinitions() else emptyList()
 
+        val apiMessages = buildApiMessages(listOf(systemPrompt()) + messages, attachments)
+        val requestMessages = if (apiMessages.any { !it.tool_calls.isNullOrEmpty() }) {
+            trimToCurrentTurn(apiMessages)
+        } else {
+            apiMessages
+        }
         val request = ChatRequest(
             model = model,
-            messages = buildApiMessages(listOf(systemPrompt()) + messages, attachments),
+            messages = requestMessages,
             stream = false,
             tools = toolDefinitions.ifEmpty { null },
             tool_choice = "auto".takeIf { toolDefinitions.isNotEmpty() },
         )
-
         var response = withContext(Dispatchers.IO) {
-            executeTestRequest(apiUrl, apiKey, request)
+            executeTestRequest(apiUrl, apiKey, request, connection.additionalHeaders)
         }
-        if (response.code == 400 && request.tool_choice != null) {
+        if (response.code == 400 && request.messages.any { !it.tool_calls.isNullOrEmpty() }) {
+            val initialError = response.body?.string().orEmpty()
             response.close()
-            response = withContext(Dispatchers.IO) {
-                executeTestRequest(apiUrl, apiKey, request.copy(tool_choice = null))
+
+            // A few relays validate tool rounds as a message graph and reject
+            // generated Mason message IDs even though the payload is otherwise
+            // OpenAI-compatible. Retry once with the provider's original
+            // call_* IDs before falling back to the legacy no-tool-choice retry.
+            if (initialError.contains("missing field", ignoreCase = true) &&
+                initialError.contains("id", ignoreCase = true) &&
+                request.messages.any { !it.tool_calls.isNullOrEmpty() }
+            ) {
+                val relayMessages = useToolRoundRelayVariant(request.messages)
+                response = withContext(Dispatchers.IO) {
+                    executeTestRequest(
+                        apiUrl,
+                        apiKey,
+                        request.copy(messages = relayMessages),
+                        connection.additionalHeaders,
+                    )
+                }
+            }
+
+            // Some OpenAI-compatible relays reject an assistant tool message
+            // when content is omitted, even though the OpenAI schema permits
+            // null content alongside tool_calls. Retry the same tool round
+            // with a short non-empty assistant content before flattening it.
+            if (!response.isSuccessful &&
+                initialError.contains("Invalid assistant message", ignoreCase = true)
+            ) {
+                val relayMessages = useToolRoundRelayVariant(request.messages)
+                response = withContext(Dispatchers.IO) {
+                    executeTestRequest(
+                        apiUrl,
+                        apiKey,
+                        request.copy(messages = relayMessages),
+                        connection.additionalHeaders,
+                    )
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val retryError = response.body?.string().orEmpty()
+                response.close()
+                if (retryError.contains("missing field", ignoreCase = true) &&
+                    retryError.contains("id", ignoreCase = true)
+                ) {
+                    val messageIdVariant = useToolRoundMessageIdsVariant(request.messages)
+                    response = withContext(Dispatchers.IO) {
+                        executeTestRequest(
+                            apiUrl,
+                            apiKey,
+                            request.copy(messages = messageIdVariant),
+                            connection.additionalHeaders,
+                        )
+                    }
+                    if (!response.isSuccessful) {
+                        response.body?.string()
+                        response.close()
+                    }
+                }
+                if (!response.isSuccessful && retryError.contains("missing field", ignoreCase = true) &&
+                    retryError.contains("id", ignoreCase = true)
+                ) {
+                    val legacyMessages = useLegacyFunctionRoundVariant(request.messages)
+                    response = withContext(Dispatchers.IO) {
+                        executeTestRequest(
+                            apiUrl,
+                            apiKey,
+                            request.copy(messages = legacyMessages),
+                            connection.additionalHeaders,
+                        )
+                    }
+                }
+                if (!response.isSuccessful) {
+                    response.body?.string()
+                    response.close()
+                    val flattenedRequest = flattenToolRoundForRelay(request)
+                    response = withContext(Dispatchers.IO) {
+                        executeTestRequest(
+                            apiUrl,
+                            apiKey,
+                            flattenedRequest,
+                            connection.additionalHeaders,
+                        )
+                    }
+                }
+                if (!response.isSuccessful) {
+                    val retryMessages = if (initialError.contains("Invalid assistant message", ignoreCase = true)) {
+                        trimToCurrentTurn(request.messages)
+                    } else {
+                        request.messages
+                    }
+                    response = withContext(Dispatchers.IO) {
+                        executeTestRequest(
+                            apiUrl,
+                            apiKey,
+                            request.copy(messages = retryMessages, tool_choice = null),
+                            connection.additionalHeaders,
+                        )
+                    }
+                }
             }
         }
 
@@ -200,9 +318,14 @@ class ChatClient @Inject constructor(
         }
     }
 
-    fun generateImage(prompt: String, modelOverride: String): Flow<ChatResponse> = flow {
-        val apiUrl = configProvider.getApiUrl()
-        val apiKey = configProvider.getApiKey()
+    fun generateImage(
+        prompt: String,
+        modelOverride: String,
+        connectionIdOverride: String? = null,
+    ): Flow<ChatResponse> = flow {
+        val connection = configProvider.resolve(connectionIdOverride)
+        val apiUrl = connection.apiUrl
+        val apiKey = connection.apiKey
         if (prompt.isBlank()) {
             emit(ChatResponse.Error("生图提示词不能为空"))
             return@flow
@@ -211,7 +334,7 @@ class ChatClient @Inject constructor(
             emit(ChatResponse.Error("没有配置生图模型"))
             return@flow
         }
-        if (apiKey.isBlank() && configProvider.requiresApiKey()) {
+        if (apiKey.isBlank() && connection.requiresApiKey) {
             emit(ChatResponse.Error("请先在设置中配置 API Key"))
             return@flow
         }
@@ -221,7 +344,12 @@ class ChatClient @Inject constructor(
             put("prompt", kotlinx.serialization.json.JsonPrimitive(prompt))
             put("n", kotlinx.serialization.json.JsonPrimitive(1))
         }
-        val request = buildAuthorizedRequest(endpoint, apiKey, json.encodeToString(JsonObject.serializer(), payload))
+        val request = buildAuthorizedRequest(
+            endpoint,
+            apiKey,
+            json.encodeToString(JsonObject.serializer(), payload),
+            connection.additionalHeaders,
+        )
         val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
         response.use {
             val body = it.body?.string().orEmpty()
@@ -321,6 +449,7 @@ class ChatClient @Inject constructor(
         imageModel: String = "",
         requiresApiKey: Boolean = true,
         testTools: Boolean = true,
+        additionalHeaders: Map<String, String> = emptyMap(),
     ): ApiTestResult {
         if (apiUrl.isBlank()) return ApiTestResult(false, "请填写 API 地址")
         if (model.isBlank()) return ApiTestResult(false, "请填写模型名称")
@@ -341,57 +470,67 @@ class ChatClient @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             runCatching {
-                executeTestRequest(apiUrl, apiKey, textRequest).use { response ->
+                val chatCapability = executeTestRequest(
+                    apiUrl,
+                    apiKey,
+                    textRequest,
+                    additionalHeaders,
+                    httpClient = testClient,
+                ).use { response ->
                     val responseBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
-                        val message = "API 错误 ${response.code}: ${responseBody.take(240)}"
-                        return@use ApiTestResult(
+                        ApiCapabilityCheck(
+                            label = "聊天",
                             success = false,
-                            message = message,
-                            capabilities = listOf(ApiCapabilityCheck("聊天", success = false, detail = message)),
+                            detail = apiTestHttpFailureDetail(response.code, responseBody),
                         )
+                    } else {
+                        ApiCapabilityCheck(label = "聊天", success = true)
                     }
-
-                    val content = runCatching {
-                        val root = json.parseToJsonElement(responseBody).jsonObject
-                        root["choices"]
-                            ?.jsonArray
-                            ?.firstOrNull()
-                            ?.jsonObject
-                            ?.get("message")
-                            ?.jsonObject
-                            ?.get("content")
-                            ?.jsonPrimitive
-                            ?.contentOrNull
-                    }.getOrNull()
-
-                    val textMessage = if (content.isNullOrBlank()) "连接成功" else "连接成功：${content.take(80)}"
-                    val capabilities = mutableListOf(
-                        ApiCapabilityCheck(label = "聊天", success = true),
-                        probeVisionCapability(apiUrl, apiKey, visionModel.ifBlank { model }),
-                        probeImageCapability(apiUrl, apiKey, imageModel),
-                    )
-                    if (!testTools) {
-                        return@use ApiTestResult(
-                            success = true,
-                            message = textMessage,
-                            capabilities = capabilities,
-                        )
-                    }
-
-                    val probe = probeToolCalling(apiUrl, apiKey, model)
-                    capabilities += ApiCapabilityCheck(
-                        label = "工具调用",
-                        success = probe.available,
-                        detail = probe.warning,
-                    )
-                    ApiTestResult(
-                        success = true,
-                        message = if (probe.available) "$textMessage；工具调用可用" else textMessage,
-                        capabilityWarning = probe.warning,
-                        capabilities = capabilities,
-                    )
                 }
+                val capabilities = mutableListOf(
+                    chatCapability,
+                    probeVisionCapability(apiUrl, apiKey, visionModel.ifBlank { model }, additionalHeaders),
+                    probeImageCapability(apiUrl, apiKey, imageModel, additionalHeaders),
+                )
+                var capabilityWarning: String? = null
+                if (testTools) {
+                    if (chatCapability.success) {
+                        val probe = probeToolCalling(apiUrl, apiKey, model, additionalHeaders)
+                        capabilityWarning = probe.warning
+                        capabilities += ApiCapabilityCheck(
+                            label = "工具调用",
+                            success = probe.available,
+                            detail = probe.warning,
+                        )
+                    } else {
+                        capabilities += ApiCapabilityCheck(
+                            label = "工具调用",
+                            success = false,
+                            detail = "聊天能力不可用",
+                        )
+                    }
+                }
+
+                val coreCapabilities = capabilities.filter { it.label in setOf("聊天", "识图", "生图") }
+                val availableLabels = capabilities.filter(ApiCapabilityCheck::success).map(ApiCapabilityCheck::label)
+                val success = coreCapabilities.any(ApiCapabilityCheck::success)
+                val failureDetails = coreCapabilities
+                    .filterNot(ApiCapabilityCheck::success)
+                    .mapNotNull(ApiCapabilityCheck::detail)
+                    .distinct()
+                    .joinToString("\n\n")
+                    .take(1_200)
+                ApiTestResult(
+                    success = success,
+                    message = if (success) {
+                        "连接成功；支持${availableLabels.joinToString("、")}"
+                    } else {
+                        "模型测试未通过${failureDetails.takeIf(String::isNotBlank)?.let { "：$it" }.orEmpty()}"
+                    },
+                    capabilityWarning = capabilityWarning,
+                    capabilities = capabilities,
+                )
             }.getOrElse { error ->
                 val message = "连接失败: ${error.message ?: error.javaClass.simpleName}"
                 ApiTestResult(
@@ -407,6 +546,7 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         model: String,
+        additionalHeaders: Map<String, String>,
     ): ApiCapabilityCheck {
         val request = ChatRequest(
             model = model,
@@ -430,12 +570,22 @@ class ChatClient @Inject constructor(
             stream = false,
         )
         return runCatching {
-            executeTestRequest(apiUrl, apiKey, request).use { response ->
+            executeTestRequest(
+                apiUrl,
+                apiKey,
+                request,
+                additionalHeaders,
+                httpClient = testClient,
+            ).use { response ->
                 val body = response.body?.string().orEmpty()
                 if (response.isSuccessful) {
                     ApiCapabilityCheck(label = "识图", success = true)
                 } else {
-                    ApiCapabilityCheck(label = "识图", success = false, detail = responseErrorSummary(body))
+                    ApiCapabilityCheck(
+                        label = "识图",
+                        success = false,
+                        detail = apiTestHttpFailureDetail(response.code, body),
+                    )
                 }
             }
         }.getOrElse { error ->
@@ -447,6 +597,7 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         model: String,
+        additionalHeaders: Map<String, String>,
     ): ApiCapabilityCheck {
         if (model.isBlank()) return ApiCapabilityCheck(label = "生图", success = false, detail = "未配置模型")
         val payload = kotlinx.serialization.json.buildJsonObject {
@@ -459,7 +610,8 @@ class ChatClient @Inject constructor(
                 normalizeImagesUrl(apiUrl),
                 apiKey,
                 json.encodeToString(JsonObject.serializer(), payload),
-            ).let(client::newCall).execute().use { response ->
+                additionalHeaders,
+            ).let(testClient::newCall).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 val hasImage = runCatching {
                     json.parseToJsonElement(body).jsonObject["data"]?.jsonArray?.isNotEmpty() == true
@@ -467,7 +619,11 @@ class ChatClient @Inject constructor(
                 when {
                     response.isSuccessful && hasImage -> ApiCapabilityCheck(label = "生图", success = true)
                     response.isSuccessful -> ApiCapabilityCheck(label = "生图", success = false, detail = "未返回图片")
-                    else -> ApiCapabilityCheck(label = "生图", success = false, detail = responseErrorSummary(body))
+                    else -> ApiCapabilityCheck(
+                        label = "生图",
+                        success = false,
+                        detail = apiTestHttpFailureDetail(response.code, body),
+                    )
                 }
             }
         }.getOrElse { error ->
@@ -479,16 +635,24 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         request: ChatRequest,
-    ) = client.newCall(
+        additionalHeaders: Map<String, String> = emptyMap(),
+        httpClient: OkHttpClient = client,
+    ) = httpClient.newCall(
         buildRequest(
             apiUrl,
             apiKey,
             json.encodeToString(ChatRequest.serializer(), request)
                 .toRequestBody("application/json".toMediaType()),
+            additionalHeaders,
         ),
     ).execute()
 
-    private fun probeToolCalling(apiUrl: String, apiKey: String, model: String): ToolProbeResult {
+    private fun probeToolCalling(
+        apiUrl: String,
+        apiKey: String,
+        model: String,
+        additionalHeaders: Map<String, String>,
+    ): ToolProbeResult {
         val baseRequest = ChatRequest(
             model = model,
             messages = listOf(
@@ -497,6 +661,7 @@ class ChatClient @Inject constructor(
                     content = kotlinx.serialization.json.JsonPrimitive(
                         "Call the mason_connection_probe tool now. Do not answer with text.",
                     ),
+                    id = "mason-msg-0",
                 ),
             ),
             stream = false,
@@ -504,22 +669,94 @@ class ChatClient @Inject constructor(
         )
         var lastFailure = "中转站或模型未返回 function calling"
         for (toolChoice in listOf("auto", null)) {
-            executeTestRequest(apiUrl, apiKey, baseRequest.copy(tool_choice = toolChoice)).use { response ->
+            executeTestRequest(
+                apiUrl,
+                apiKey,
+                baseRequest.copy(tool_choice = toolChoice),
+                additionalHeaders,
+                httpClient = testClient,
+            ).use { response ->
                 val body = response.body?.string().orEmpty()
-                if (response.isSuccessful && CONNECTION_PROBE_TOOL in responseToolNames(body)) {
-                    return ToolProbeResult(available = true)
+                val calls = if (response.isSuccessful) responseToolCalls(body) else emptyList()
+                if (calls.isNotEmpty()) {
+                    val followUp = buildToolProbeFollowUp(model, calls)
+                    executeTestRequest(
+                        apiUrl,
+                        apiKey,
+                        followUp,
+                        additionalHeaders,
+                        httpClient = testClient,
+                    ).use { followUpResponse ->
+                        val followUpBody = followUpResponse.body?.string().orEmpty()
+                        if (followUpResponse.isSuccessful && responseHasMessage(followUpBody)) {
+                            return ToolProbeResult(available = true)
+                        }
+                        lastFailure = if (followUpResponse.isSuccessful) {
+                            "宸ュ叿缁撴灉鍥炰紶鍚庢湇鍔″晢鏈繑鍥炲彲鐢ㄥ洖澶?"
+                        } else {
+                            apiTestHttpFailureDetail(followUpResponse.code, followUpBody)
+                        }
+                    }
+                    continue
                 }
                 lastFailure = if (response.isSuccessful) {
                     "中转站或模型未返回 function calling"
                 } else {
-                    "检测请求返回 ${response.code}${responseErrorSummary(body)?.let { "：$it" }.orEmpty()}"
+                    apiTestHttpFailureDetail(response.code, body)
                 }
             }
         }
         return ToolProbeResult(available = false, warning = "工具调用不可用：$lastFailure")
     }
 
-    private fun responseErrorSummary(body: String): String? {
+    private fun buildToolProbeFollowUp(model: String, calls: List<ToolCall>): ChatRequest {
+        val toolMessages = calls.map { call ->
+            ApiChatMessage(
+                role = "tool",
+                content = kotlinx.serialization.json.JsonPrimitive("ok"),
+                tool_call_id = call.id,
+                id = call.id,
+            )
+        }
+        return ChatRequest(
+            model = model,
+            messages = listOf(
+                ApiChatMessage(
+                    role = "user",
+                    content = kotlinx.serialization.json.JsonPrimitive(
+                        "Call the mason_connection_probe tool now. Do not answer with text.",
+                    ),
+                    id = "mason-msg-0",
+                ),
+                ApiChatMessage(
+                    role = "assistant",
+                    tool_calls = calls,
+                    id = "mason-msg-1",
+                ),
+                *toolMessages.mapIndexed { index, message ->
+                    message.copy(id = "mason-msg-${index + 2}")
+                }.toTypedArray(),
+            ),
+            stream = false,
+            tools = listOf(connectionProbeTool()),
+        )
+    }
+
+    private fun apiTestHttpFailureDetail(responseCode: Int, body: String): String {
+        val possibleCause = when (responseCode) {
+            400 -> "请求参数、Model ID、接口协议或当前模型能力不匹配"
+            401 -> "API Key 无效、已过期，或认证格式不符合服务商要求"
+            403 -> "API Key 没有该模型权限，或账户、地域受到限制"
+            404 -> "接口地址或 API 版本不匹配、Model ID 不存在，或该模型不能通过当前端点调用"
+            429 -> "请求频率过高、账户额度不足，或服务商当前过载"
+            in 500..599 -> "服务商暂时异常或上游模型不可用"
+            else -> "接口地址、账户权限、Model ID 或服务商状态异常"
+        }
+        val responseDetail = responseErrorSummary(body, maxLength = 600) ?: "未返回错误内容"
+        return "可能原因：$possibleCause\nHTTP $responseCode\n接口返回：$responseDetail"
+    }
+
+    private fun responseErrorSummary(body: String, maxLength: Int = 160): String? {
         val structured = runCatching {
             val root = json.parseToJsonElement(body).jsonObject
             val error = root["error"]
@@ -533,10 +770,10 @@ class ChatClient @Inject constructor(
             .replace(Regex("\\s+"), " ")
             .trim()
             .takeIf(String::isNotBlank)
-            ?.take(160)
+            ?.take(maxLength)
     }
 
-    private fun responseToolNames(responseBody: String): List<String> = runCatching {
+    private fun responseToolCalls(responseBody: String): List<ToolCall> = runCatching {
         val message = json.parseToJsonElement(responseBody).jsonObject["choices"]
             ?.jsonArray
             ?.firstOrNull()
@@ -544,8 +781,21 @@ class ChatClient @Inject constructor(
             ?.get("message")
             ?.jsonObject
             ?: return@runCatching emptyList()
-        parseToolCalls(message).map { it.function.name }
+        parseToolCalls(message)
     }.getOrDefault(emptyList())
+
+    private fun responseHasMessage(responseBody: String): Boolean = runCatching {
+        val message = json.parseToJsonElement(responseBody).jsonObject["choices"]
+            ?.jsonArray
+            ?.firstOrNull()
+            ?.jsonObject
+            ?.get("message")
+            ?.jsonObject
+        message != null && (
+            !message["content"].displayText().isNullOrBlank() ||
+                parseToolCalls(message).isNotEmpty()
+            )
+    }.getOrDefault(false)
 
     private fun connectionProbeTool(): ToolDefinition = ToolDefinition(
         type = "function",
@@ -566,16 +816,17 @@ class ChatClient @Inject constructor(
             append("你可以在用户授权范围内调用手机工具获取设备、系统、网络和应用信息。")
             append("当用户询问设备配置、硬件状态、系统设置或性能问题时，优先调用合适工具获取真实数据。")
             append("拿到工具结果后，用简洁、通俗、可执行的中文回答。")
-            append("回答需要适配 Mason 的工作流界面：")
-            append("可以使用“思考：”“进行中：”“引导：”“最终总结：”这些可见小节。")
-            append("“思考”只写一句可见判断或计划，不输出隐藏推理过程。")
-            append("需要用户选择、授权或确认风险时，用“引导”给出 2 到 3 个清晰选项。")
+            append("回答第一段直接给出结论或当前最重要的判断，再补充必要依据和操作。")
+            append("比较方案、预算、规格、重复字段或其他二维结构化信息时，优先使用标准 Markdown 表格。")
+            append("不要在正文中输出“思考”“进行中”“最后总结”“最终总结”等流程标签；思考和工具状态由 Mason 界面单独展示。")
+            append("需要用户选择、授权或确认风险时，直接说明原因并给出 2 到 3 个清晰选项。")
             append("如果工具列表中存在 skill__activate，且用户任务明确匹配某个 Skill，先调用它获取受控任务方法；普通问答不要调用。")
             append("Skill 返回 needs_input 时，只询问 missing_parameters，不要猜测；返回 activated 后按 instructions 完成任务，且不能绕过工具确认。")
             append("只有用户明确要求记住，或信息明显是可跨任务复用的长期偏好时，才调用 memory_save；当前状态、临时安排、推测和一次性内容不要保存。")
             append("用户个人偏好使用 GLOBAL 记忆；当前项目的技术栈、约定和项目事实使用 PROJECT 记忆并提供稳定 project_id。")
             append("姓名、身份、地址、账号、支付或收款信息必须调用 memory_save_sensitive，不能用普通记忆工具绕过确认。工具未成功时不得声称已经记住。")
-            append("任务完成后用“最终总结”收束，优先说明结果、文件、下一步。")
+            append("用户明确要求把总结或消息发送到另一个已有对话并让其继续处理时，调用 conversation_dispatch；目标不明确时先询问，工具未成功时不得声称已经发送。")
+            append("任务完成后直接回复结果，不要为了收束而重复一遍总结；有文件或下一步时自然说明即可。")
             append("当用户要求生成文档、代码、报告、配置或其他文件时，必须输出一个带 filename=\"相对路径/文件名.扩展名\" 的 fenced code block，便于 Mason 自动保存为产出。")
             append("文件代码块示例：```markdown filename=\"notes/summary.md\"。不要把普通解释性回答伪装成文件。")
         },
@@ -595,8 +846,8 @@ class ChatClient @Inject constructor(
     private fun buildApiMessages(
         messages: List<ChatMessage>,
         attachments: List<ModelAttachment> = emptyList(),
-    ) =
-        buildList {
+    ): List<ApiChatMessage> {
+        val built = buildList {
             val pendingToolIds = mutableSetOf<String>()
 
             messages.forEachIndexed { index, message ->
@@ -631,6 +882,124 @@ class ChatClient @Inject constructor(
                 }
             }
         }
+        // Console Go validates a tool round as a message graph and requires a
+        // top-level id on every node, including system/user messages. Keep the
+        // extra ids scoped to tool rounds so ordinary chat payloads stay standard.
+        return if (built.any { !it.tool_calls.isNullOrEmpty() }) {
+            built.mapIndexed { index, message -> message.copy(id = "mason-msg-$index") }
+        } else {
+            built
+        }
+    }
+
+    /**
+     * Some relays reject an otherwise valid tool request when older assistant
+     * messages are present. Keep the current turn and system context for a
+     * compatibility retry; the normal request remains history-aware.
+     */
+    private fun trimToCurrentTurn(messages: List<ApiChatMessage>): List<ApiChatMessage> {
+        val lastUserIndex = messages.indexOfLast { it.role == "user" }
+        if (lastUserIndex < 0) return messages
+        return messages.filterIndexed { index, message ->
+            message.role == "system" || index >= lastUserIndex
+        }
+    }
+
+    /**
+     * Console Go's provider adapter accepts the original call_* IDs on the
+     * assistant/tool pair, but does not accept Mason-generated IDs on ordinary
+     * system/user messages. It also requires assistant tool messages to carry
+     * non-empty content. Keep this shape as a narrowly-scoped retry.
+     */
+    private fun useToolRoundRelayVariant(messages: List<ApiChatMessage>): List<ApiChatMessage> =
+        messages.map { message ->
+            when (message.role) {
+                "assistant" -> message.copy(
+                    content = message.content?.displayText()
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(::JsonPrimitive)
+                        ?: JsonPrimitive("正在调用工具"),
+                    id = message.tool_calls?.firstOrNull()?.id ?: message.id,
+                )
+                "tool" -> message.copy(id = message.tool_call_id ?: message.id)
+                else -> message.copy(id = null)
+            }
+        }
+
+    private fun useLegacyFunctionRoundVariant(messages: List<ApiChatMessage>): List<ApiChatMessage> {
+        val functionNamesByCallId = messages
+            .flatMap { it.tool_calls.orEmpty() }
+            .associate { it.id to it.function.name }
+        return messages.map { message ->
+            when (message.role) {
+                "assistant" -> message.copy(
+                    content = message.content?.displayText()
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(::JsonPrimitive)
+                        ?: JsonPrimitive("正在调用工具"),
+                    id = message.tool_calls?.firstOrNull()?.id ?: message.id,
+                )
+                "tool" -> message.copy(
+                    role = "function",
+                    name = message.tool_call_id?.let(functionNamesByCallId::get),
+                    tool_calls = null,
+                    tool_call_id = null,
+                    id = message.tool_call_id ?: message.id,
+                )
+                else -> message.copy(id = null)
+            }
+        }
+    }
+
+    private fun useToolRoundMessageIdsVariant(messages: List<ApiChatMessage>): List<ApiChatMessage> =
+        messages.map { message ->
+            when (message.role) {
+                "assistant" -> message.copy(
+                    content = message.content?.displayText()
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(::JsonPrimitive)
+                        ?: JsonPrimitive("正在调用工具"),
+                )
+                else -> message
+            }
+        }
+
+    private fun flattenToolRoundForRelay(request: ChatRequest): ChatRequest {
+        val functionNamesByCallId = request.messages
+            .flatMap { it.tool_calls.orEmpty() }
+            .associate { it.id to it.function.name }
+        val originalPrompt = request.messages
+            .lastOrNull { it.role == "user" }
+            ?.content
+            ?.displayText()
+            .orEmpty()
+        val resultText = buildString {
+            append("用户原始请求：")
+            append(originalPrompt)
+            append("\n\n以下是 Mason 已经执行完成的工具结果。不要再次调用工具，请直接基于这些真实结果用简洁中文回答用户：\n")
+            request.messages
+                .filter { it.role == "tool" && !it.tool_call_id.isNullOrBlank() }
+                .forEach { message ->
+                    append("\n[工具 ")
+                    append(functionNamesByCallId[message.tool_call_id] ?: message.tool_call_id)
+                    append("]\n")
+                    append(message.content.displayText().orEmpty())
+                    append('\n')
+                }
+        }
+        val system = request.messages.firstOrNull { it.role == "system" }
+            ?.copy(id = null)
+        return ChatRequest(
+            model = request.model,
+            messages = buildList {
+                system?.let(::add)
+                add(ApiChatMessage(role = "user", content = JsonPrimitive(resultText)))
+            },
+            stream = false,
+            tools = null,
+            tool_choice = null,
+        )
+    }
 
     private fun parseToolCalls(message: JsonObject): List<ToolCall> {
         val toolCalls = message["tool_calls"]?.jsonArray ?: return emptyList()
@@ -669,6 +1038,7 @@ class ChatClient @Inject constructor(
         apiUrl: String,
         apiKey: String,
         body: okhttp3.RequestBody,
+        additionalHeaders: Map<String, String> = emptyMap(),
     ): Request {
         val normalizedUrl = normalizeChatCompletionsUrl(apiUrl)
         val lowerUrl = normalizedUrl.lowercase()
@@ -688,6 +1058,9 @@ class ChatClient @Inject constructor(
                 }
                 if ("xiaomimimo.com" in lowerUrl) {
                     addHeader("User-Agent", "Mason Android")
+                }
+                additionalHeaders.forEach { (name, value) ->
+                    if (name.isNotBlank() && value.isNotBlank()) addHeader(name, value)
                 }
             }
             .addHeader("Content-Type", "application/json")
@@ -713,7 +1086,12 @@ class ChatClient @Inject constructor(
         }
     }
 
-    private fun buildAuthorizedRequest(url: String, apiKey: String, body: String): Request {
+    private fun buildAuthorizedRequest(
+        url: String,
+        apiKey: String,
+        body: String,
+        additionalHeaders: Map<String, String> = emptyMap(),
+    ): Request {
         val lowerUrl = url.lowercase()
         return Request.Builder()
             .url(url)
@@ -725,6 +1103,9 @@ class ChatClient @Inject constructor(
                 if ("openrouter.ai" in lowerUrl) {
                     addHeader("HTTP-Referer", "https://github.com/DENGGL2/MASON")
                     addHeader("X-Title", "Mason")
+                }
+                additionalHeaders.forEach { (name, value) ->
+                    if (name.isNotBlank() && value.isNotBlank()) addHeader(name, value)
                 }
             }
             .addHeader("Content-Type", "application/json")

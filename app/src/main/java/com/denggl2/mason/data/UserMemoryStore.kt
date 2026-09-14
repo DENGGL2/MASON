@@ -263,6 +263,21 @@ internal fun rankRelevantMemories(
         .toList()
 }
 
+internal fun directMemoryLookupAnswer(
+    query: String,
+    memories: List<UserMemoryItem>,
+): String? {
+    val normalized = query.normalizedMemoryText()
+    if (
+        !listOf("是什么", "是啥", "是什么来着", "告诉我").any(normalized::contains) ||
+        !listOf("我的", "我").any(normalized::contains)
+    ) return null
+    val memory = memories.firstOrNull { item ->
+        !item.sensitive && normalized.contains(item.label.normalizedMemoryText())
+    } ?: return null
+    return "你的${memory.label}是${memory.value}。"
+}
+
 private fun memoryRelevanceScore(
     item: UserMemoryItem,
     query: String,

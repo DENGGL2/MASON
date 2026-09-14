@@ -1,7 +1,7 @@
 package com.denggl2.mason.ui.settings
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,30 +14,31 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Cancel
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
+import com.denggl2.mason.ui.theme.MasonAlertDialog as AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import androidx.compose.material3.Text as MaterialText
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -53,12 +54,16 @@ fun PermissionScreen(
 ) {
     val items by viewModel.permissions.collectAsState()
     val context = LocalContext.current
+    var advancedPermission by remember { mutableStateOf<PermissionItem?>(null) }
+    val runtimePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) {
+        viewModel.refresh()
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets.safeDrawing.only(
-            WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal,
-        ),
+        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
         topBar = {
             TopAppBar(
                 title = {
@@ -71,12 +76,11 @@ fun PermissionScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回", tint = MaterialTheme.colorScheme.onBackground)
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Outlined.Refresh, "刷新", tint = MaterialTheme.colorScheme.onBackground)
+                        Icon(
+                            Icons.AutoMirrored.Outlined.ArrowBack,
+                            LocalRemoteStrings.current.t("返回"),
+                            tint = MaterialTheme.colorScheme.onBackground,
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -93,7 +97,10 @@ fun PermissionScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 12.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom),
+                ),
         ) {
             val grouped = items.groupBy { it.group }
 
@@ -107,8 +114,9 @@ fun PermissionScreen(
                         label = item.label,
                         isGranted = item.isGranted,
                         onClick = {
-                            item.settingsIntent?.let {
-                                context.startActivity(it)
+                            when (item.requestKind) {
+                                PermissionRequestKind.Runtime -> runtimePermissionLauncher.launch(item.permission)
+                                PermissionRequestKind.AdvancedSettings -> advancedPermission = item
                             }
                         },
                     )
@@ -118,6 +126,29 @@ fun PermissionScreen(
 
             Spacer(Modifier.height(32.dp))
         }
+    }
+
+    advancedPermission?.let { item ->
+        AlertDialog(
+            onDismissRequest = { advancedPermission = null },
+            title = { Text(item.label) },
+            text = { Text(item.guidance ?: "请在系统设置中为 Mason 开启这项高级权限。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        advancedPermission = null
+                        item.settingsIntent?.let(context::startActivity)
+                    },
+                ) {
+                    Text("前往设置")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { advancedPermission = null }) {
+                    Text("取消")
+                }
+            },
+        )
     }
 }
 
@@ -138,54 +169,41 @@ private fun PermissionRow(
     isGranted: Boolean,
     onClick: () -> Unit,
 ) {
-    val icon = if (isGranted) Icons.Outlined.CheckCircle else Icons.Outlined.Cancel
     val tint = if (isGranted) Color(0xFF4CAF50) else Color(0xFFEF5350)
     val statusText = if (isGranted) "已授权" else "未授权"
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(permissionGlassBrush())
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-                RoundedCornerShape(12.dp),
-            )
             .then(
                 if (isGranted) Modifier else Modifier.clickable(onClick = onClick)
             )
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier.size(22.dp),
-        )
-        Spacer(Modifier.width(14.dp))
         Text(
             text = label,
             color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f),
         )
-        Text(
-            text = statusText,
-            color = tint,
-            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-        )
-        if (!isGranted) {
-            Spacer(Modifier.width(6.dp))
+        Column(horizontalAlignment = Alignment.End) {
             Text(
-                text = "设置 >",
-                color = Color.Gray.copy(alpha = 0.6f),
-                style = MaterialTheme.typography.bodySmall,
+                text = statusText,
+                color = tint,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontWeight = FontWeight.Medium,
+                    lineHeight = 15.sp,
+                ),
             )
+            if (!isGranted) {
+                Text(
+                    text = "设置>",
+                    color = Color.Gray.copy(alpha = 0.6f),
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 15.sp),
+                )
+            }
         }
     }
-}
 
-@Composable
-private fun permissionGlassBrush(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)
+}

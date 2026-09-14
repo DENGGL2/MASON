@@ -80,6 +80,20 @@ class MemoryRetrievalLogicTest {
         assertEquals(listOf("mason"), result.map(UserMemoryItem::id))
     }
 
+    @Test
+    fun answersExplicitNonSensitiveMemoryLookupWithoutModelInference() {
+        val preference = memory("preference", "验收偏好", "中文短答")
+
+        assertEquals(
+            "你的验收偏好是中文短答。",
+            directMemoryLookupAnswer("我的验收偏好是什么？", listOf(preference)),
+        )
+        assertEquals(
+            null,
+            directMemoryLookupAnswer("根据我的验收偏好写一段摘要", listOf(preference)),
+        )
+    }
+
     private fun memory(
         id: String,
         label: String,

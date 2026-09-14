@@ -1,9 +1,13 @@
 package com.denggl2.mason.tool
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
 import android.os.Build
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -86,11 +90,25 @@ class HotspotTool @Inject constructor(
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun enableHotspot(): ToolResult {
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             ?: return ToolResult(success = false, error = "无法获取 WifiManager")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.NEARBY_WIFI_DEVICES
+            } else {
+                Manifest.permission.ACCESS_FINE_LOCATION
+            }
+            if (ContextCompat.checkSelfPermission(context, requiredPermission) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                return ToolResult(
+                    success = false,
+                    error = "缺少开启热点所需权限：$requiredPermission",
+                )
+            }
             // Android 8.0+ 使用 LocalOnlyHotspot
             try {
                 wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {

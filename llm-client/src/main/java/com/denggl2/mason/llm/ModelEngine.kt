@@ -13,6 +13,7 @@ data class ModelInvocation(
     val modality: ModelModality,
     val messages: List<ChatMessage>,
     val modelId: String,
+    val connectionId: String? = null,
     val attachments: List<ModelAttachment> = emptyList(),
     val toolsEnabled: Boolean = false,
     val timeoutMillis: Long = 120_000L,

@@ -3,6 +3,10 @@ package com.denggl2.mason.data
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -13,6 +17,66 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
+internal class ModelListingUnavailableException(message: String) : IllegalStateException(message)
+
+internal fun remoteModelsEndpoint(apiUrl: String): String {
+    var normalized = apiUrl.trim().trimEnd('/')
+    listOf("/chat/completions", "/responses", "/messages").forEach { suffix ->
+        if (normalized.endsWith(suffix, ignoreCase = true)) {
+            normalized = normalized.dropLast(suffix.length).trimEnd('/')
+        }
+    }
+    return if (normalized.endsWith("/models", ignoreCase = true)) {
+        normalized
+    } else {
+        "$normalized/models"
+    }
+}
+
+internal fun parseRemoteModelsResponse(
+    json: Json,
+    body: String,
+): List<AiModelPreset> {
+    val root = runCatching { json.parseToJsonElement(body) }.getOrNull() ?: return emptyList()
+    val items = when (root) {
+        is JsonArray -> root.toList()
+        is JsonObject -> listOf("data", "models", "items")
+            .asSequence()
+            .mapNotNull(root::get)
+            .mapNotNull { it as? JsonArray }
+            .firstOrNull()
+            ?.toList()
+            .orEmpty()
+        else -> emptyList()
+    }
+    return items.mapNotNull(::remoteModelPreset)
+        .distinctBy(AiModelPreset::id)
+        .sortedBy { it.name.lowercase() }
+}
+
+private fun remoteModelPreset(element: JsonElement): AiModelPreset? {
+    val item = element as? JsonObject
+    val id = item?.stringValue("id", "model", "model_id")
+        ?: (element as? JsonPrimitive)?.contentOrNull
+        ?: return null
+    if (id.isBlank()) return null
+    return AiModelPreset(
+        id = id,
+        name = item?.stringValue("name", "display_name", "displayName")
+            ?: id.substringAfterLast('/'),
+        description = item?.stringValue("description") ?: "远程接口返回的模型",
+        isFree = id.endsWith(":free", ignoreCase = true),
+        supportsTools = false,
+        supportsVision = false,
+        supportsImageGeneration = false,
+    )
+}
+
+private fun JsonObject.stringValue(vararg keys: String): String? = keys
+    .asSequence()
+    .mapNotNull { key -> (this[key] as? JsonPrimitive)?.contentOrNull }
+    .firstOrNull { it.isNotBlank() }
+
 @Singleton
 class AiModelRepository @Inject constructor() {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -21,6 +85,33 @@ class AiModelRepository @Inject constructor() {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    suspend fun fetchModels(
+        apiUrl: String,
+        apiKey: String,
+        workspaceId: String = "",
+    ): Result<List<AiModelPreset>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url(remoteModelsEndpoint(apiUrl))
+                .apply {
+                    if (apiKey.isNotBlank()) addHeader("Authorization", "Bearer $apiKey")
+                    if (workspaceId.isNotBlank()) addHeader("X-DashScope-WorkSpace", workspaceId)
+                }
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    if (response.code in setOf(404, 405, 501)) {
+                        throw ModelListingUnavailableException("HTTP ${response.code}")
+                    }
+                    error("服务商返回 ${response.code}: ${body.take(160)}")
+                }
+                parseRemoteModelsResponse(json, body)
+            }
+        }
+    }
 
     suspend fun fetchOpenRouterFreeModels(apiKey: String): Result<List<AiModelPreset>> =
         withContext(Dispatchers.IO) {

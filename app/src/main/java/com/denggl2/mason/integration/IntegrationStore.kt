@@ -53,6 +53,17 @@ class IntegrationStore @Inject constructor(
         current.copy(mcpServers = current.mcpServers.filterNot { it.id == id })
     }
 
+    suspend fun updateMcpToolPolicy(serverId: String, toolName: String, policy: McpToolPolicy) =
+        update { current ->
+            val server = current.mcpServers.firstOrNull { it.id == serverId }
+                ?: error("MCP 配置不存在")
+            current.copy(
+                mcpServers = current.mcpServers.upsert(
+                    server.copy(toolPolicies = server.toolPolicies + (toolName to policy)),
+                ) { it.id },
+            )
+        }
+
     suspend fun upsertA2a(config: A2aAgentConfig) = update { current ->
         val validationError = validateRemoteEndpoint(config.cardUrl)
         require(validationError == null) { validationError ?: "A2A 地址不正确" }
@@ -130,7 +141,7 @@ internal fun migrateIntegrationSnapshot(
             bearerToken = "",
         )
     },
-    schemaVersion = 2,
+    schemaVersion = 3,
 )
 
 private fun <T> List<T>.upsert(value: T, id: (T) -> String): List<T> {

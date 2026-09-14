@@ -6,6 +6,8 @@ import com.denggl2.mason.tool.ParameterDef
 import com.denggl2.mason.tool.Tool
 import com.denggl2.mason.tool.ToolRegistry
 import com.denggl2.mason.tool.ToolResult
+import com.denggl2.mason.tool.ToolApprovalHint
+import com.denggl2.mason.tool.ToolSecurityHints
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -34,12 +36,35 @@ class DynamicToolRegistryTest {
     }
 
     @Test
-    fun remoteToolsAlwaysRequireHighRiskApproval() {
+    fun remoteToolRiskUsesMcpAnnotationsConservatively() {
         assertEquals(ToolRiskLevel.High, ToolPolicy.riskFor("mcp__server__write"))
         assertEquals(ToolRiskLevel.High, ToolPolicy.riskFor("a2a__agent__delegate"))
         assertTrue(ToolPolicy.requiresMandatoryApproval("a2a__agent__delegate"))
         assertFalse(ToolPolicy.canRememberApproval("a2a__agent__delegate"))
         assertTrue(ToolPolicy.canRememberApproval("mcp__server__write"))
+
+        val readOnly = ToolPolicy.profileFor(
+            "mcp__server__read",
+            ToolSecurityHints(readOnlyHint = true, destructiveHint = false, openWorldHint = false),
+        )
+        val webRead = ToolPolicy.profileFor(
+            "mcp__server__search",
+            ToolSecurityHints(readOnlyHint = true, destructiveHint = false, openWorldHint = true),
+        )
+        val alwaysAsk = ToolPolicy.profileFor(
+            "mcp__server__read",
+            ToolSecurityHints(
+                readOnlyHint = true,
+                destructiveHint = false,
+                approvalHint = ToolApprovalHint.AlwaysAsk,
+            ),
+        )
+
+        assertEquals(ToolRiskLevel.Low, readOnly.risk)
+        assertEquals(ToolRiskLevel.Medium, webRead.risk)
+        assertEquals(ToolRiskLevel.High, alwaysAsk.risk)
+        assertTrue(alwaysAsk.mandatoryApproval)
+        assertFalse(alwaysAsk.persistentGrantAllowed)
     }
 
     @Test

@@ -1,6 +1,8 @@
 package com.denggl2.mason.llm.model
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -25,13 +27,30 @@ data class ApiChatMessage(
     val content: JsonElement? = null,
     val tool_calls: List<ToolCall>? = null,
     val tool_call_id: String? = null,
+    // Legacy OpenAI-compatible relays identify role=function results by name.
+    val name: String? = null,
+    // Some OpenAI-compatible relays require an id on tool result messages.
+    // Keep tool_call_id as well so standard providers continue to match calls.
+    val id: String? = null,
 )
+
+private fun ChatMessage.apiContent(): JsonElement? = when {
+    role == "assistant" && !tool_calls.isNullOrEmpty() -> null
+    else -> content?.let(::JsonPrimitive)
+}
+
+private fun ChatMessage.apiId(): String? = when (role) {
+    "tool" -> tool_call_id
+    "assistant" -> tool_calls?.firstOrNull()?.id
+    else -> null
+}
 
 fun ChatMessage.toApiChatMessage(): ApiChatMessage = ApiChatMessage(
     role = role,
-    content = content?.let(::JsonPrimitive),
+    content = apiContent(),
     tool_calls = tool_calls,
     tool_call_id = tool_call_id,
+    id = apiId(),
 )
 
 fun ChatMessage.toApiChatMessage(attachments: List<ModelAttachment>): ApiChatMessage = ApiChatMessage(
@@ -57,11 +76,14 @@ fun ChatMessage.toApiChatMessage(attachments: List<ModelAttachment>): ApiChatMes
     }),
     tool_calls = tool_calls,
     tool_call_id = tool_call_id,
+    id = apiId(),
 )
 
 @Serializable
+@OptIn(ExperimentalSerializationApi::class)
 data class ToolCall(
     val id: String,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     val type: String = "function",
     val function: FunctionCall,
 )

@@ -1,6 +1,7 @@
 package com.denggl2.mason.data
 
 import android.content.Context
+import android.net.Uri
 import android.os.Environment
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +55,11 @@ data class InstalledSkill(
     val path: String,
     val instructions: String,
 )
+
+sealed interface LocalSkillImportResult {
+    data class Installed(val skill: InstalledSkill) : LocalSkillImportResult
+    data class Conflict(val skillId: String, val skillName: String) : LocalSkillImportResult
+}
 
 internal fun evaluateSkillSafety(
     manifest: MasonSkillManifest,
@@ -214,6 +220,32 @@ class SkillAutomationStore @Inject constructor(
         }
     }
 
+    /** Imports only after the user explicitly selected a local ZIP in the system picker. */
+    suspend fun importFromLocalZip(
+        uri: Uri,
+        replaceConfirmed: Boolean = false,
+    ): LocalSkillImportResult = withContext(Dispatchers.IO) {
+        val archive = File.createTempFile("mason-local-skill-", ".zip", context.cacheDir)
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(archive).use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var total = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        check(total <= MAX_ARCHIVE_BYTES) { "Skill 压缩包超过 20 MB 限制" }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            } ?: error("无法读取所选的 Skill 压缩包")
+            installLocalArchive(archive, replaceConfirmed)
+        } finally {
+            archive.delete()
+        }
+    }
+
     suspend fun updateFromGitHub(skillId: String): InstalledSkill = withContext(Dispatchers.IO) {
         val current = listInstalledSkillsInternal().firstOrNull { it.manifest.id == skillId }
             ?: error("Skill 未安装：$skillId")
@@ -344,6 +376,7 @@ class SkillAutomationStore @Inject constructor(
             root.listFiles()
                 .orEmpty()
                 .filter { it.isDirectory || it.isFile }
+                .filterNot { it.name.startsWith(".backup-") }
                 .mapNotNull(::readInstalledSkill)
         }
         .distinctBy { it.path }
@@ -545,6 +578,74 @@ class SkillAutomationStore @Inject constructor(
             File(target, SKILL_MANIFEST).writeText(json.encodeToString(installedManifest), Charsets.UTF_8)
             return checkNotNull(readInstalledSkill(target)) { "Skill 入口文件不存在：${installedManifest.entry}" }
         }
+    }
+
+    private fun installLocalArchive(archive: File, replaceConfirmed: Boolean): LocalSkillImportResult {
+        val validated = SkillArchiveValidator.validate(archive)
+        val staging = File(context.cacheDir, "mason-skill-stage-${java.util.UUID.randomUUID()}")
+        val stagedSkill = File(staging, "skill")
+        check(stagedSkill.mkdirs()) { "无法创建 Skill 临时目录" }
+        ZipFile(archive).use { zip ->
+            var extracted = 0L
+            validated.files.forEach { item ->
+                val output = File(stagedSkill, item.relativePath).canonicalFile
+                check(output.isInside(stagedSkill)) { "Skill 包含不安全路径" }
+                output.parentFile?.mkdirs()
+                zip.getInputStream(item.entry).use { input ->
+                    FileOutputStream(output).use { stream ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        var fileBytes = 0L
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            fileBytes += count
+                            extracted += count
+                            check(fileBytes <= MAX_SINGLE_FILE_BYTES) { "Skill 中存在过大的单个文件" }
+                            check(extracted <= MAX_EXTRACTED_BYTES) { "Skill 解压后超过 40 MB 限制" }
+                            stream.write(buffer, 0, count)
+                        }
+                    }
+                }
+            }
+        }
+        val skillMarkdown = File(stagedSkill, "SKILL.md")
+        val manifest = if (File(stagedSkill, SKILL_MANIFEST).isFile) {
+            checkNotNull(readSkillManifest(stagedSkill)) { "Skill manifest 格式不合法" }
+        } else {
+            check(skillMarkdown.isFile) { "Skill 缺少 SKILL.md" }
+            val fallbackId = validated.skillRoot.substringAfterLast('/').toSafeSkillId()
+            MasonSkillManifest(
+                id = fallbackId,
+                name = skillMarkdown.readFirstHeading() ?: fallbackId,
+                description = skillMarkdown.readFrontMatterValue("description")
+                    ?: skillMarkdown.readFirstParagraph().orEmpty(),
+            )
+        }
+        require(manifest.id.matches(Regex("[a-zA-Z0-9._-]{1,80}"))) { "Skill ID 格式不合法" }
+        val entry = File(stagedSkill, manifest.entry).canonicalFile
+        check(entry.isFile && entry.isInside(stagedSkill)) { "Skill 入口文件不存在或路径不安全" }
+        val instructions = entry.readText(Charsets.UTF_8).take(MAX_SKILL_INSTRUCTIONS_CHARS)
+        val enabledIds = listInstalledSkillsInternal().filter { it.manifest.enabled }.map { it.manifest.id }.toSet()
+        val safety = evaluateSkillSafety(manifest, instructions, enabledIds)
+        check(safety.safe) { "Skill 安全检查未通过：${safety.warnings.joinToString()}" }
+
+        val target = File(skillsRoot(), manifest.id)
+        if (target.exists() && !replaceConfirmed) return LocalSkillImportResult.Conflict(manifest.id, manifest.name)
+        val installedManifest = manifest.copy(source = "local-zip", enabled = true, archived = false)
+        File(stagedSkill, SKILL_MANIFEST).writeText(json.encodeToString(installedManifest), Charsets.UTF_8)
+        if (!target.exists()) {
+            check(stagedSkill.renameTo(target)) { "Skill 发布失败，原有 Skill 未被修改" }
+        } else {
+            val backup = File(skillsRoot(), ".backup-${manifest.id}-${System.currentTimeMillis()}")
+            check(target.renameTo(backup)) { "无法保护现有 Skill，已取消替换" }
+            if (!stagedSkill.renameTo(target)) {
+                backup.renameTo(target)
+                error("Skill 发布失败，已恢复旧版本")
+            }
+        }
+        return LocalSkillImportResult.Installed(
+            checkNotNull(readInstalledSkill(target)) { "Skill 发布后无法读取入口文件" },
+        )
     }
 
     private fun readAutomationSpec(file: File): MasonAutomationSpec? {

@@ -12,9 +12,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,7 +30,7 @@ import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material3.Button
-import androidx.compose.material3.AlertDialog
+import com.denggl2.mason.ui.theme.MasonAlertDialog as AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -38,7 +41,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -92,6 +97,7 @@ fun IntegrationsScreen(
     }
 
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     val providers by viewModel.appProviders.collectAsState()
     val snapshot by viewModel.snapshot.collectAsState()
     val mcpStates by viewModel.mcpStates.collectAsState()
@@ -108,28 +114,33 @@ fun IntegrationsScreen(
         pendingProviderId = null
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(viewModel, strings.language) {
         viewModel.refreshAppProviders()
-        viewModel.messages.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+        viewModel.messages.collect {
+            Toast.makeText(context, strings.displayText(it), Toast.LENGTH_SHORT).show()
+        }
     }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(viewModel, strings.language) {
         viewModel.oauthEvents.collect { event ->
             when (event) {
                 is McpOAuthEvent.OpenBrowser -> context.startActivity(event.intent)
-                is McpOAuthEvent.Completed -> Toast.makeText(context, "登录成功，工具已刷新", Toast.LENGTH_SHORT).show()
-                is McpOAuthEvent.Failed -> Toast.makeText(context, event.message, Toast.LENGTH_LONG).show()
+                is McpOAuthEvent.Completed ->
+                    Toast.makeText(context, strings.t("登录成功，工具已刷新"), Toast.LENGTH_SHORT).show()
+                is McpOAuthEvent.Failed ->
+                    Toast.makeText(context, strings.displayText(event.message), Toast.LENGTH_LONG).show()
             }
         }
     }
+    val bottomSafePadding = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
 
     Scaffold(
-        contentWindowInsets = WindowInsets.safeDrawing,
+        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
         topBar = {
             TopAppBar(
                 title = { Text("扩展能力") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = LocalRemoteStrings.current.t("返回"))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -138,7 +149,12 @@ fun IntegrationsScreen(
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = 12.dp,
+                end = 16.dp,
+                bottom = 12.dp + bottomSafePadding,
+            ),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
@@ -153,7 +169,11 @@ fun IntegrationsScreen(
                     onConnect = {
                         val intent: Intent? = viewModel.authorizationIntent(providerState.provider.id)
                         if (intent == null) {
-                            Toast.makeText(context, providerState.detail, Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                context,
+                                strings.displayText(providerState.detail),
+                                Toast.LENGTH_SHORT,
+                            ).show()
                         } else {
                             pendingProviderId = providerState.provider.id
                             authorizationLauncher.launch(intent)

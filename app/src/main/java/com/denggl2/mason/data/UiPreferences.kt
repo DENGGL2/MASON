@@ -8,26 +8,45 @@ enum class ThemeMode {
     DARK,
 }
 
-enum class IslandVendorMode {
-    AUTO,
-    XIAOMI,
-    VIVO,
-    OPPO,
+enum class InterfaceStyle {
+    /** Hidden compatibility value from pre-Remote builds. New UI never emits it. */
+    ACRYLIC,
+    NATIVE,
+    GLASS,
+    // Retained as a hidden compatibility value for older builds.
+    MATERIAL3,
 }
 
-enum class NotificationDeliveryMode {
-    REGULAR,
-    ISLAND,
+enum class LanguagePreference {
+    SYSTEM,
+    CHINESE,
+    ENGLISH,
+}
+
+enum class MessageSendMode {
+    STEER,
+    QUEUE,
+}
+
+enum class FontSizePreference(val scale: Float) {
+    SMALL(0.9f),
+    MEDIUM(1f),
+    LARGE(1.15f),
+    EXTRA_LARGE(1.3f),
 }
 
 data class UiPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val interfaceStyle: InterfaceStyle = InterfaceStyle.NATIVE,
+    val glassRefractionEnabled: Boolean = true,
+    val glassTransparency: Float = DEFAULT_GLASS_TRANSPARENCY,
+    val glassFrost: Float = DEFAULT_GLASS_FROST,
     val accentColor: Long = DEFAULT_ACCENT_COLOR,
-    val notificationIslandEnabled: Boolean = false,
-    val notificationDeliveryMode: NotificationDeliveryMode = NotificationDeliveryMode.REGULAR,
-    val notifyOnTaskComplete: Boolean = true,
-    val notifyOnPaymentSuccess: Boolean = true,
-    val islandVendorMode: IslandVendorMode = IslandVendorMode.AUTO,
+    val regularNotificationsEnabled: Boolean = false,
+    val islandNotificationsEnabled: Boolean = false,
+    val fontSize: FontSizePreference = FontSizePreference.MEDIUM,
+    val language: LanguagePreference = LanguagePreference.SYSTEM,
+    val messageSendMode: MessageSendMode = MessageSendMode.QUEUE,
 )
 
 data class AccentPreset(
@@ -45,6 +64,14 @@ val MasonAccentPresets = listOf(
     AccentPreset("纯白", 0xFFFFFFFF),
 )
 
-const val DEFAULT_ACCENT_COLOR: Long = 0xFF4FC3F7
+const val DEFAULT_ACCENT_COLOR: Long = 0xFF20201F
+const val DEFAULT_GLASS_TRANSPARENCY: Float = 0.90f
+const val DEFAULT_GLASS_FROST: Float = 0.10f
+
+internal fun normalizeGlassTransparency(value: Float): Float =
+    if (value.isFinite()) value.coerceIn(0f, 1f) else DEFAULT_GLASS_TRANSPARENCY
+
+internal fun normalizeGlassFrost(value: Float): Float =
+    if (value.isFinite()) value.coerceIn(0f, 1f) else DEFAULT_GLASS_FROST
 
 fun Long.toComposeColor(): Color = Color(this)

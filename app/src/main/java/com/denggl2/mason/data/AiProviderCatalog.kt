@@ -14,6 +14,18 @@ data class AiModelPreset(
     val modeLabel: String? = null,
 )
 
+enum class AiProviderKind {
+    Official,
+    Relay,
+    Custom,
+}
+
+data class AiProviderEndpoint(
+    val id: String,
+    val name: String,
+    val apiUrl: String,
+)
+
 data class AiProviderPreset(
     val id: String,
     val name: String,
@@ -22,6 +34,9 @@ data class AiProviderPreset(
     val modelOptions: List<AiModelPreset>,
     val defaultModel: String = modelOptions.firstOrNull()?.id.orEmpty(),
     val toolsEnabledByDefault: Boolean = true,
+    val kind: AiProviderKind = AiProviderKind.Official,
+    val endpoints: List<AiProviderEndpoint> = emptyList(),
+    val supportsWorkspaceId: Boolean = false,
 )
 
 object AiProviderCatalog {
@@ -65,6 +80,7 @@ object AiProviderCatalog {
             ),
             defaultModel = "qwen/qwen3-next-80b-a3b-instruct:free",
             toolsEnabledByDefault = false,
+            kind = AiProviderKind.Relay,
         ),
         AiProviderPreset(
             id = DEFAULT_PROVIDER_ID,
@@ -90,6 +106,21 @@ object AiProviderCatalog {
             defaultModel = "deepseek-v4-flash",
         ),
         AiProviderPreset(
+            id = "kimi",
+            name = "Kimi",
+            description = "Moonshot AI 官方模型，适合中文长文本、推理和图文理解；需要 Kimi API Key",
+            apiUrl = "https://api.moonshot.cn/v1",
+            modelOptions = listOf(
+                AiModelPreset(
+                    id = "kimi-k2.5",
+                    name = "Kimi K2.5",
+                    description = "通用多模态模型，适合中文对话、复杂推理、长文本和图片理解",
+                    supportsVision = true,
+                ),
+            ),
+            defaultModel = "kimi-k2.5",
+        ),
+        AiProviderPreset(
             id = "gemini",
             name = "Gemini",
             description = "Google 模型，适合多模态理解；需要 Google AI Studio Key",
@@ -104,6 +135,57 @@ object AiProviderCatalog {
                 ),
             ),
             defaultModel = "gemini-3.5-flash",
+        ),
+        AiProviderPreset(
+            id = "qwen",
+            name = "Qwen",
+            description = "阿里云百炼官方模型；区域不同会使用不同的官方接口地址",
+            apiUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            modelOptions = listOf(
+                AiModelPreset(
+                    id = "qwen-plus",
+                    name = "Qwen Plus",
+                    description = "通用聊天模型，适合中文问答、总结和工具调用",
+                ),
+                AiModelPreset(
+                    id = "qwen-turbo",
+                    name = "Qwen Turbo",
+                    description = "速度优先的通用聊天模型",
+                ),
+            ),
+            defaultModel = "qwen-plus",
+            endpoints = listOf(
+                AiProviderEndpoint(
+                    id = "cn",
+                    name = "中国大陆",
+                    apiUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                ),
+                AiProviderEndpoint(
+                    id = "intl",
+                    name = "国际",
+                    apiUrl = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                ),
+            ),
+            supportsWorkspaceId = true,
+        ),
+        AiProviderPreset(
+            id = "zhipu",
+            name = "智谱",
+            description = "智谱开放平台模型，支持中文对话、推理和工具调用；需要 API Key",
+            apiUrl = "https://open.bigmodel.cn/api/paas/v4",
+            modelOptions = listOf(
+                AiModelPreset(
+                    id = "glm-4.5",
+                    name = "GLM-4.5",
+                    description = "通用旗舰模型，适合复杂推理、中文问答和工具调用",
+                ),
+                AiModelPreset(
+                    id = "glm-4.5-air",
+                    name = "GLM-4.5 Air",
+                    description = "轻量通用模型，兼顾响应速度和任务能力",
+                ),
+            ),
+            defaultModel = "glm-4.5",
         ),
         AiProviderPreset(
             id = "mimo",
@@ -150,6 +232,7 @@ object AiProviderCatalog {
                 ),
             ),
             toolsEnabledByDefault = false,
+            kind = AiProviderKind.Relay,
         ),
         AiProviderPreset(
             id = "openai",
@@ -177,12 +260,13 @@ object AiProviderCatalog {
         ),
         AiProviderPreset(
             id = CUSTOM_PROVIDER_ID,
-            name = "自定义中转站",
-            description = "接入你自己的 OpenAI 兼容地址、Key 和模型名",
+            name = "远端模型",
+            description = "配置 OpenAI 兼容地址、Key 和模型名",
             apiUrl = "https://your-api-host/v1",
             modelOptions = emptyList(),
             defaultModel = "",
             toolsEnabledByDefault = true,
+            kind = AiProviderKind.Custom,
         ),
     )
 
@@ -236,15 +320,25 @@ object AiProviderCatalog {
         ).joinToString("|")
     }
 
-    fun isVerified(config: ApiConfig): Boolean =
-        !requiresApiKey(config) || config.verifiedSignature == verificationSignature(config)
+    fun isVerified(config: ApiConfig): Boolean {
+        if (!requiresApiKey(config)) return true
+        val expected = verificationSignature(config)
+        if (config.verifiedSignature == expected) return true
+        val reference = config.resolvedChatModelRef()
+        return config.connection(reference.connectionId)
+            ?.verifiedModelSignatures
+            ?.get(reference.modelId) == expected
+    }
 
     fun inferProviderId(apiUrl: String): String {
         val normalized = apiUrl.lowercase()
         return when {
             "openrouter.ai" in normalized -> "openrouter"
             "deepseek.com" in normalized -> DEFAULT_PROVIDER_ID
+            "moonshot.cn" in normalized -> "kimi"
             "generativelanguage.googleapis.com" in normalized -> "gemini"
+            "dashscope" in normalized -> "qwen"
+            "bigmodel.cn" in normalized -> "zhipu"
             "xiaomimimo.com" in normalized || "mimo.mi.com" in normalized -> "mimo"
             "siliconflow" in normalized -> "siliconflow"
             "openai.com" in normalized -> "openai"

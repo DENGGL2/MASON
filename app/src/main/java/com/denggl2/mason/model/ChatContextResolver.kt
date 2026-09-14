@@ -14,8 +14,14 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 data class ChatAttachmentReference(
     val name: String,
@@ -71,11 +77,22 @@ class ChatAttachmentResolver @Inject constructor(
     suspend fun resolve(references: List<ChatAttachmentReference>): List<ModelAttachment> =
         withContext(Dispatchers.IO) {
             references.flatMap { reference ->
-                if (reference.image) listOf(resolveImage(reference)) else resolveFile(reference)
+                currentCoroutineContext().ensureActive()
+                try {
+                    withTimeout(ATTACHMENT_PARSE_TIMEOUT_MS) {
+                        if (reference.image) listOf(resolveImage(reference)) else resolveFile(reference)
+                    }
+                } catch (_: TimeoutCancellationException) {
+                    listOf(failedAttachment(reference, "解析超过 15 秒，已停止"))
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    listOf(failedAttachment(reference, error.message ?: "格式损坏或无法读取"))
+                }
             }
         }
 
-    private fun resolveImage(reference: ChatAttachmentReference): ModelAttachment {
+    private suspend fun resolveImage(reference: ChatAttachmentReference): ModelAttachment {
         val uri = Uri.parse(reference.uri)
         val bytes = readLimited(uri, MAX_IMAGE_BYTES)
         val normalized = normalizeImage(bytes)
@@ -119,11 +136,21 @@ class ChatAttachmentResolver @Inject constructor(
         }
     }
 
-    private fun resolveFile(reference: ChatAttachmentReference): List<ModelAttachment> {
+    private suspend fun resolveFile(reference: ChatAttachmentReference): List<ModelAttachment> {
         val uri = Uri.parse(reference.uri)
         val mime = context.contentResolver.getType(uri) ?: "text/plain"
         if (mime == "application/pdf" || reference.name.endsWith(".pdf", ignoreCase = true)) {
             return resolvePdf(reference, uri)
+        }
+        if (OfficeDocumentTextExtractor.supports(reference.name, mime)) {
+            val bytes = readLimited(uri, MAX_OFFICE_BYTES)
+            val text = runInterruptible {
+                OfficeDocumentTextExtractor.extract(reference.name, mime, bytes)
+            }
+            return listOf(ModelAttachment(reference.name, reference.uri, mime, inlineText = text))
+        }
+        if (reference.name.substringAfterLast('.', "").lowercase() in setOf("doc", "xls", "ppt")) {
+            return listOf(failedAttachment(reference, "暂不支持旧版 Office 格式，请另存为 docx、xlsx 或 pptx"))
         }
         val bytes = readLimited(uri, MAX_TEXT_BYTES)
         val text = if (mime.startsWith("text/") || reference.name.hasTextExtension()) {
@@ -134,42 +161,79 @@ class ChatAttachmentResolver @Inject constructor(
         return listOf(ModelAttachment(reference.name, reference.uri, mime, inlineText = text))
     }
 
-    private fun resolvePdf(reference: ChatAttachmentReference, uri: Uri): List<ModelAttachment> {
+    private suspend fun resolvePdf(reference: ChatAttachmentReference, uri: Uri): List<ModelAttachment> {
+        val bytes = readLimited(uri, MAX_PDF_BYTES.toInt())
+        val extracted = try {
+            runInterruptible {
+                PdfDocumentTextExtractor.extract(context, bytes)
+            }
+        } catch (error: PasswordProtectedPdfException) {
+            throw error
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        }
+        if (extracted?.text?.hasUsefulPdfText() == true) {
+            return listOf(
+                ModelAttachment(
+                    name = reference.name,
+                    uri = reference.uri,
+                    mimeType = "application/pdf",
+                    inlineText = extracted.text,
+                ),
+            )
+        }
+        return renderPdfPages(reference, uri)
+    }
+
+    private suspend fun renderPdfPages(reference: ChatAttachmentReference, uri: Uri): List<ModelAttachment> {
         val descriptor = requireNotNull(context.contentResolver.openFileDescriptor(uri, "r")) {
             "无法读取 PDF"
         }
-        descriptor.use { fileDescriptor ->
-            PdfRenderer(fileDescriptor).use { renderer ->
-                require(renderer.pageCount > 0) { "PDF 没有可读取页面" }
-                return (0 until minOf(renderer.pageCount, MAX_PDF_PAGES)).map { pageIndex ->
-                    renderer.openPage(pageIndex).use { page ->
-                        val scale = minOf(1f, MAX_PDF_EDGE.toFloat() / maxOf(page.width, page.height))
-                        val width = maxOf(1, (page.width * scale).toInt())
-                        val height = maxOf(1, (page.height * scale).toInt())
-                        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                        Canvas(bitmap).drawColor(Color.WHITE)
-                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        val output = ByteArrayOutputStream()
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, PDF_JPEG_QUALITY, output)
-                        bitmap.recycle()
-                        ModelAttachment(
-                            name = "${reference.name.substringBeforeLast('.')}-page-${pageIndex + 1}.jpg",
-                            uri = "data:image/jpeg;base64,${Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)}",
-                            mimeType = "image/jpeg",
-                        )
+        try {
+            descriptor.use { fileDescriptor ->
+                require(fileDescriptor.statSize < 0L || fileDescriptor.statSize <= MAX_PDF_BYTES) {
+                    "PDF 过大，最多支持 ${MAX_PDF_BYTES / 1024 / 1024} MB"
+                }
+                PdfRenderer(fileDescriptor).use { renderer ->
+                    require(renderer.pageCount > 0) { "PDF 没有可读取页面" }
+                    val pages = mutableListOf<ModelAttachment>()
+                    for (pageIndex in 0 until minOf(renderer.pageCount, MAX_PDF_PAGES)) {
+                        currentCoroutineContext().ensureActive()
+                        pages += renderer.openPage(pageIndex).use { page ->
+                            val scale = minOf(1f, MAX_PDF_EDGE.toFloat() / maxOf(page.width, page.height))
+                            val width = maxOf(1, (page.width * scale).toInt())
+                            val height = maxOf(1, (page.height * scale).toInt())
+                            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                            Canvas(bitmap).drawColor(Color.WHITE)
+                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            val output = ByteArrayOutputStream()
+                            bitmap.compress(Bitmap.CompressFormat.JPEG, PDF_JPEG_QUALITY, output)
+                            bitmap.recycle()
+                            ModelAttachment(
+                                name = "${reference.name.substringBeforeLast('.')}-page-${pageIndex + 1}.jpg",
+                                uri = "data:image/jpeg;base64,${Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)}",
+                                mimeType = "image/jpeg",
+                            )
+                        }
                     }
+                    return pages
                 }
             }
+        } catch (error: SecurityException) {
+            throw IllegalArgumentException("PDF 已加密，无法解析", error)
         }
     }
 
-    private fun readLimited(uri: Uri, maxBytes: Int): ByteArray {
+    private suspend fun readLimited(uri: Uri, maxBytes: Int): ByteArray {
         val output = ByteArrayOutputStream()
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
         context.contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "无法读取附件" }
             var total = 0
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val count = input.read(buffer)
                 if (count < 0) break
                 total += count
@@ -179,6 +243,14 @@ class ChatAttachmentResolver @Inject constructor(
         }
         return output.toByteArray()
     }
+
+    private fun failedAttachment(reference: ChatAttachmentReference, reason: String): ModelAttachment =
+        ModelAttachment(
+            name = reference.name,
+            uri = reference.uri,
+            mimeType = "text/plain",
+            inlineText = "附件 ${reference.name} 解析失败：$reason",
+        )
 
     private fun displayName(uri: Uri, fallback: String): String = runCatching {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
@@ -196,9 +268,12 @@ class ChatAttachmentResolver @Inject constructor(
         const val MAX_IMAGE_EDGE = 2048
         const val IMAGE_JPEG_QUALITY = 88
         const val MAX_TEXT_BYTES = 2 * 1024 * 1024
+        const val MAX_OFFICE_BYTES = 20 * 1024 * 1024
+        const val MAX_PDF_BYTES = 25L * 1024 * 1024
         const val MAX_PDF_PAGES = 4
         const val MAX_PDF_EDGE = 1600
         const val PDF_JPEG_QUALITY = 85
+        const val ATTACHMENT_PARSE_TIMEOUT_MS = 15_000L
     }
 }
 

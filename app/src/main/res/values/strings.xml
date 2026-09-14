@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="automation_service_label">Mason 自动化</string>
+    <string name="phone_agent_service_label">Mason 屏幕助手</string>
+    <string name="phone_agent_accessibility_description">允许 Mason 读取当前界面并在你授权后执行点击、输入、滚动和系统导航操作。</string>
+</resources>

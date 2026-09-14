@@ -5,10 +5,15 @@ import android.content.Context
 import android.content.Intent
 import android.os.Environment
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -26,65 +31,78 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.EventNote
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Extension
-import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.PowerSettingsNew
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material3.AlertDialog
+import com.denggl2.mason.ui.theme.MasonAlertDialog as AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Text
+import androidx.compose.material3.Switch
+import com.denggl2.masonremote.ui.localizedText as Text
+import com.denggl2.masonremote.ui.LocalRemoteStrings
+import com.denggl2.masonremote.ui.RemoteStrings
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -100,8 +118,14 @@ import com.denggl2.mason.data.MasonAutomationAction
 import com.denggl2.mason.data.MasonAutomationCondition
 import com.denggl2.mason.data.MasonAutomationTrigger
 import com.denggl2.mason.automation.AutomationWorkflowLogic
+import com.denggl2.mason.ui.theme.LocalInterfaceEffects
+import com.denggl2.mason.ui.theme.ProgressiveBlurEdge
+import com.denggl2.mason.ui.theme.captureProgressiveEdgeBlur
+import com.denggl2.mason.ui.theme.progressiveEdgeBlur
+import com.denggl2.mason.ui.theme.rememberProgressiveEdgeBlurState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -140,7 +164,13 @@ private data class CollectionEntry(
     val automationEnabled: Boolean? = null,
     val automation: MasonAutomationSpec? = null,
     val skillManifest: MasonSkillManifest? = null,
+    val titleOverride: String? = null,
 )
+
+private val CollectionEntry.displayTitle: String
+    get() = titleOverride?.takeIf(String::isNotBlank) ?: name
+
+private const val COLLECTION_TITLE_PREFS = "collection_entry_titles"
 
 private val COLLECTION_JSON = Json { ignoreUnknownKeys = true }
 private val TIMED_TRIGGER_TYPES = setOf(
@@ -157,21 +187,50 @@ fun CollectionListScreen(
     viewModel: CollectionListViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val strings = LocalRemoteStrings.current
     val skillState by viewModel.skillState.collectAsState()
     val automationState by viewModel.automationState.collectAsState()
     val automationCapabilityIssues by viewModel.automationCapabilityIssues.collectAsState()
     val automationPreferences by viewModel.automationPreferences.collectAsState()
-    var query by remember { mutableStateOf("") }
-    var searchActive by remember(kind) { mutableStateOf(false) }
-    var loaded by remember(kind) { mutableStateOf(false) }
-    var entries by remember(kind) { mutableStateOf<List<CollectionEntry>>(emptyList()) }
+    var activeKind by rememberSaveable(kind) { mutableStateOf(kind) }
+    var query by remember(activeKind) { mutableStateOf("") }
+    var searchActive by remember(activeKind) { mutableStateOf(false) }
+    var loaded by remember(activeKind) { mutableStateOf(false) }
+    var entries by remember(activeKind) { mutableStateOf<List<CollectionEntry>>(emptyList()) }
     var previewEntry by remember { mutableStateOf<CollectionEntry?>(null) }
-    var showInstallDialog by remember(kind) { mutableStateOf(false) }
-    var showCreateAutomationDialog by remember(kind) { mutableStateOf(false) }
-    var editingAutomation by remember(kind) { mutableStateOf<MasonAutomationSpec?>(null) }
+    var showInstallDialog by remember(activeKind) { mutableStateOf(false) }
+    var showCreateAutomationDialog by remember(activeKind) { mutableStateOf(false) }
+    var editingAutomation by remember(activeKind) { mutableStateOf<MasonAutomationSpec?>(null) }
     var pendingAutomationRun by remember { mutableStateOf<CollectionEntry?>(null) }
-    LaunchedEffect(kind, automationState.revision) {
-        if (kind == CollectionKind.AUTOMATIONS) viewModel.refreshAutomationCapabilities()
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedArtifactPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var pendingArtifactDeletePaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val collectionListState = rememberLazyListState()
+    val fadeRevealDistancePx = with(LocalDensity.current) { 24.dp.toPx() }
+    val topFadeProgress = remember(collectionListState, fadeRevealDistancePx) {
+        derivedStateOf {
+            if (collectionListState.firstVisibleItemIndex > 0) {
+                1f
+            } else {
+                (collectionListState.firstVisibleItemScrollOffset / fadeRevealDistancePx)
+                    .coerceIn(0f, 1f)
+            }
+        }
+    }
+    val bottomFadeProgress by animateFloatAsState(
+        targetValue = if (collectionListState.canScrollForward) 1f else 0f,
+        animationSpec = tween(durationMillis = 180),
+        label = "workbench_bottom_fade",
+    )
+    val collectionEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
+    val scope = rememberCoroutineScope()
+    val localSkillArchivePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.importSkillFromLocalZip(it) }
+    }
+    LaunchedEffect(activeKind, automationState.revision) {
+        if (activeKind == CollectionKind.AUTOMATIONS) viewModel.refreshAutomationCapabilities()
     }
     val filteredEntries = remember(entries, query) {
         val keyword = query.trim()
@@ -179,22 +238,39 @@ fun CollectionListScreen(
             entries
         } else {
             entries.filter { entry ->
-                entry.name.contains(keyword, ignoreCase = true) ||
+                entry.displayTitle.contains(keyword, ignoreCase = true) ||
+                    entry.name.contains(keyword, ignoreCase = true) ||
                     entry.path.contains(keyword, ignoreCase = true)
             }
         }
     }
+    val visibleArtifactPaths = remember(filteredEntries, activeKind) {
+        if (activeKind == CollectionKind.ARTIFACTS) filteredEntries.map { it.path }.toSet() else emptySet()
+    }
 
-    LaunchedEffect(kind, skillState.revision, automationState.revision) {
+    BackHandler(enabled = selectionMode) {
+        selectedArtifactPaths = emptySet()
+        selectionMode = false
+    }
+
+    fun toggleArtifactSelection(path: String) {
+        selectedArtifactPaths = if (path in selectedArtifactPaths) {
+            selectedArtifactPaths - path
+        } else {
+            selectedArtifactPaths + path
+        }
+    }
+
+    LaunchedEffect(activeKind, skillState.revision, automationState.revision) {
         loaded = false
         entries = withContext(Dispatchers.IO) {
-            loadCollectionEntries(context.applicationContext, kind)
+            loadCollectionEntries(context.applicationContext, activeKind)
         }
         loaded = true
     }
 
     LaunchedEffect(entries, initialPreviewPath) {
-        if (kind != CollectionKind.ARTIFACTS || initialPreviewPath == null) return@LaunchedEffect
+        if (activeKind != CollectionKind.ARTIFACTS || initialPreviewPath == null) return@LaunchedEffect
         previewEntry = entries.firstOrNull { entry ->
             entry.path == initialPreviewPath || entry.previewFile?.absolutePath == initialPreviewPath
         }
@@ -202,14 +278,14 @@ fun CollectionListScreen(
 
     LaunchedEffect(skillState.message) {
         skillState.message?.let { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.displayText(message), Toast.LENGTH_SHORT).show()
             viewModel.consumeMessage()
         }
     }
 
     LaunchedEffect(automationState.message) {
         automationState.message?.let { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.displayText(message), Toast.LENGTH_SHORT).show()
             viewModel.consumeAutomationMessage()
         }
     }
@@ -222,14 +298,21 @@ fun CollectionListScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    if (searchActive) {
+                    if (selectionMode) {
+                        Text(
+                            "已选 ${selectedArtifactPaths.size}",
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    } else if (searchActive) {
                         TopBarSearchField(
                             value = query,
                             onValueChange = { query = it },
                         )
                     } else {
                         Text(
-                            kind.title,
+                            "工作台",
                             color = MaterialTheme.colorScheme.onBackground,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -237,42 +320,38 @@ fun CollectionListScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(
+                        onClick = {
+                            if (selectionMode) {
+                                selectedArtifactPaths = emptySet()
+                                selectionMode = false
+                            } else {
+                                onBack()
+                            }
+                        },
+                    ) {
                         Icon(
                             Icons.AutoMirrored.Outlined.ArrowBack,
-                            contentDescription = "返回",
+                            contentDescription = LocalRemoteStrings.current.t("返回"),
                             tint = MaterialTheme.colorScheme.onBackground,
                         )
                     }
                 },
                 actions = {
-                    if (kind == CollectionKind.SKILLS || kind == CollectionKind.AUTOMATIONS) {
-                        IconButton(
+                    if (selectionMode) {
+                        TextButton(
                             onClick = {
-                                if (kind == CollectionKind.SKILLS) {
-                                    showInstallDialog = true
-                                } else {
-                                    showCreateAutomationDialog = true
-                                }
-                            },
-                            enabled = if (kind == CollectionKind.SKILLS) {
-                                !skillState.working
-                            } else {
-                                !automationState.working
+                                selectedArtifactPaths = emptySet()
+                                selectionMode = false
                             },
                         ) {
-                            Icon(
-                                Icons.Outlined.Add,
-                                contentDescription = if (kind == CollectionKind.SKILLS) {
-                                    "从 GitHub 安装 Skill"
-                                } else {
-                                    "创建自动化"
-                                },
-                                tint = MaterialTheme.colorScheme.onBackground,
-                            )
+                            Text("取消")
                         }
-                    }
-                    IconButton(
+                        TextButton(onClick = { selectedArtifactPaths = visibleArtifactPaths }) {
+                            Text("全选")
+                        }
+                    } else {
+                        IconButton(
                         onClick = {
                             if (searchActive) {
                                 query = ""
@@ -281,12 +360,13 @@ fun CollectionListScreen(
                                 searchActive = true
                             }
                         },
-                    ) {
-                        Icon(
-                            imageVector = if (searchActive) Icons.Outlined.Close else Icons.Outlined.Search,
-                            contentDescription = if (searchActive) "关闭搜索" else "搜索",
-                            tint = MaterialTheme.colorScheme.onBackground,
-                        )
+                        ) {
+                            Icon(
+                                imageVector = if (searchActive) Icons.Outlined.Close else Icons.Outlined.Search,
+                                contentDescription = LocalRemoteStrings.current.t(if (searchActive) "关闭搜索" else "搜索"),
+                                tint = MaterialTheme.colorScheme.onBackground,
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -298,12 +378,28 @@ fun CollectionListScreen(
             )
         },
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 12.dp, vertical = 4.dp),
+                .padding(padding),
+            contentAlignment = Alignment.TopCenter,
         ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 960.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+            WorkbenchTabs(
+                selected = activeKind,
+                onSelect = { selectedKind ->
+                    if (selectedKind != activeKind) {
+                        selectedArtifactPaths = emptySet()
+                        selectionMode = false
+                        activeKind = selectedKind
+                    }
+                },
+            )
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -322,29 +418,51 @@ fun CollectionListScreen(
                     }
                     filteredEntries.isEmpty() -> {
                         Text(
-                            if (entries.isEmpty()) kind.emptyText else "没有匹配结果",
+                            if (entries.isEmpty()) activeKind.emptyText else "没有匹配结果",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 14.sp,
                             modifier = Modifier.padding(top = emptyTopPadding),
                         )
                     }
                     else -> {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            itemsIndexed(filteredEntries, key = { _, item -> item.path }) { _, entry ->
-                                Box(modifier = Modifier.animateItem()) {
-                                    CollectionEntryRow(
+                        val fadeSurface = MaterialTheme.colorScheme.background
+                        val fadeOverlay = fadeSurface.copy(
+                            alpha = if (LocalInterfaceEffects.current.glassMaterialEnabled) 0.10f else 1f,
+                        )
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = collectionListState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .captureProgressiveEdgeBlur(collectionEdgeBlurState),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                    top = 4.dp,
+                                    bottom = 10.dp,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                itemsIndexed(filteredEntries, key = { _, item -> item.path }) { _, entry ->
+                                    Box(modifier = Modifier.animateItem()) {
+                                        CollectionEntryRow(
                                         entry = entry,
-                                        icon = kind.iconFor(entry),
-                                        onPreview = { previewEntry = entry },
-                                        onOpen = { openEntry(context, entry, edit = false) },
+                                        selectionMode = selectionMode,
+                                        selected = entry.path in selectedArtifactPaths,
+                                        onPreview = {
+                                            if (selectionMode) toggleArtifactSelection(entry.path)
+                                            else previewEntry = entry
+                                        },
+                                        onLongClick = {
+                                            if (activeKind == CollectionKind.ARTIFACTS) {
+                                                selectionMode = true
+                                                selectedArtifactPaths = selectedArtifactPaths + entry.path
+                                            }
+                                        },
+                                        onOpen = { openEntry(context, entry, edit = false, strings = strings) },
                                         onEdit = {
                                             entry.automation?.let { editingAutomation = it }
-                                                ?: openEntry(context, entry, edit = true)
+                                                ?: openEntry(context, entry, edit = true, strings = strings)
                                         },
-                                        onShare = { shareEntry(context, entry) },
+                                        onShare = { shareEntry(context, entry, strings = strings) },
                                         onToggleSkill = entry.skillEnabled?.let { enabled ->
                                             { viewModel.setSkillEnabled(entry.path, !enabled) }
                                         },
@@ -361,7 +479,7 @@ fun CollectionListScreen(
                                             { pendingAutomationRun = entry }
                                         },
                                         onShowAutomationLogs = entry.automationId?.let { id ->
-                                            { viewModel.showAutomationLogs(id, entry.name) }
+                                            { viewModel.showAutomationLogs(id, entry.displayTitle) }
                                         },
                                         automationStatus = entry.automation?.let { spec ->
                                             when {
@@ -373,26 +491,149 @@ fun CollectionListScreen(
                                                 else -> "可运行"
                                             }
                                         },
-                                    )
+                                        )
+                                    }
                                 }
                             }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .fillMaxWidth()
+                                    .height(30.dp)
+                                    .graphicsLayer {
+                                        val progress = topFadeProgress.value
+                                        alpha = progress
+                                        translationY = -30.dp.toPx() * (1f - progress)
+                                    }
+                                    .progressiveEdgeBlur(
+                                        state = collectionEdgeBlurState,
+                                        edge = ProgressiveBlurEdge.Top,
+                                        backgroundColor = fadeSurface,
+                                    )
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                fadeOverlay,
+                                                fadeOverlay.copy(alpha = fadeOverlay.alpha * 0.72f),
+                                                Color.Transparent,
+                                            ),
+                                        ),
+                                    ),
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .height(34.dp)
+                                    .graphicsLayer { alpha = bottomFadeProgress }
+                                    .progressiveEdgeBlur(
+                                        state = collectionEdgeBlurState,
+                                        edge = ProgressiveBlurEdge.Bottom,
+                                        backgroundColor = fadeSurface,
+                                    )
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.Transparent,
+                                                fadeOverlay.copy(alpha = fadeOverlay.alpha * 0.72f),
+                                                fadeOverlay,
+                                            ),
+                                        ),
+                                    ),
+                            )
                         }
                     }
                 }
             }
+            if (selectionMode) {
+                OutlinedButton(
+                    onClick = { pendingArtifactDeletePaths = selectedArtifactPaths },
+                    enabled = selectedArtifactPaths.isNotEmpty(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 4.dp)
+                        .height(44.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.error.copy(alpha = if (selectedArtifactPaths.isNotEmpty()) 0.72f else 0.28f),
+                    ),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                ) {
+                    Icon(
+                        Icons.Outlined.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text("删除")
+                }
+            }
+            }
         }
+    }
+
+    if (pendingArtifactDeletePaths.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { pendingArtifactDeletePaths = emptySet() },
+            title = { Text("删除产出？") },
+            text = { Text("将删除 ${pendingArtifactDeletePaths.size} 个文件，删除后不能恢复。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val targets = pendingArtifactDeletePaths
+                        pendingArtifactDeletePaths = emptySet()
+                        scope.launch {
+                            val deletedPaths = withContext(Dispatchers.IO) {
+                                targets.filterTo(mutableSetOf()) { path ->
+                                    val file = File(path)
+                                    file.isFile && file.delete()
+                                }
+                            }
+                            entries = entries.filterNot { it.path in deletedPaths }
+                            selectedArtifactPaths = selectedArtifactPaths - deletedPaths
+                            if (entries.isEmpty()) {
+                                selectionMode = false
+                                selectedArtifactPaths = emptySet()
+                            }
+                            Toast.makeText(
+                                context,
+                                strings.displayText("已删除 ${deletedPaths.size} 个产出"),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    },
+                ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingArtifactDeletePaths = emptySet() }) { Text("取消") }
+            },
+        )
     }
 
     previewEntry?.let { entry ->
         EntryPreviewDialog(
             entry = entry,
             onDismiss = { previewEntry = null },
-            onOpen = { openEntry(context, entry, edit = false) },
+            onTitleChange = { title ->
+                val trimmed = title.trim()
+                context.getSharedPreferences(COLLECTION_TITLE_PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("title:${entry.path}", trimmed)
+                    .apply()
+                val updated = entry.copy(titleOverride = trimmed)
+                entries = entries.map { item -> if (item.path == entry.path) updated else item }
+                previewEntry = updated
+            },
+            onOpen = { openEntry(context, entry, edit = false, strings = strings) },
             onEdit = {
                 entry.automation?.let { editingAutomation = it }
-                    ?: openEntry(context, entry, edit = true)
+                    ?: openEntry(context, entry, edit = true, strings = strings)
             },
-            onShare = { shareEntry(context, entry) },
+            onShare = { shareEntry(context, entry, strings = strings) },
         )
     }
 
@@ -404,6 +645,23 @@ fun CollectionListScreen(
                 showInstallDialog = false
                 viewModel.installSkillFromGitHub(url)
             },
+            onImportLocal = {
+                showInstallDialog = false
+                localSkillArchivePicker.launch(arrayOf("application/zip", "application/x-zip-compressed"))
+            },
+        )
+    }
+    skillState.replaceCandidate?.let { candidate ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearSkillReplaceCandidate,
+            title = { Text("Skill 已存在") },
+            text = { Text("${candidate.name} 与已安装 Skill 同名。替换会保留旧版本直到新版本发布成功。") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.importSkillFromLocalZip(candidate.uri, replaceConfirmed = true) }) {
+                    Text("确认替换")
+                }
+            },
+            dismissButton = { TextButton(onClick = viewModel::clearSkillReplaceCandidate) { Text("取消") } },
         )
     }
     if (showCreateAutomationDialog) {
@@ -446,7 +704,7 @@ fun CollectionListScreen(
     pendingAutomationRun?.let { entry ->
         AlertDialog(
             onDismissRequest = { pendingAutomationRun = null },
-            title = { Text("运行 ${entry.name}？") },
+            title = { Text("运行 ${entry.displayTitle}？") },
             text = { Text(entry.summary) },
             confirmButton = {
                 TextButton(
@@ -502,12 +760,14 @@ private fun TopBarSearchField(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun CollectionEntryRow(
     entry: CollectionEntry,
-    icon: ImageVector,
+    selectionMode: Boolean,
+    selected: Boolean,
     onPreview: () -> Unit,
+    onLongClick: () -> Unit,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
     onShare: () -> Unit,
@@ -519,38 +779,52 @@ private fun CollectionEntryRow(
     onShowAutomationLogs: (() -> Unit)?,
     automationStatus: String?,
 ) {
+    val strings = LocalRemoteStrings.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(collectionGlassBrush())
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+            .combinedClickable(
+                onClick = onPreview,
+                onLongClick = onLongClick,
+            )
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                else Color.Transparent,
                 RoundedCornerShape(8.dp),
             )
-            .clickable(onClick = onPreview)
-            .padding(horizontal = 11.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(28.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp),
-                )
+            if (selectionMode) {
+                Box(
+                    modifier = Modifier
+                        .size(19.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                        )
+                        .border(
+                            1.dp,
+                            if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.46f),
+                            CircleShape,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (selected) {
+                        Icon(
+                            Icons.Outlined.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.width(9.dp))
             }
-
-            Spacer(Modifier.width(9.dp))
-
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    entry.name,
+                    entry.displayTitle,
                     color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -558,17 +832,20 @@ private fun CollectionEntryRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(3.dp))
+                if (entry.kind != CollectionKind.ARTIFACTS) {
+                    Text(
+                        entry.summary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                }
                 Text(
-                    entry.summary,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    "${entry.typeLabel} · ${entry.sourceLabel} · ${formatModifiedTime(entry.modifiedAt)} · ${entry.sizeLabel}",
+                    "${strings.displayText(entry.typeLabel)} · ${strings.displayText(entry.sourceLabel)} · " +
+                        "${formatModifiedTime(entry.modifiedAt, strings)} · ${strings.displayText(entry.sizeLabel)}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.70f),
                     fontSize = 10.sp,
                     maxLines = 1,
@@ -586,78 +863,76 @@ private fun CollectionEntryRow(
                     )
                 }
             }
-        }
-
-        Spacer(Modifier.height(6.dp))
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            EntryActionChip(
-                label = "预览",
-                icon = Icons.Outlined.Visibility,
-                onClick = onPreview,
-            )
-            EntryActionChip(
-                label = if (entry.kind == CollectionKind.ARTIFACTS || entry.automation != null) "编辑" else "打开",
-                icon = if (entry.kind == CollectionKind.ARTIFACTS || entry.automation != null) {
-                    Icons.Outlined.Edit
-                } else {
-                    Icons.AutoMirrored.Outlined.OpenInNew
-                },
-                onClick = if (entry.kind == CollectionKind.ARTIFACTS || entry.automation != null) onEdit else onOpen,
-            )
-            if (!entry.isDirectory) {
-                EntryActionChip(
-                    label = "分享",
-                    icon = Icons.Outlined.Share,
-                    onClick = onShare,
-                )
-            }
-            if (onToggleSkill != null) {
-                EntryActionChip(
-                    label = if (entry.skillEnabled == true) "停用" else "启用",
-                    icon = Icons.Outlined.PowerSettingsNew,
-                    onClick = onToggleSkill,
-                )
-            }
-            if (onUpdateSkill != null) {
-                EntryActionChip(
-                    label = "更新",
-                    icon = Icons.Outlined.Refresh,
-                    onClick = onUpdateSkill,
-                )
-            }
-            if (onArchiveSkill != null) {
-                EntryActionChip(
-                    label = "卸载",
-                    icon = Icons.Outlined.Delete,
-                    onClick = onArchiveSkill,
-                )
-            }
-            if (onRunAutomation != null) {
-                EntryActionChip(
-                    label = "运行",
-                    icon = Icons.Outlined.PlayArrow,
-                    onClick = onRunAutomation,
-                )
-            }
-            if (onShowAutomationLogs != null) {
-                EntryActionChip(
-                    label = "日志",
-                    icon = Icons.Outlined.History,
-                    onClick = onShowAutomationLogs,
-                )
-            }
             if (onToggleAutomation != null) {
-                EntryActionChip(
-                    label = if (entry.automationEnabled == true) "停用" else "启用",
-                    icon = Icons.Outlined.PowerSettingsNew,
-                    onClick = onToggleAutomation,
+                Switch(
+                    checked = entry.automationEnabled == true,
+                    onCheckedChange = { onToggleAutomation() },
                 )
             }
         }
+
+    }
+}
+
+@Composable
+private fun WorkbenchTabs(
+    selected: CollectionKind,
+    onSelect: (CollectionKind) -> Unit,
+) {
+    val density = LocalDensity.current
+    val tabs = listOf(
+        CollectionKind.ARTIFACTS,
+        CollectionKind.AUTOMATIONS,
+        CollectionKind.SKILLS,
+    )
+    val selectedIndex = tabs.indexOf(selected).coerceAtLeast(0)
+    val indicatorPosition by animateFloatAsState(
+        targetValue = selectedIndex.toFloat(),
+        animationSpec = tween(
+            durationMillis = 180,
+            easing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f),
+        ),
+        label = "workbench_tab_indicator",
+    )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val tabWidth = maxWidth / tabs.size
+        val tabWidthPx = with(density) { tabWidth.toPx() }
+        val indicatorInsetPx = with(density) { ((tabWidth - 34.dp) / 2).toPx() }
+        Row(modifier = Modifier.fillMaxWidth()) {
+            tabs.forEach { item ->
+                val active = item == selected
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onSelect(item) }
+                        .padding(vertical = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        item.title,
+                        color = if (active) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        fontSize = 14.sp,
+                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                    Spacer(Modifier.height(9.dp))
+                }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .offset(y = (-10).dp)
+                .width(34.dp)
+                .height(2.dp)
+                .graphicsLayer {
+                    translationX = tabWidthPx * indicatorPosition + indicatorInsetPx
+                }
+                .background(MaterialTheme.colorScheme.onSurface),
+        )
     }
 }
 
@@ -666,6 +941,7 @@ private fun InstallSkillDialog(
     working: Boolean,
     onDismiss: () -> Unit,
     onInstall: (String) -> Unit,
+    onImportLocal: () -> Unit,
 ) {
     var url by remember { mutableStateOf("") }
     AlertDialog(
@@ -691,8 +967,9 @@ private fun InstallSkillDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !working) {
-                Text("取消")
+            Row {
+                TextButton(onClick = onImportLocal, enabled = !working) { Text("导入本地 ZIP") }
+                TextButton(onClick = onDismiss, enabled = !working) { Text("取消") }
             }
         },
     )
@@ -1270,6 +1547,25 @@ private fun AutomationLogsDialog(
 ) {
     val formatter = remember { SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()) }
     var expandedRunAt by remember { mutableStateOf<Long?>(null) }
+    val listState = rememberLazyListState()
+    val fadeRevealDistancePx = with(LocalDensity.current) { 24.dp.toPx() }
+    val topFadeProgress = remember(listState, fadeRevealDistancePx) {
+        derivedStateOf {
+            if (listState.firstVisibleItemIndex > 0) {
+                1f
+            } else {
+                (listState.firstVisibleItemScrollOffset / fadeRevealDistancePx).coerceIn(0f, 1f)
+            }
+        }
+    }
+    val bottomFadeProgress by animateFloatAsState(
+        targetValue = if (listState.canScrollForward) 1f else 0f,
+        animationSpec = tween(durationMillis = 180),
+        label = "automation_log_bottom_fade",
+    )
+    val logEdgeBlurState = rememberProgressiveEdgeBlurState(
+        enabled = LocalInterfaceEffects.current.progressiveEdgeBlurEnabled,
+    )
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("$title · 运行日志") },
@@ -1277,18 +1573,30 @@ private fun AutomationLogsDialog(
             if (logs.isEmpty()) {
                 Text("暂无运行记录")
             } else {
-                LazyColumn(
-                    modifier = Modifier.height(260.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(logs) { log ->
-                        Column(
+                val fadeSurface = MaterialTheme.colorScheme.surface
+                val fadeOverlay = fadeSurface.copy(
+                    alpha = if (LocalInterfaceEffects.current.glassMaterialEnabled) 0.10f else 1f,
+                )
+                Box(modifier = Modifier.height(260.dp)) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .captureProgressiveEdgeBlur(logEdgeBlurState),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            top = 4.dp,
+                            bottom = 10.dp,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(logs) { log ->
+                            Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable(enabled = log.steps.isNotEmpty()) {
                                     expandedRunAt = if (expandedRunAt == log.ranAt) null else log.ranAt
                                 },
-                        ) {
+                            ) {
                             Text(
                                 if (log.status == "success") "成功" else "失败",
                                 fontWeight = FontWeight.SemiBold,
@@ -1323,8 +1631,55 @@ private fun AutomationLogsDialog(
                                     )
                                 }
                             }
+                            }
                         }
                     }
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .height(24.dp)
+                            .graphicsLayer {
+                                val progress = topFadeProgress.value
+                                alpha = progress
+                                translationY = -24.dp.toPx() * (1f - progress)
+                            }
+                            .progressiveEdgeBlur(
+                                state = logEdgeBlurState,
+                                edge = ProgressiveBlurEdge.Top,
+                                backgroundColor = fadeSurface,
+                            )
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        fadeOverlay,
+                                        fadeOverlay.copy(alpha = fadeOverlay.alpha * 0.72f),
+                                        Color.Transparent,
+                                    ),
+                                ),
+                            ),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(28.dp)
+                            .graphicsLayer { alpha = bottomFadeProgress }
+                            .progressiveEdgeBlur(
+                                state = logEdgeBlurState,
+                                edge = ProgressiveBlurEdge.Bottom,
+                                backgroundColor = fadeSurface,
+                            )
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        fadeOverlay.copy(alpha = fadeOverlay.alpha * 0.72f),
+                                        fadeOverlay,
+                                    ),
+                                ),
+                            ),
+                    )
                 }
             }
         },
@@ -1338,53 +1693,25 @@ private fun AutomationLogsDialog(
 private fun collectionGlassBrush(): Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)
 
 @Composable
-private fun EntryActionChip(
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .height(27.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
-                RoundedCornerShape(8.dp),
-            )
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.44f))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.size(13.dp),
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            label,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
 private fun EntryPreviewDialog(
     entry: CollectionEntry,
     onDismiss: () -> Unit,
+    onTitleChange: (String) -> Unit,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
     onShare: () -> Unit,
 ) {
-    val previewText = remember(entry.path, entry.modifiedAt) {
-        buildPreviewText(entry)
+    val strings = LocalRemoteStrings.current
+    val previewText = remember(entry.path, entry.modifiedAt, strings.isEnglish) {
+        buildPreviewText(entry, strings)
+    }
+    var editingTitle by remember(entry.path) { mutableStateOf(false) }
+    val titleFocusRequester = remember { FocusRequester() }
+    var titleField by remember(entry.path, entry.displayTitle) {
+        mutableStateOf(TextFieldValue(entry.displayTitle))
+    }
+    LaunchedEffect(editingTitle) {
+        if (editingTitle) titleFocusRequester.requestFocus()
     }
 
     AlertDialog(
@@ -1392,17 +1719,52 @@ private fun EntryPreviewDialog(
         containerColor = MaterialTheme.colorScheme.surface,
         title = {
             Column {
-                Text(
-                    entry.name,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (editingTitle) {
+                        OutlinedTextField(
+                            value = titleField,
+                            onValueChange = { titleField = it },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).focusRequester(titleFocusRequester),
+                        )
+                        TextButton(onClick = { editingTitle = false }) { Text("取消") }
+                        TextButton(
+                            onClick = {
+                                val value = titleField.text.trim()
+                                if (value.isNotBlank()) {
+                                    onTitleChange(value)
+                                    editingTitle = false
+                                }
+                            },
+                        ) { Text("保存") }
+                    } else {
+                        Text(
+                            entry.displayTitle,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (entry.kind == CollectionKind.ARTIFACTS) {
+                            IconButton(
+                                onClick = {
+                                    titleField = TextFieldValue(
+                                        entry.displayTitle,
+                                        selection = TextRange(0, entry.displayTitle.length),
+                                    )
+                                    editingTitle = true
+                                },
+                            ) {
+                                Icon(Icons.Outlined.Edit, contentDescription = LocalRemoteStrings.current.t("编辑标题"))
+                            }
+                        }
+                    }
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "${entry.typeLabel} · ${entry.sourceLabel}",
+                    "${strings.displayText(entry.typeLabel)} · ${strings.displayText(entry.sourceLabel)}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
                 )
@@ -1460,21 +1822,16 @@ private fun EntryPreviewDialog(
     )
 }
 
-private fun CollectionKind.iconFor(entry: CollectionEntry): ImageVector {
-    if (entry.isDirectory) return Icons.Outlined.Folder
-    return when (this) {
-        CollectionKind.ARTIFACTS -> Icons.Outlined.Description
-        CollectionKind.SKILLS -> Icons.Outlined.Extension
-        CollectionKind.AUTOMATIONS -> Icons.AutoMirrored.Outlined.EventNote
-    }
-}
-
 private fun loadCollectionEntries(context: Context, kind: CollectionKind): List<CollectionEntry> {
+    val titlePrefs = context.getSharedPreferences(COLLECTION_TITLE_PREFS, Context.MODE_PRIVATE)
     return collectionRoots(context, kind)
         .distinctBy { it.safePath() }
         .flatMap { root -> collectEntries(root, kind) }
         .distinctBy { it.path }
         .filterNot { it.skillManifest?.archived == true }
+        .map { entry ->
+            entry.copy(titleOverride = titlePrefs.getString("title:${entry.path}", null))
+        }
         .sortedByDescending { it.modifiedAt }
 }
 
@@ -1696,22 +2053,38 @@ private fun File.readMeaningfulLine(): String? =
             ?.take(140)
     }.getOrNull()
 
-private fun buildPreviewText(entry: CollectionEntry): String {
+private fun buildPreviewText(entry: CollectionEntry, strings: RemoteStrings): String {
     val file = entry.previewFile ?: return if (entry.isDirectory) {
-        "这个文件夹里暂时没有可预览的说明文件。\n\n路径：${entry.path}"
+        strings.text(
+            "这个文件夹里暂时没有可预览的说明文件。\n\n路径：${entry.path}",
+            "This folder has no previewable description file yet.\n\nPath: ${entry.path}",
+        )
     } else {
-        "暂时无法预览这个文件。\n\n路径：${entry.path}"
+        strings.text(
+            "暂时无法预览这个文件。\n\n路径：${entry.path}",
+            "This file cannot be previewed right now.\n\nPath: ${entry.path}",
+        )
     }
 
     if (!file.isTextLike()) {
-        return "这个文件适合用本地软件打开预览。\n\n文件：${file.name}\n路径：${file.absolutePath}"
+        return strings.text(
+            "这个文件适合用本地软件打开预览。\n\n文件：${file.name}\n路径：${file.absolutePath}",
+            "Open this file in a local app to preview it.\n\nFile: ${file.name}\nPath: ${file.absolutePath}",
+        )
     }
 
     return runCatching {
         val text = file.readText(Charsets.UTF_8)
-        if (text.length > 6000) text.take(6000) + "\n\n…已截取前 6000 字" else text
+        if (text.length > 6000) {
+            text.take(6000) + strings.text("\n\n…已截取前 6000 字", "\n\n…Truncated after 6,000 characters")
+        } else {
+            text
+        }
     }.getOrElse { error ->
-        "读取预览失败：${error.message ?: error.javaClass.simpleName}\n\n路径：${file.absolutePath}"
+        strings.text(
+            "读取预览失败：${error.message ?: error.javaClass.simpleName}\n\n路径：${file.absolutePath}",
+            "Preview read failed: ${error.message ?: error.javaClass.simpleName}\n\nPath: ${file.absolutePath}",
+        )
     }
 }
 
@@ -1723,10 +2096,15 @@ private fun File.isTextLike(): Boolean {
     )
 }
 
-private fun openEntry(context: Context, entry: CollectionEntry, edit: Boolean) {
+private fun openEntry(
+    context: Context,
+    entry: CollectionEntry,
+    edit: Boolean,
+    strings: RemoteStrings,
+) {
     val file = entry.previewFile ?: File(entry.path)
     if (!file.exists() || file.isDirectory) {
-        Toast.makeText(context, "暂时没有可打开的文件", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("暂时没有可打开的文件"), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -1738,20 +2116,34 @@ private fun openEntry(context: Context, entry: CollectionEntry, edit: Boolean) {
     }
 
     runCatching {
-        context.startActivity(Intent.createChooser(intent, if (edit) "选择编辑应用" else "选择打开应用"))
+        val chooser = Intent.createChooser(
+            intent,
+            strings.t(if (edit) "选择编辑应用" else "选择打开应用"),
+        ).apply {
+            putExtra("android.intent.extra.AUTO_LAUNCH_SINGLE_CHOICE", false)
+        }
+        context.startActivity(chooser)
     }.onFailure { error ->
         if (error is ActivityNotFoundException) {
-            Toast.makeText(context, "没有找到可用应用", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, strings.t("没有找到可用应用"), Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(context, "打开失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                strings.displayText("打开失败：${error.message ?: error.javaClass.simpleName}"),
+                Toast.LENGTH_SHORT,
+            ).show()
         }
     }
 }
 
-private fun shareEntry(context: Context, entry: CollectionEntry) {
+private fun shareEntry(
+    context: Context,
+    entry: CollectionEntry,
+    strings: RemoteStrings,
+) {
     val file = entry.previewFile ?: File(entry.path)
     if (!file.exists() || file.isDirectory) {
-        Toast.makeText(context, "暂时没有可分享的文件", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, strings.t("暂时没有可分享的文件"), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -1763,9 +2155,13 @@ private fun shareEntry(context: Context, entry: CollectionEntry) {
     }
 
     runCatching {
-        context.startActivity(Intent.createChooser(intent, "分享 ${file.name}"))
+        context.startActivity(Intent.createChooser(intent, strings.displayText("分享 ${file.name}")))
     }.onFailure { error ->
-        Toast.makeText(context, "分享失败：${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            strings.displayText("分享失败：${error.message ?: error.javaClass.simpleName}"),
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 }
 
@@ -1798,9 +2194,10 @@ private fun File.safePath(): String = try {
     absolutePath
 }
 
-private fun formatModifiedTime(value: Long): String {
-    if (value <= 0L) return "未知时间"
-    return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(value))
+private fun formatModifiedTime(value: Long, strings: RemoteStrings): String {
+    if (value <= 0L) return strings.text("未知时间", "Unknown time")
+    val locale = if (strings.isEnglish) Locale.ENGLISH else Locale.getDefault()
+    return SimpleDateFormat("yyyy-MM-dd HH:mm", locale).format(Date(value))
 }
 
 private fun formatFileSize(bytes: Long): String {

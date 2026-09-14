@@ -4,6 +4,7 @@ import com.denggl2.mason.llm.model.FunctionCall
 import com.denggl2.mason.llm.model.ChatMessage
 import com.denggl2.mason.llm.model.ToolCall
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -57,6 +58,46 @@ class TaskRunStateTest {
         assertEquals(checkpoint, recovered.agentExecution)
         assertEquals(200L, recovered.updatedAt)
         assertEquals(null, recovered.finishedAt)
+        assertEquals(TaskInterruptionReason.AppRestarted, recovered.interruptionReason)
+    }
+
+    @Test
+    fun restartKeepsOriginalApprovalAndDoesNotMarkItApproved() {
+        val call = ToolCall("write", function = FunctionCall("file_write", "{\"path\":\"report.md\"}"))
+        val recovered = createTaskRun("write report").copy(
+            agentExecution = AgentExecutionCheckpoint(
+                messages = emptyList(),
+                pendingCalls = listOf(call),
+                pendingApprovalCallId = call.id,
+            ),
+        ).recoverAfterProcessRestart(now = 2L)
+
+        assertEquals(TaskInterruptionReason.WaitingForApproval, recovered.interruptionReason)
+        assertEquals(call.id, recovered.agentExecution?.pendingApprovalCallId)
+        assertTrue(recovered.agentExecution?.approvedCallIds.orEmpty().isEmpty())
+    }
+
+    @Test
+    fun completedExternalCallCannotBeReplayedAfterResume() {
+        val call = ToolCall("write", function = FunctionCall("file_write", "{\"path\":\"report.md\"}"))
+        val checkpoint = AgentExecutionCheckpoint(
+            messages = emptyList(),
+            completedCallFingerprints = listOf(call.fingerprint()),
+        )
+
+        assertTrue(!checkpoint.canExecute(listOf(call)))
+    }
+
+    @Test
+    fun userPauseIsResumableAndCancelStopsRecovery() {
+        val runtimeRun = createTaskRun("draft")
+        val paused = runtimeRun.recoverAfterProcessRestart(now = 3L).copy(
+            interruptionReason = TaskInterruptionReason.UserPaused,
+        )
+        assertEquals(TaskRunStatus.WaitingForUser, paused.status)
+        assertEquals(TaskInterruptionReason.UserPaused, paused.interruptionReason)
+        val cancelled = paused.withSteps(paused.steps.map { it.copy(status = TaskStepStatus.Cancelled) })
+        assertEquals(TaskRunStatus.Cancelled, cancelled.status)
     }
 
     @Test
@@ -190,7 +231,12 @@ class TaskRunStateTest {
         assertTrue(location.permissions.contains("android.permission.ACCESS_FINE_LOCATION"))
         assertTrue(location.backgroundAllowed)
         assertTrue(remoteAgent.mandatoryApproval)
+        val conversationDispatch = ToolPolicy.profileFor("conversation_dispatch")
+        assertTrue(conversationDispatch.mandatoryApproval)
+        assertFalse(conversationDispatch.persistentGrantAllowed)
         assertTrue(!remoteAgent.persistentGrantAllowed)
+        assertTrue(!ToolPolicy.requiresUserApproval("location"))
+        assertTrue(ToolPolicy.requiresUserApproval("file_write"))
         assertTrue(!remoteAgent.backgroundAllowed)
     }
 
@@ -242,5 +288,37 @@ class TaskRunStateTest {
         assertEquals(AgentReviewDecision.WaitForUser, review.decision)
         assertEquals(call.taskStepId(), review.retryStepId)
         assertTrue(review.detail.contains("可重试"))
+    }
+
+    @Test
+    fun completionUnreadOnlyMarksBackgroundTerminalTransitions() {
+        assertTrue(
+            shouldMarkConversationCompletionUnread(
+                previousStatus = TaskRunStatus.Running,
+                nextStatus = TaskRunStatus.Completed,
+                isForeground = false,
+            ),
+        )
+        assertTrue(
+            shouldMarkConversationCompletionUnread(
+                previousStatus = TaskRunStatus.WaitingForUser,
+                nextStatus = TaskRunStatus.Failed,
+                isForeground = false,
+            ),
+        )
+        assertTrue(
+            !shouldMarkConversationCompletionUnread(
+                previousStatus = TaskRunStatus.Running,
+                nextStatus = TaskRunStatus.Completed,
+                isForeground = true,
+            ),
+        )
+        assertTrue(
+            !shouldMarkConversationCompletionUnread(
+                previousStatus = TaskRunStatus.Running,
+                nextStatus = TaskRunStatus.Cancelled,
+                isForeground = false,
+            ),
+        )
     }
 }

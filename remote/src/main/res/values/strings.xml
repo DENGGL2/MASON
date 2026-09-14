@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">CloudX</string>
+    <string name="camera_permission_rationale">需要相机权限来扫描电脑端的配对二维码。</string>
+</resources>
